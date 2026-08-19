@@ -41,5 +41,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     });
   },
 
+  // Kiosk & Admin Recovery
+  adminKioskRecovery: (pin: string, action: 'exit_kiosk' | 'quit_app') =>
+    ipcRenderer.invoke('admin-kiosk-recovery', { pin, action }),
+
+  getKioskModeStatus: () => ipcRenderer.invoke('get-kiosk-mode-status'),
+
+  onOpenAdminExitModal: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('open-admin-exit-modal', handler);
+    return () => {
+      ipcRenderer.removeListener('open-admin-exit-modal', handler);
+    };
+  },
+
   platform: process.platform,
-});
+});

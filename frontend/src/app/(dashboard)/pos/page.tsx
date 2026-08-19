@@ -14,6 +14,7 @@ import { Drawer, DrawerContent, DrawerTrigger } from '@/components/ui/drawer';
 import ProductGrid from '@/components/pos/ProductGrid';
 import CartPanel from '@/components/pos/CartPanel';
 import MemberSelector from '@/components/pos/MemberSelector';
+import AdminExitModal from '@/components/pos/AdminExitModal';
 import PrepaidCheckoutModal, {
   type PrepaidPayment,
   type PrepaidDiscount,
@@ -41,6 +42,8 @@ export default function POSPage() {
   // Modal states for POS Koperasi
   const [showMemberSelector, setShowMemberSelector] = useState(false);
   const [showPrepaidCheckout, setShowPrepaidCheckout] = useState(false);
+  const [showAdminExitModal, setShowAdminExitModal] = useState(false);
+
 
   const currency = getCurrencySymbol(
     currentTenant?.currency || 'IDR',
@@ -90,7 +93,7 @@ export default function POSPage() {
   );
 
   // Barcode scanner listener
-  const anyModalOpen = showMemberSelector || showPrepaidCheckout;
+  const anyModalOpen = showMemberSelector || showPrepaidCheckout || showAdminExitModal;
 
   useBarcodeScanner((code) => {
     const trimmed = code.trim();
@@ -105,7 +108,7 @@ export default function POSPage() {
     }
   }, !anyModalOpen);
 
-  // Keyboard shortcuts: F2 for Member Selector, F4 for Checkout
+  // Keyboard shortcuts: F2 (Member), F4 (Checkout), Ctrl+Shift+X (Admin Exit)
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F2') {
@@ -116,12 +119,25 @@ export default function POSPage() {
         if (cart.items.length > 0 && !submitting) {
           setShowPrepaidCheckout(true);
         }
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toUpperCase() === 'X') {
+        e.preventDefault();
+        setShowAdminExitModal(true);
       }
     };
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [cart.items.length, submitting]);
+
+  // IPC listener for Admin Exit Modal triggered from Electron Main Process
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.electronAPI?.onOpenAdminExitModal) return;
+    const cleanup = window.electronAPI.onOpenAdminExitModal(() => {
+      setShowAdminExitModal(true);
+    });
+    return cleanup;
+  }, []);
+
 
   // Trigger checkout modal
   const handlePlaceOrder = () => {
@@ -289,7 +305,14 @@ export default function POSPage() {
           }}
         />
       )}
+
+      {/* Admin Exit & Kiosk Recovery Modal */}
+      <AdminExitModal
+        isOpen={showAdminExitModal}
+        onClose={() => setShowAdminExitModal(false)}
+      />
     </>
   );
 }
+
 

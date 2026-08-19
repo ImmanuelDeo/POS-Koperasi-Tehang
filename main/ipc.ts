@@ -1,9 +1,43 @@
 import { ipcMain, dialog, app, BrowserWindow, shell } from 'electron';
 import * as path from 'path';
+import * as crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import { getDatabase, createBackup, restoreBackup, now, getDbPath } from './db';
 import { getLocalIP } from './server';
+import { isKioskModeEnabled, isLocalAppOrigin } from './config/security';
 
-export function registerIpcHandlers(): void {
+// In-memory rate limiting state
+let failedAttempts = 0;
+let lockoutUntil = 0;
+
+/**
+ * Reset rate limiter state for tests
+ */
+export function resetAdminRecoveryRateLimit(): void {
+  failedAttempts = 0;
+  lockoutUntil = 0;
+}
+
+/**
+ * Timing-safe string comparison for legacy plaintext PIN verification.
+ * Performs a dummy comparison if buffer lengths differ to keep execution time
+ * roughly consistent, reducing timing side-channel leakage.
+ */
+function timingSafeCompare(submitted: string, stored: string): boolean {
+  const bufA = Buffer.from(submitted, 'utf8');
+  const bufB = Buffer.from(stored, 'utf8');
+  if (bufA.length !== bufB.length) {
+    // Perform a dummy comparison of equal length to keep execution time
+    // roughly consistent even when lengths differ, reducing timing side-channel leakage.
+    crypto.timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+export function registerIpcHandlers(callbacks?: { onQuitRequested?: () => void }): void {
+
+
   // Database backup/restore
   ipcMain.handle('backup-database', async () => {
     try {
@@ -248,5 +282,136 @@ export function registerIpcHandlers(): void {
     }
   });
 
+  // ── Kiosk Mode & Secure Admin Recovery ──────────────────────────────
+  ipcMain.handle('get-kiosk-mode-status', () => {
+    return { isKiosk: isKioskModeEnabled() };
+  });
+
+  ipcMain.handle('admin-kiosk-recovery', async (event, payload: any) => {
+    try {
+      // 1. Sender validation: ensure request originates from local app only
+      const senderUrl = event.senderFrame?.url;
+      const port = parseInt(process.env.PORT || '3001', 10);
+      if (!isLocalAppOrigin(senderUrl, port)) {
+        return { success: false, error: 'Akses ditolak: Permintaan tidak sah.' };
+      }
+
+      // 2. In-memory Rate limiting check (5 attempts -> 60s cooldown)
+      const nowMs = Date.now();
+      if (nowMs < lockoutUntil) {
+        const remainingSec = Math.ceil((lockoutUntil - nowMs) / 1000);
+        return { success: false, error: `Terlalu banyak percobaan salah. Coba lagi dalam ${remainingSec} detik.` };
+      }
+
+      // 3. Payload validation
+      if (!payload || typeof payload !== 'object') {
+        return { success: false, error: 'Format permintaan tidak valid.' };
+      }
+
+      const { pin, action } = payload;
+
+      if (!pin || typeof pin !== 'string' || pin.trim().length < 4 || pin.trim().length > 12) {
+        return { success: false, error: 'Format PIN tidak valid (wajib 4-12 karakter).' };
+      }
+
+      if (action !== 'exit_kiosk' && action !== 'quit_app') {
+        return { success: false, error: 'Aksi recovery tidak valid.' };
+      }
+
+      const submittedPin = pin.trim();
+
+      // 4. Query active owner and admin users ONLY (never include manager or cashier)
+      // Note: Iterating through eligible users in sequence causes slight execution time variance
+      // depending on user position in results. For local kiosk recovery with a small number of
+      // admin/owner accounts, this is an acceptable and documented operational trade-off.
+      const db = getDatabase();
+      const eligibleUsers = db.prepare(`
+        SELECT id, name, role, pin 
+        FROM users 
+        WHERE role IN ('owner', 'admin') 
+          AND is_active = 1
+      `).all() as { id: string; name: string; role: string; pin: string | null }[];
+
+      let authenticatedUser: { id: string; name: string; role: string } | null = null;
+      let needsBcryptUpgrade = false;
+
+      for (const user of eligibleUsers) {
+        if (!user.pin) continue;
+
+        const storedPin = String(user.pin).trim();
+        const isBcrypt = /^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$/.test(storedPin);
+
+        if (isBcrypt) {
+          if (bcrypt.compareSync(submittedPin, storedPin)) {
+            authenticatedUser = { id: user.id, name: user.name, role: user.role };
+            needsBcryptUpgrade = false;
+            break;
+          }
+        } else {
+          // Legacy plaintext comparison using timingSafeCompare helper
+          if (timingSafeCompare(submittedPin, storedPin)) {
+            authenticatedUser = { id: user.id, name: user.name, role: user.role };
+            needsBcryptUpgrade = true;
+            break;
+          }
+        }
+      }
+
+
+      // 5. Failure handling
+      if (!authenticatedUser) {
+        failedAttempts += 1;
+        if (failedAttempts >= 5) {
+          lockoutUntil = Date.now() + 60000;
+          failedAttempts = 0;
+          return { success: false, error: 'PIN salah 5 kali. Akses terkunci selama 60 detik.' };
+        }
+        return { success: false, error: 'PIN Admin tidak valid atau tidak memiliki wewenang.' };
+      }
+
+      // 6. Reset rate limit state on success
+      failedAttempts = 0;
+      lockoutUntil = 0;
+
+      // 7. Auto-upgrade legacy plaintext to bcrypt hash (for matched owner/admin ONLY)
+      if (needsBcryptUpgrade && authenticatedUser) {
+        try {
+          const hashedPin = bcrypt.hashSync(submittedPin, 10);
+          db.prepare('UPDATE users SET pin = ?, updated_at = ? WHERE id = ?')
+            .run(hashedPin, now(), authenticatedUser.id);
+          console.log(`[Security] Upgraded legacy PIN to bcrypt hash for user: ${authenticatedUser.id}`);
+        } catch (upgradeErr: any) {
+          // Non-blocking: log generic error without exposing PIN
+          console.error('[Security] Failed to upgrade legacy PIN to hash:', upgradeErr?.message || 'Database error');
+        }
+      }
+
+      // 8. Execute recovery action
+      if (action === 'exit_kiosk') {
+        const win = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getAllWindows()[0];
+        if (win) {
+          win.setKiosk(false);
+          win.setFullScreen(false);
+          win.setSize(1400, 900);
+          win.center();
+          win.setMenuBarVisibility(true);
+        }
+        return { success: true, message: 'Mode Kiosk berhasil dinonaktifkan.' };
+      } else if (action === 'quit_app') {
+        if (callbacks?.onQuitRequested) {
+          callbacks.onQuitRequested();
+        } else {
+          app.quit();
+        }
+        return { success: true };
+      }
+
+      return { success: false, error: 'Aksi tidak dikenal.' };
+    } catch (err: any) {
+      console.error('[IPC] admin-kiosk-recovery error:', err?.message || 'Internal error');
+      return { success: false, error: 'Terjadi kesalahan sistem saat memproses recovery.' };
+    }
+  });
+
   console.log('[IPC] Handlers registered');
-}
+}

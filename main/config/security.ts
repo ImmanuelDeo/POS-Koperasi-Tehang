@@ -130,3 +130,33 @@ export function isOriginAllowed(origin: string | undefined, port: number = 3001)
 
   return false;
 }
+
+/**
+ * Checks whether production kiosk mode is enabled.
+ * Only activates when BOTH NODE_ENV === 'production' AND ENABLE_KIOSK_MODE === 'true'.
+ * In development, kiosk mode is ALWAYS disabled.
+ */
+export function isKioskModeEnabled(): boolean {
+  return process.env.NODE_ENV === 'production' && process.env.ENABLE_KIOSK_MODE === 'true';
+}
+
+/**
+ * Validates whether a URL or origin originates from the local embedded application server.
+ * Used for IPC sender verification and will-navigate restrictions.
+ */
+export function isLocalAppOrigin(urlStr: string | undefined, port: number = 3001): boolean {
+  if (!urlStr) return false;
+  try {
+    const parsed = new URL(urlStr);
+    const host = parsed.hostname;
+    const urlPort = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+
+    const isLocalHost = host === 'localhost' || host === '127.0.0.1';
+    const isMatchingPort = String(urlPort) === String(port);
+
+    return isLocalHost && isMatchingPort;
+  } catch {
+    return false;
+  }
+}
+

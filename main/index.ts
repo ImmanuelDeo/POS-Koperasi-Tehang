@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage, shell, session } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Bonjour } from 'bonjour-service';
@@ -9,7 +9,8 @@ import { initPrinter, printReceipt, printKOT } from './printers/thermal';
 import { registerIpcHandlers } from './ipc';
 import log from 'electron-log/main';
 import { autoUpdater } from 'electron-updater';
-import { isAutoUpdaterEnabled } from './config/security';
+import { isAutoUpdaterEnabled, isKioskModeEnabled, isLocalAppOrigin } from './config/security';
+
 
 log.initialize();
 log.transports.file.level = 'info';
@@ -129,30 +130,103 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
 function createWindow(): void {
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 768,
-    title: 'Flo',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-    show: false,
-  });
+  const kioskActive = isKioskModeEnabled();
+
+  if (kioskActive) {
+    mainWindow = new BrowserWindow({
+      width: 1400,
+      height: 900,
+      kiosk: true,
+      fullscreen: true,
+      resizable: false,
+      frame: false,
+      autoHideMenuBar: true,
+      title: 'Flo POS Koperasi',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+        devTools: false,
+      },
+      show: false,
+    });
+  } else {
+    mainWindow = new BrowserWindow({
+      width: 1400,
+      height: 900,
+      minWidth: 1024,
+      minHeight: 768,
+      resizable: true,
+      frame: true,
+      fullscreen: false,
+      kiosk: false,
+      title: 'Flo',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+        devTools: isDev,
+      },
+      show: false,
+    });
+  }
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
-    // Open DevTools to debug logo issue
-    mainWindow?.webContents.openDevTools();
   });
 
   // Always load from the embedded Express server (serves static Next.js export).
-  // This avoids file:// protocol issues and keeps dev/prod behaviour identical.
   mainWindow.loadURL(`http://localhost:${PORT}`);
+
+  // Navigation restriction: only allow local app origin
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isDev && !isLocalAppOrigin(navigationUrl, PORT)) {
+      console.warn('[Security] Blocked unauthorized navigation attempt:', navigationUrl);
+      event.preventDefault();
+    }
+  });
+
+  // Shortcut blocking and admin recovery hotkey for production kiosk mode
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (isKioskModeEnabled()) {
+      const key = input.key.toUpperCase();
+      const isCtrlOrCmd = input.control || input.meta;
+
+      // Admin Recovery shortcut: Ctrl+Shift+X
+      if (isCtrlOrCmd && input.shift && key === 'X') {
+        event.preventDefault();
+        mainWindow?.webContents.send('open-admin-exit-modal');
+        return;
+      }
+
+      // Block browser reload: F5, Ctrl+R, Ctrl+Shift+R
+      if (key === 'F5' || (isCtrlOrCmd && key === 'R')) {
+        event.preventDefault();
+        return;
+      }
+
+      // Block DevTools shortcuts: F12, Ctrl+Shift+I
+      if (key === 'F12' || (isCtrlOrCmd && input.shift && key === 'I')) {
+        event.preventDefault();
+        return;
+      }
+
+      // Block history navigation: Alt+Left, Alt+Right
+      if (input.alt && (key === 'ARROWLEFT' || key === 'ARROWRIGHT')) {
+        event.preventDefault();
+        return;
+      }
+
+      // Intercept Alt+F4: reveal Admin Recovery dialog instead of closing
+      if (input.alt && key === 'F4') {
+        event.preventDefault();
+        mainWindow?.webContents.send('open-admin-exit-modal');
+        return;
+      }
+    }
+  });
 
   // Allow target="_blank" links to open new windows for local URLs (e.g. the KDS page).
   // External URLs are sent to the system browser instead.
@@ -180,8 +254,13 @@ function createWindow(): void {
 
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
-      event.preventDefault();
-      mainWindow?.hide();
+      if (isKioskModeEnabled()) {
+        event.preventDefault();
+        mainWindow?.webContents.send('open-admin-exit-modal');
+        return;
+      }
+      // Normal close in development & production non-kiosk
+      isQuitting = true;
     }
   });
 
@@ -222,7 +301,13 @@ function createWindow(): void {
   });
 }
 
+
 function createTray(): void {
+  // In production kiosk mode, do not create system tray to prevent bypassing kiosk
+  if (isKioskModeEnabled()) {
+    return;
+  }
+
   const iconPath = isDev
     ? path.join(__dirname, '../../assets/icon.png')
     : path.join(process.resourcesPath, 'assets/icon.png');
@@ -271,6 +356,12 @@ function stopMdns(): void {
 }
 
 function createMenu(): void {
+  // In production kiosk mode, disable top application menu completely
+  if (isKioskModeEnabled()) {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'File',
@@ -358,6 +449,11 @@ async function initialize(): Promise<void> {
   try {
     console.log('[Flo] Initializing...');
 
+    // Security: deny all unexpected permission requests
+    session.defaultSession?.setPermissionRequestHandler((_webContents, _permission, callback) => {
+      callback(false);
+    });
+
     console.log('[Flo] Initializing database...');
     initDatabase();
 
@@ -374,7 +470,12 @@ async function initialize(): Promise<void> {
     await initPrinter();
 
     console.log('[Flo] Registering IPC handlers...');
-    registerIpcHandlers();
+    registerIpcHandlers({
+      onQuitRequested: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    });
 
     ipcMain.handle('get-update-status', () => ({
       updateAvailable,
@@ -400,9 +501,11 @@ async function initialize(): Promise<void> {
       };
     });
 
-    console.log('[Flo] Creating window...');
+    console.log('[Flo] Setting up menu and window...');
+    createMenu();
     createWindow();
     createTray();
+
     if (isAutoUpdaterEnabled()) {
       setupAutoUpdater();
       setTimeout(() => checkForUpdates(), 5000);
@@ -417,6 +520,7 @@ async function initialize(): Promise<void> {
     app.quit();
   }
 }
+
 
 app.whenReady().then(initialize);
 

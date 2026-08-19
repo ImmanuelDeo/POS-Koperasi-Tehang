@@ -264,3 +264,12 @@ export interface CartItem {
   special_instructions: string;
 }
 
+export type AdminRecoveryAction = 'exit_kiosk' | 'quit_app';
+
+export interface AdminKioskRecoveryResult {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+
