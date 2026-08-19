@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 let db: Database.Database;
 
@@ -78,9 +78,19 @@ function getCurrentSchemaVersion(): number {
   }
 }
 
+function columnExists(tableName: string, columnName: string): boolean {
+  try {
+    const columns = db.pragma(`table_info(${tableName})`) as any[];
+    return columns.some((col: any) => col.name === columnName);
+  } catch {
+    return false;
+  }
+}
+
 function dropAllTables(): void {
   console.log('[DB] Dropping all tables for schema migration...');
   const tables = [
+    'salary_deductions', 'stock_movements',
     'loyalty_ledger', 'bills', 'order_items', 'orders',
     'addon_group_product', 'addons', 'addon_groups',
     'printers', 'kds_pairing_tokens', 'settings',
@@ -151,8 +161,138 @@ function runIncrementalMigrations(fromVersion: number): void {
     }
   }
 
+  // Migration from version 8 to 9 (POS Koperasi Sembako)
+  if (fromVersion < 9) {
+    console.log('[DB] Running migration to v9 (POS Koperasi Sembako)...');
+
+    const migrationV9 = db.transaction(() => {
+      // 1. Update products table columns
+      if (!columnExists('products', 'unit')) {
+        db.exec(`ALTER TABLE products ADD COLUMN unit TEXT NOT NULL DEFAULT 'pcs' CHECK(unit IN ('pcs','kg','gram','liter','ml','pack','pouch','box','sak','tray'))`);
+      }
+      if (!columnExists('products', 'allow_decimal')) {
+        db.exec(`ALTER TABLE products ADD COLUMN allow_decimal INTEGER NOT NULL DEFAULT 0 CHECK(allow_decimal IN (0, 1))`);
+      }
+      if (!columnExists('products', 'member_price')) {
+        db.exec(`ALTER TABLE products ADD COLUMN member_price INTEGER NULL CHECK(member_price IS NULL OR member_price >= 0)`);
+      }
+      if (!columnExists('products', 'min_reorder_qty')) {
+        db.exec(`ALTER TABLE products ADD COLUMN min_reorder_qty REAL NOT NULL DEFAULT 0 CHECK(min_reorder_qty >= 0)`);
+      }
+
+      // 2. Update customers table columns
+      if (!columnExists('customers', 'member_no')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN member_no TEXT NULL`);
+      }
+      if (!columnExists('customers', 'employee_id')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN employee_id TEXT NULL`);
+      }
+      if (!columnExists('customers', 'department')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN department TEXT NULL`);
+      }
+      if (!columnExists('customers', 'is_member')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN is_member INTEGER NOT NULL DEFAULT 0 CHECK(is_member IN (0, 1))`);
+      }
+      if (!columnExists('customers', 'salary_deduction_enabled')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN salary_deduction_enabled INTEGER NOT NULL DEFAULT 1 CHECK(salary_deduction_enabled IN (0, 1))`);
+      }
+      if (!columnExists('customers', 'monthly_deduction_limit')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN monthly_deduction_limit INTEGER NOT NULL DEFAULT 0 CHECK(monthly_deduction_limit >= 0)`);
+      }
+      if (!columnExists('customers', 'outstanding_deduction_limit')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN outstanding_deduction_limit INTEGER NOT NULL DEFAULT 0 CHECK(outstanding_deduction_limit >= 0)`);
+      }
+
+      // 3. Customer partial unique indexes & active index
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_member_no_unique ON customers(member_no) WHERE member_no IS NOT NULL`);
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_employee_id_unique ON customers(employee_id) WHERE employee_id IS NOT NULL`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_customers_is_member_active ON customers(is_member, is_active)`);
+
+      // 4. Create stock_movements table & indexes
+      db.exec(`CREATE TABLE IF NOT EXISTS stock_movements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id TEXT NOT NULL,
+        movement_type TEXT NOT NULL CHECK (
+          movement_type IN ('initial', 'purchase', 'sale', 'adjustment', 'refund', 'opname', 'void')
+        ),
+        quantity REAL NOT NULL,
+        balance_before REAL NOT NULL,
+        balance_after REAL NOT NULL,
+        unit_cost INTEGER NOT NULL DEFAULT 0 CHECK(unit_cost >= 0),
+        reference_type TEXT,
+        reference_id TEXT,
+        notes TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (product_id) REFERENCES products(id),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+      )`);
+
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_stock_movements_product_created ON stock_movements(product_id, created_at)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_stock_movements_reference ON stock_movements(reference_type, reference_id)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_stock_movements_created_by ON stock_movements(created_by)`);
+
+      // 5. Create salary_deductions table & indexes
+      db.exec(`CREATE TABLE IF NOT EXISTS salary_deductions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deduction_number TEXT NOT NULL UNIQUE,
+        member_id TEXT NOT NULL,
+        order_id INTEGER NOT NULL,
+        bill_id INTEGER NOT NULL,
+        amount INTEGER NOT NULL CHECK(amount > 0),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'confirmed', 'rejected', 'cancelled')),
+        period_month TEXT NOT NULL,
+        notes TEXT,
+        rejection_reason TEXT,
+        cancellation_reason TEXT,
+        created_by TEXT NOT NULL,
+        confirmed_by TEXT,
+        rejected_by TEXT,
+        cancelled_by TEXT,
+        confirmed_at TEXT,
+        rejected_at TEXT,
+        cancelled_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES customers(id),
+        FOREIGN KEY (order_id) REFERENCES orders(id),
+        FOREIGN KEY (bill_id) REFERENCES bills(id),
+        FOREIGN KEY (created_by) REFERENCES users(id),
+        FOREIGN KEY (confirmed_by) REFERENCES users(id),
+        FOREIGN KEY (rejected_by) REFERENCES users(id),
+        FOREIGN KEY (cancelled_by) REFERENCES users(id)
+      )`);
+
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_salary_deductions_member_status_period ON salary_deductions(member_id, status, period_month)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_salary_deductions_status_created ON salary_deductions(status, created_at)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_salary_deductions_bill ON salary_deductions(bill_id)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_salary_deductions_order ON salary_deductions(order_id)`);
+
+      // 6. Insert new default cooperative settings (without overwriting existing)
+      insert('business_type', 'cooperative');
+      insert('currency', 'IDR');
+      insert('currency_symbol', 'Rp');
+      insert('timezone', 'Asia/Jakarta');
+      insert('tax_scheme', 'none');
+      insert('tax_registered', 'false');
+      insert('tax_rate', '0');
+      insert('salary_deduction_monthly_limit_enabled', 'true');
+      insert('salary_deduction_outstanding_limit_enabled', 'true');
+      insert('salary_deduction_cutoff_day', '25');
+      insert('allow_negative_stock', 'false');
+      insert('stock_opname_require_pin', 'true');
+    });
+
+    migrationV9();
+    console.log('[DB] Migration to v9 complete');
+  }
+
   // Update schema version
-  insert('schema_version', String(SCHEMA_VERSION));
+  db.prepare(`
+    INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(String(SCHEMA_VERSION));
   console.log('[DB] Incremental migration complete');
 }
 
@@ -181,7 +321,13 @@ function createSchema(): void {
       category_id TEXT,
       name TEXT NOT NULL,
       description TEXT,
+      unit TEXT NOT NULL DEFAULT 'pcs'
+        CHECK(unit IN ('pcs','kg','gram','liter','ml','pack','pouch','box','sak','tray')),
+      allow_decimal INTEGER NOT NULL DEFAULT 0
+        CHECK(allow_decimal IN (0, 1)),
       price REAL NOT NULL DEFAULT 0,
+      member_price INTEGER NULL
+        CHECK(member_price IS NULL OR member_price >= 0),
       cost REAL DEFAULT 0,
       sku TEXT,
       barcode TEXT,
@@ -191,6 +337,8 @@ function createSchema(): void {
       track_inventory INTEGER DEFAULT 0,
       stock_quantity REAL DEFAULT 0,
       low_stock_threshold REAL DEFAULT 5,
+      min_reorder_qty REAL NOT NULL DEFAULT 0
+        CHECK(min_reorder_qty >= 0),
       tax_type TEXT DEFAULT 'none',
       tax_rate REAL DEFAULT 0,
       cb_percent REAL DEFAULT 0,
@@ -262,16 +410,90 @@ function createSchema(): void {
 
     CREATE TABLE customers (
       id TEXT PRIMARY KEY,
+      member_no TEXT NULL,
+      employee_id TEXT NULL,
       name TEXT NOT NULL,
+      department TEXT NULL,
       email TEXT,
       phone TEXT,
       country_code TEXT DEFAULT '+91',
       address TEXT,
       loyalty_points INTEGER DEFAULT 0,
+      is_member INTEGER NOT NULL DEFAULT 0
+        CHECK(is_member IN (0, 1)),
+      salary_deduction_enabled INTEGER NOT NULL DEFAULT 1
+        CHECK(salary_deduction_enabled IN (0, 1)),
+      monthly_deduction_limit INTEGER NOT NULL DEFAULT 0
+        CHECK(monthly_deduction_limit >= 0),
+      outstanding_deduction_limit INTEGER NOT NULL DEFAULT 0
+        CHECK(outstanding_deduction_limit >= 0),
       notes TEXT,
       is_active INTEGER DEFAULT 1,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- ── Stock Movements (Inventory Audit Ledger) ─────────────────────────
+
+    CREATE TABLE stock_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id TEXT NOT NULL,
+      movement_type TEXT NOT NULL CHECK (
+        movement_type IN (
+          'initial',
+          'purchase',
+          'sale',
+          'adjustment',
+          'refund',
+          'opname',
+          'void'
+        )
+      ),
+      quantity REAL NOT NULL,
+      balance_before REAL NOT NULL,
+      balance_after REAL NOT NULL,
+      unit_cost INTEGER NOT NULL DEFAULT 0 CHECK(unit_cost >= 0),
+      reference_type TEXT,
+      reference_id TEXT,
+      notes TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+
+    -- ── Salary Deductions (Internal Cooperative Receivables) ─────────────
+
+    CREATE TABLE salary_deductions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      deduction_number TEXT NOT NULL UNIQUE,
+      member_id TEXT NOT NULL,
+      order_id INTEGER NOT NULL,
+      bill_id INTEGER NOT NULL,
+      amount INTEGER NOT NULL CHECK(amount > 0),
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'confirmed', 'rejected', 'cancelled')),
+      period_month TEXT NOT NULL,
+      notes TEXT,
+      rejection_reason TEXT,
+      cancellation_reason TEXT,
+      created_by TEXT NOT NULL,
+      confirmed_by TEXT,
+      rejected_by TEXT,
+      cancelled_by TEXT,
+      confirmed_at TEXT,
+      rejected_at TEXT,
+      cancelled_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (member_id) REFERENCES customers(id),
+      FOREIGN KEY (order_id) REFERENCES orders(id),
+      FOREIGN KEY (bill_id) REFERENCES bills(id),
+      FOREIGN KEY (created_by) REFERENCES users(id),
+      FOREIGN KEY (confirmed_by) REFERENCES users(id),
+      FOREIGN KEY (rejected_by) REFERENCES users(id),
+      FOREIGN KEY (cancelled_by) REFERENCES users(id)
     );
 
     -- ── Users (authentication + roles) ──────────────────────────────────
@@ -427,6 +649,30 @@ function createSchema(): void {
     CREATE INDEX idx_orders_user       ON orders(user_id);
     CREATE INDEX idx_order_items_order ON order_items(order_id);
     CREATE INDEX idx_bills_order       ON bills(order_id);
+
+    -- ── Schema v9 Indexes (POS Koperasi) ──────────────────────────────────
+    CREATE UNIQUE INDEX idx_customers_member_no_unique
+      ON customers(member_no) WHERE member_no IS NOT NULL;
+    CREATE UNIQUE INDEX idx_customers_employee_id_unique
+      ON customers(employee_id) WHERE employee_id IS NOT NULL;
+    CREATE INDEX idx_customers_is_member_active
+      ON customers(is_member, is_active);
+
+    CREATE INDEX idx_stock_movements_product_created
+      ON stock_movements(product_id, created_at);
+    CREATE INDEX idx_stock_movements_reference
+      ON stock_movements(reference_type, reference_id);
+    CREATE INDEX idx_stock_movements_created_by
+      ON stock_movements(created_by);
+
+    CREATE INDEX idx_salary_deductions_member_status_period
+      ON salary_deductions(member_id, status, period_month);
+    CREATE INDEX idx_salary_deductions_status_created
+      ON salary_deductions(status, created_at);
+    CREATE INDEX idx_salary_deductions_bill
+      ON salary_deductions(bill_id);
+    CREATE INDEX idx_salary_deductions_order
+      ON salary_deductions(order_id);
   `);
 }
 
