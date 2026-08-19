@@ -190,29 +190,62 @@ export default function ProductGrid({
                   </div>
                 )}
 
-                <h3 className="font-medium text-gray-900 text-sm line-clamp-2 leading-snug">{product.name}</h3>
-                <div className="flex items-center justify-between mt-1">
-                  <p className="text-brand font-bold">
-                    {fmt(Number(product.price))}
-                  </p>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {!showProductImages && product.tags && product.tags.length > 0 && (
-                      <TagBadge tag={product.tags[0]} />
-                    )}
-                    {product.addon_groups && product.addon_groups.length > 0 && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onProductClick(product);
-                        }}
-                        className="text-gray-400 hover:text-gray-600 transition-colors"
-                        title={t('pos.customisable')}
-                      >
-                        <SlidersHorizontal size={12} />
-                      </button>
-                    )}
-                  </div>
+                <div className="flex items-start justify-between gap-1 mb-1">
+                  <h3 className="font-semibold text-gray-900 text-sm line-clamp-2 leading-snug flex-1">
+                    {product.name}
+                  </h3>
+                  {product.unit && (
+                    <span className="text-[10px] font-semibold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded shrink-0">
+                      /{product.unit}
+                    </span>
+                  )}
                 </div>
+
+                {/* Stock information if tracked */}
+                {!!product.track_inventory && (
+                  <p className="text-[11px] text-gray-500 mb-1">
+                    Stok: <span className={`font-semibold ${product.stock_quantity <= 0 ? 'text-red-600' : product.stock_quantity <= (product.low_stock_threshold || 5) ? 'text-amber-600' : 'text-gray-700'}`}>{product.stock_quantity} {product.unit || 'pcs'}</span>
+                  </p>
+                )}
+
+                {/* Pricing layout */}
+                {(() => {
+                  const hasValidMemberPrice = typeof product.member_price === 'number' && Number.isSafeInteger(product.member_price) && product.member_price > 0;
+                  const hasActiveMember = !!cart.member;
+
+                  if (hasActiveMember && hasValidMemberPrice) {
+                    return (
+                      <div className="mt-1 pt-1 border-t border-gray-100">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-emerald-700 font-bold text-sm">
+                            {fmt(product.member_price!)}
+                          </span>
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded">
+                            Member
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-400 line-through">
+                          Umum: {fmt(Number(product.price))}
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="mt-1 pt-1 border-t border-gray-100">
+                      <div className="flex items-center justify-between">
+                        <p className="text-brand font-bold text-sm">
+                          {fmt(Number(product.price))}
+                        </p>
+                      </div>
+                      {hasValidMemberPrice && (
+                        <p className="text-[10px] text-emerald-700 font-medium mt-0.5">
+                          Member: <span className="font-bold">{fmt(product.member_price!)}</span>
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
               </div>
             );

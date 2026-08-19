@@ -1,125 +1,127 @@
 'use client';
 
 import {
-  ShoppingCart, UtensilsCrossed, Package, Truck,
-  Plus, Minus, Trash2, Pause, MapPin, SquarePen,
+  ShoppingCart,
+  Plus,
+  Minus,
+  Trash2,
+  User,
+  UserCheck,
+  CreditCard,
+  Building2,
+  Sparkles,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCartStore } from '@/store/cart';
-import { useHeldOrdersStore } from '@/store/held-orders';
-import { useAuthStore } from '@/store/auth';
-import { usePosSettingsStore } from '@/store/pos-settings';
-import { useI18n } from '@/hooks/useI18n';
-import toast from 'react-hot-toast';
 import type { Table, Order, OrderItem, CartItem } from '@/lib/types';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
 
 interface Props {
-  tables: Table[];
-  currency: string;
+  tables?: Table[];
+  currency?: string;
   submitting: boolean;
   onPlaceOrder: () => void;
-  onShowTablePicker: () => void;
+  onShowTablePicker?: () => void;
+  onOpenMemberSelector?: () => void;
   onEditItem?: (item: CartItem) => void;
   variant?: 'sidebar' | 'drawer';
   existingOrder?: Order | null;
 }
 
-const orderTypeIcons = {
-  dine_in: UtensilsCrossed,
-  takeaway: Package,
-  delivery: Truck,
-};
-
-export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem, variant = 'sidebar', existingOrder }: Props) {
+export default function CartPanel({
+  submitting,
+  onPlaceOrder,
+  onOpenMemberSelector,
+  variant = 'sidebar',
+  existingOrder,
+}: Props) {
   const cart = useCartStore();
-  const heldOrders = useHeldOrdersStore();
-  const { currentTenant } = useAuthStore();
-  const billingType = usePosSettingsStore((s) => s.billingType);
-  const { t } = useI18n();
-  const isRestaurant = (currentTenant?.business_type ?? 'restaurant') === 'restaurant';
   const fmt = useFormatCurrency();
-  const canHold = isRestaurant && cart.orderType === 'dine_in' && cart.tableId && cart.items.length > 0 && billingType === 'postpaid';
-
-  const handleHold = async () => {
-    if (!cart.tableId) {
-      toast.error(t('pos.selectTableFirst'));
-      return;
-    }
-    if (cart.items.length === 0) {
-      toast.error(t('pos.cartEmpty'));
-      return;
-    }
-    const tableName = tables.find((t) => t.id === cart.tableId)?.name || cart.tableId;
-    try {
-      await heldOrders.holdOrder(cart.tableId, cart.items, cart.customerId, cart.guestCount, cart.orderNotes);
-      cart.clearCart();
-      toast.success(t('pos.orderHeldFor', { table: tableName }));
-    } catch (err: unknown) {
-      const e = err as Error;
-      toast.error(e.message || t('pos.holdOrderFailed'));
-    }
-  };
+  const member = cart.member;
+  const savings = cart.memberSavings();
+  const totalAmount = cart.subtotal();
 
   const isDrawer = variant === 'drawer';
 
   return (
-    <div className={
-      isDrawer
-        ? 'flex flex-col w-full'
-        : 'w-full h-full bg-white rounded-xl border border-gray-100 flex flex-col shadow-sm'
-    }>
-      {/* Order Type */}
-      <div className="p-4 border-b border-gray-100 space-y-2">
-        <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
-          {(['dine_in', 'takeaway', 'delivery'] as const)
-            .filter((type) => isRestaurant || type !== 'dine_in')
-            .map((type) => {
-              const Icon = orderTypeIcons[type];
-              const label = type === 'dine_in' ? t('pos.orderTypeDineIn') : type === 'takeaway' ? t('pos.orderTypeTakeaway') : t('pos.orderTypeDelivery');
-              return (
-                <button
-                  key={type}
-                  onClick={() => cart.setOrderType(type)}
-                  className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-md text-xs font-medium transition-colors ${
-                    cart.orderType === type
-                      ? 'bg-white text-brand shadow-sm'
-                      : 'text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  <Icon size={14} />
-                  {label}
-                </button>
-              );
-            })}
-        </div>
+    <div
+      className={
+        isDrawer
+          ? 'flex flex-col w-full h-full'
+          : 'w-full h-full bg-white rounded-2xl border border-gray-200/80 flex flex-col shadow-sm overflow-hidden'
+      }
+    >
+      {/* ── Member / Customer Card Header ───────────────────────────────────── */}
+      <div className="p-3.5 border-b border-gray-100 bg-gradient-to-br from-gray-50 to-white">
+        {member ? (
+          <div className="p-3 rounded-xl bg-emerald-50/80 border border-emerald-200/80 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                  <UserCheck size={15} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-gray-900 truncate">{member.name}</p>
+                  <p className="text-[11px] font-mono text-emerald-800">
+                    {member.member_no} {member.employee_id ? `• NIK: ${member.employee_id}` : ''}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenMemberSelector}
+                className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-white px-2 py-1 rounded-md border border-emerald-300 hover:bg-emerald-100 transition-colors shrink-0"
+              >
+                Ganti (F2)
+              </button>
+            </div>
 
-        {/* Delivery address — shown inline when delivery is selected */}
-        {cart.orderType === 'delivery' && (
-          <div className="flex items-center gap-2">
-            <MapPin size={14} className="text-gray-400 shrink-0" />
-            <input
-              type="text"
-              value={cart.deliveryAddress}
-              onChange={(e) => cart.setDeliveryAddress(e.target.value)}
-              placeholder={t('pos.deliveryAddress')}
-              className="flex-1 px-3 py-1.5 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-brand focus:border-brand outline-none"
-            />
+            <div className="pt-1.5 border-t border-emerald-200/60 flex items-center justify-between text-[11px] text-gray-600">
+              <span className="flex items-center gap-1">
+                <Building2 size={12} className="text-gray-400" />
+                {member.department || 'Umum'}
+              </span>
+              <span className="flex items-center gap-1 font-medium">
+                <CreditCard size={12} className="text-emerald-700" />
+                Sisa Limit: <strong className="text-emerald-900">{fmt(member.remaining_monthly_limit)}</strong>
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between p-2.5 rounded-xl bg-gray-50 border border-gray-200">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-gray-200 text-gray-600 flex items-center justify-center shrink-0">
+                <User size={15} />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-gray-800">Pembeli Umum</p>
+                <p className="text-[10px] text-gray-400">Harga standar / non-member</p>
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onOpenMemberSelector}
+              className="text-xs font-semibold h-7 px-2.5 bg-white hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-300"
+            >
+              + Pilih Member (F2)
+            </Button>
           </div>
         )}
       </div>
 
-      {/* Cart Items */}
-      <div className={isDrawer ? 'overflow-y-auto p-4 max-h-[40vh]' : 'flex-1 overflow-y-auto p-4'}>
-        {/* Previously ordered items (add-items mode) */}
+      {/* ── Cart Items List ─────────────────────────────────────────────────── */}
+      <div className={isDrawer ? 'overflow-y-auto p-4 max-h-[45vh]' : 'flex-1 overflow-y-auto p-3.5'}>
+        {/* Previously ordered items (if existing) */}
         {existingOrder && existingOrder.items && existingOrder.items.filter((i: OrderItem) => i.status !== 'cancelled').length > 0 && (
           <div className="mb-3 pb-3 border-b border-dashed border-gray-200">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">{t('pos.alreadyOrdered')}</p>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Item Sebelumnya</p>
             <div className="space-y-1.5">
               {existingOrder.items.filter((i: OrderItem) => i.status !== 'cancelled').map((item: OrderItem) => (
-                <div key={item.id} className="flex justify-between items-center">
-                  <span className="text-xs text-gray-500">{item.quantity}× {item.product_name}</span>
-                  <span className="text-xs text-gray-400">{fmt(Number(item.total))}</span>
+                <div key={item.id} className="flex justify-between items-center text-xs text-gray-500">
+                  <span>{item.quantity}× {item.product_name}</span>
+                  <span className="text-gray-400">{fmt(Number(item.total))}</span>
                 </div>
               ))}
             </div>
@@ -127,114 +129,165 @@ export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem
         )}
 
         {cart.items.length === 0 ? (
-          <div className={`flex flex-col items-center justify-center text-gray-400 ${existingOrder ? 'py-4' : isDrawer ? 'py-8' : 'h-full'}`}>
-            <ShoppingCart size={existingOrder ? 24 : 40} />
-            <p className="mt-2 text-sm">{existingOrder ? t('pos.addNewItemsAbove') : t('pos.cartEmpty')}</p>
+          <div className={`flex flex-col items-center justify-center text-gray-400 ${isDrawer ? 'py-8' : 'h-full'}`}>
+            <div className="w-16 h-16 rounded-2xl bg-gray-50 flex items-center justify-center mb-2">
+              <ShoppingCart size={28} className="text-gray-300" />
+            </div>
+            <p className="text-sm font-semibold text-gray-600">Keranjang Masih Kosong</p>
+            <p className="text-xs text-gray-400 text-center max-w-[200px] mt-0.5">
+              Scan barcode produk atau pilih barang dari katalog
+            </p>
           </div>
         ) : (
-          <div className="space-y-3">
-            {cart.items.map((item) => (
-              <div key={item.id} className="flex items-start gap-3">
-                <button
-                  onClick={() => cart.removeItem(item.id)}
-                  className="w-6 h-6 rounded-full text-gray-300 hover:text-red-500 hover:bg-red-50 flex items-center justify-center transition-colors mt-0.5 shrink-0"
+          <div className="space-y-2.5">
+            {cart.items.map((item) => {
+              const regPrice = Number(item.product.price) || 0;
+              const effectivePrice = typeof item.unit_price === 'number' ? item.unit_price : regPrice;
+              const isDiscounted = regPrice > effectivePrice;
+              const itemTotal = effectivePrice * item.quantity;
+
+              return (
+                <div
+                  key={item.id}
+                  className="p-2.5 rounded-xl border border-gray-100 bg-white hover:border-gray-200 transition-all flex items-start gap-2.5"
                 >
-                  <Trash2 size={13} />
-                </button>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-medium text-gray-900 truncate">
-                      {item.product.name}
-                    </p>
-                    {onEditItem && (
-                      <button
-                        onClick={() => onEditItem(item)}
-                        className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 hover:bg-amber-200 text-xs font-medium transition-colors"
-                      >
-                        <SquarePen size={12} />
-                        {t('common.edit')}
-                      </button>
+                  {/* Delete button */}
+                  <button
+                    type="button"
+                    onClick={() => cart.removeItem(item.id)}
+                    className="w-6 h-6 rounded-lg text-gray-300 hover:text-red-600 hover:bg-red-50 flex items-center justify-center transition-colors mt-0.5 shrink-0"
+                    title="Hapus barang"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+
+                  {/* Item Description */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-1">
+                      <p className="text-xs font-bold text-gray-900 truncate">
+                        {item.product.name}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                      <span className="text-xs font-semibold text-gray-700">
+                        {fmt(effectivePrice)}
+                      </span>
+                      {item.product.unit && (
+                        <span className="text-[10px] text-gray-400">
+                          /{item.product.unit}
+                        </span>
+                      )}
+                      {isDiscounted && (
+                        <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded">
+                          Hemat {fmt(regPrice - effectivePrice)}
+                        </span>
+                      )}
+                    </div>
+
+                    {item.special_instructions && (
+                      <p className="text-[11px] text-gray-400 italic mt-0.5 truncate">{item.special_instructions}</p>
                     )}
                   </div>
-                  {item.addons.length > 0 && (
-                    <div className="mt-0.5">
-                      {item.addons.map((a) => (
-                        <p key={a.id} className="text-xs text-gray-400">
-                          + {a.name}{(a.quantity || 1) > 1 ? ` ×${a.quantity}` : ''} {Number(a.price) > 0 && `(${fmt(Number(a.price) * (a.quantity || 1))})`}
-                        </p>
-                      ))}
-                    </div>
-                  )}
-                  {item.special_instructions && (
-                    <p className="text-xs text-gray-400 italic mt-0.5 break-words">{item.special_instructions}</p>
-                  )}
-                  <p className="text-sm text-gray-500">
-                    {fmt(Number(item.product.price))}
-                  </p>
+
+                  {/* Quantity Controls (Strict Positive Integer) */}
+                  <div className="flex items-center gap-1 shrink-0 bg-gray-50 p-0.5 rounded-lg border border-gray-200">
+                    <button
+                      type="button"
+                      onClick={() => cart.updateQuantity(item.id, item.quantity - 1)}
+                      className="w-6 h-6 rounded-md bg-white text-gray-700 hover:bg-gray-200 flex items-center justify-center transition-colors shadow-xs"
+                      title="Kurangi 1"
+                    >
+                      <Minus size={12} />
+                    </button>
+                    <span className="text-xs font-bold w-6 text-center text-gray-900">{item.quantity}</span>
+                    <button
+                      type="button"
+                      onClick={() => cart.updateQuantity(item.id, item.quantity + 1)}
+                      className="w-6 h-6 rounded-md bg-white text-gray-700 hover:bg-gray-200 flex items-center justify-center transition-colors shadow-xs"
+                      title="Tambah 1"
+                    >
+                      <Plus size={12} />
+                    </button>
+                  </div>
+
+                  {/* Line Total */}
+                  <div className="text-right shrink-0 min-w-[65px] self-center">
+                    <p className="text-xs font-bold text-gray-900">{fmt(itemTotal)}</p>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button
-                    onClick={() => cart.updateQuantity(item.id, item.quantity - 1)}
-                    className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors"
-                  >
-                    <Minus size={14} />
-                  </button>
-                  <span className="text-sm font-medium w-5 text-center">{item.quantity}</span>
-                  <button
-                    onClick={() => cart.updateQuantity(item.id, item.quantity + 1)}
-                    className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors"
-                  >
-                    <Plus size={14} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
 
-      {/* Cart Footer */}
-      <div className="p-4 border-t border-gray-100">
-        {/* Order Notes */}
+      {/* ── Cart Footer & Checkout ─────────────────────────────────────────── */}
+      <div className="p-3.5 sm:p-4 border-t border-gray-100 bg-gray-50/70">
+        {/* Order Notes (Optional) */}
         {cart.items.length > 0 && (
           <div className="mb-3">
-            <textarea
+            <input
+              type="text"
               value={cart.orderNotes}
-              onChange={(e) => cart.setOrderNotes(e.target.value.slice(0, 200))}
-              placeholder={t('pos.orderNotesPlaceholder')}
-              rows={2}
-              maxLength={200}
-              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+              onChange={(e) => cart.setOrderNotes(e.target.value.slice(0, 150))}
+              placeholder="Catatan transaksi (opsional)..."
+              maxLength={150}
+              className="w-full px-3 py-1.5 text-xs bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
             />
-            <p className="text-xs text-gray-400 text-right mt-0.5">{cart.orderNotes.length}/200</p>
           </div>
         )}
-        <div className="flex justify-between mb-1 text-sm">
-          <span className="text-gray-500">{t('pos.items')}</span>
-          <span className="font-medium">{cart.itemCount()}</span>
+
+        <div className="space-y-1.5 mb-3">
+          <div className="flex justify-between text-xs text-gray-500">
+            <span>Total Item ({cart.itemCount()})</span>
+            <span>{cart.items.length} jenis</span>
+          </div>
+
+          {savings > 0 && (
+            <div className="flex justify-between text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg border border-emerald-200/60">
+              <span className="flex items-center gap-1">
+                <Sparkles size={12} /> Hemat Member
+              </span>
+              <span>- {fmt(savings)}</span>
+            </div>
+          )}
+
+          <div className="flex justify-between items-baseline pt-1 border-t border-gray-200">
+            <span className="font-bold text-gray-900 text-sm">TOTAL TAGIHAN</span>
+            <span className="font-black text-xl text-emerald-700">
+              {fmt(totalAmount)}
+            </span>
+          </div>
         </div>
-        <div className="flex justify-between mb-4 text-lg">
-          <span className="font-semibold text-gray-900">{t('pos.subtotal')}</span>
-          <span className="font-bold text-brand">
-            {fmt(cart.subtotal())}
-          </span>
-        </div>
+
+        {/* Buttons */}
         <div className="flex gap-2">
-          {canHold && (
-            <Button variant="outline" onClick={handleHold} className="flex-1">
-              <Pause size={14} className="mr-1" /> {t('pos.holdButton')}
+          {cart.items.length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => cart.clearCart()}
+              disabled={submitting}
+              className="px-3 h-11 text-xs text-gray-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200"
+              title="Kosongkan Keranjang"
+            >
+              <Trash2 size={16} />
             </Button>
           )}
+
           <Button
+            type="button"
             onClick={onPlaceOrder}
             disabled={submitting || cart.items.length === 0}
-            className="flex-1"
+            className="flex-1 h-11 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-md active:scale-98 transition-all"
             size="lg"
           >
-            {submitting ? t('pos.placing') : t('pos.placeOrderButton')}
+            {submitting ? 'Memproses...' : `BAYAR (F4) • ${fmt(totalAmount)}`}
           </Button>
         </div>
       </div>
     </div>
   );
 }
+

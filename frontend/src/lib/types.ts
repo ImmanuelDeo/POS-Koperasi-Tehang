@@ -60,9 +60,13 @@ export interface Product {
   cb_percent?: number;
   tax_type: 'none' | 'inclusive' | 'exclusive';
   tax_rate: number;
-  track_inventory: boolean;
+  track_inventory: boolean | number;
   stock_quantity: number;
   low_stock_threshold: number | null;
+  unit?: string | null;
+  allow_decimal?: number | boolean;
+  member_price?: number | null;
+  min_reorder_qty?: number | null;
   is_active: boolean;
   available_online: boolean;
   has_image: boolean;
@@ -218,11 +222,45 @@ export interface KitchenStation {
   sort_order: number;
 }
 
+// Cooperative Member for POS Koperasi
+export interface CooperativeMember {
+  id: string;
+  member_no: string;
+  employee_id: string;
+  name: string;
+  department: string | null;
+  phone: string | null;
+  is_active: number;
+  salary_deduction_enabled: number;
+  monthly_deduction_limit: number;
+  outstanding_deduction_limit: number;
+  current_monthly_usage?: number;
+  current_outstanding?: number;
+  remaining_monthly_limit: number;
+  remaining_outstanding_limit: number;
+}
+
+export interface SalaryDeductionInfo {
+  id: string;
+  deduction_number: string;
+  member_id: string;
+  order_id: string;
+  bill_id: string;
+  amount: number;
+  period_month: string;
+  status: 'pending' | 'confirmed' | 'rejected' | 'cancelled';
+  member_name?: string;
+  member_no?: string;
+  employee_id?: string;
+}
+
 // Cart types for POS
 export interface CartItem {
   id: string;
   product: Product;
   quantity: number;
+  unit_price: number;
   addons: Addon[];
   special_instructions: string;
 }
+
