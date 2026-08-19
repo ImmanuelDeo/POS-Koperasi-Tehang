@@ -10,6 +10,9 @@ import { tableRoutes } from './tables';
 import { kitchenStationRoutes } from './kitchen-stations';
 import { kitchenRoutes } from './kitchen';
 import { customerRoutes } from './customers';
+import { memberRoutes } from './members';
+import { stockMovementRoutes } from './stock-movements';
+import { salaryDeductionRoutes } from './salary-deductions';
 import { staffRoutes } from './staff';
 import { settingsRoutes } from './settings';
 import { reportRoutes } from './reports';
@@ -61,6 +64,54 @@ export function registerRoutes(app: Express): void {
     addonGroupRoutes
   );
 
+  // ── POS Koperasi: Stock Movements & Inventory Ledger ───────────────────────
+  app.use(
+    '/api/stock-movements',
+    authenticateToken,
+    requireRole(['owner', 'admin', 'office_inventory']),
+    stockMovementRoutes
+  );
+
+  // ── POS Koperasi: Salary Deductions Management ─────────────────────────────
+  app.use(
+    '/api/salary-deductions',
+    authenticateToken,
+    (req: AuthenticatedRequest, res, next) => {
+      const user = req.user!;
+      if (user.role === 'owner') return next();
+
+      const effectiveRoles = [user.role];
+      if (user.role === 'manager') effectiveRoles.push('admin');
+      if (user.role === 'waiter') effectiveRoles.push('cashier');
+
+      const isAdmin = effectiveRoles.includes('admin');
+      const isHR = effectiveRoles.includes('office_hr');
+      const isCashier = effectiveRoles.includes('cashier');
+
+      // GET: Admin and Office HR can list deductions
+      if (req.method === 'GET') {
+        if (isAdmin || isHR) return next();
+        return res.status(403).json({ error: `Forbidden: Role '${user.role}' cannot view salary deductions list` });
+      }
+
+      // POST: Confirm and Reject (Office HR only); Cancel (Cashier and Admin)
+      if (req.method === 'POST') {
+        if (req.path.endsWith('/confirm') || req.path.endsWith('/reject')) {
+          if (isHR) return next();
+          return res.status(403).json({ error: `Forbidden: Only Office HR or Owner can confirm or reject salary deductions` });
+        }
+
+        if (req.path.endsWith('/cancel')) {
+          if (isAdmin || isCashier) return next();
+          return res.status(403).json({ error: `Forbidden: Role '${user.role}' cannot cancel salary deductions` });
+        }
+      }
+
+      return res.status(403).json({ error: `Forbidden: Role '${user.role}' is not authorized for salary deductions` });
+    },
+    salaryDeductionRoutes
+  );
+
   app.use(
     '/api/orders',
     authenticateToken,
@@ -104,6 +155,36 @@ export function registerRoutes(app: Express): void {
       DELETE: ['owner', 'admin'],
     }),
     customerRoutes
+  );
+
+  // ── POS Koperasi: Members Directory & Cashier Lookup ───────────────────────
+  app.use(
+    '/api/members',
+    authenticateToken,
+    (req: AuthenticatedRequest, res, next) => {
+      const user = req.user!;
+      if (user.role === 'owner') return next();
+
+      const effectiveRoles = [user.role];
+      if (user.role === 'manager') effectiveRoles.push('admin');
+      if (user.role === 'waiter') effectiveRoles.push('cashier');
+
+      // Cashier is only allowed on GET /lookup
+      if (effectiveRoles.includes('cashier')) {
+        if (req.method === 'GET' && (req.path === '/lookup' || req.path.startsWith('/lookup'))) {
+          return next();
+        }
+        return res.status(403).json({ error: 'Forbidden: Cashier can only access member lookup' });
+      }
+
+      // Office HR and Admin have full access (GET, POST, PUT, PATCH)
+      if (effectiveRoles.includes('office_hr') || effectiveRoles.includes('admin')) {
+        return next();
+      }
+
+      return res.status(403).json({ error: `Forbidden: Role '${user.role}' is not authorized for member management` });
+    },
+    memberRoutes
   );
 
   // Dual-mounted users / staff management

@@ -83,7 +83,8 @@ router.post('/', (req: Request, res: Response) => {
     const {
       category_id, name, sku, description, price, cost_price,
       tax_type, tax_rate, track_inventory, stock_quantity,
-      low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids
+      low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids,
+      unit, allow_decimal, member_price, min_reorder_qty
     } = req.body;
 
     if (!name || price === undefined) {
@@ -92,17 +93,34 @@ router.post('/', (req: Request, res: Response) => {
 
     const db = getDatabase();
     const id = uuidv4();
+
+    let parsedMemberPrice: number | null = null;
+    if (member_price !== undefined && member_price !== null && member_price !== '') {
+      const parsed = Math.max(0, Math.round(Number(member_price)));
+      if (!isNaN(parsed)) parsedMemberPrice = parsed;
+    }
+
+    const parsedMinReorderQty = min_reorder_qty !== undefined && !isNaN(Number(min_reorder_qty))
+      ? Math.max(0, Number(min_reorder_qty))
+      : 0;
+
     const result = db.prepare(`
       INSERT INTO products (id, category_id, name, sku, description, price, cost,
         tax_type, tax_rate, track_inventory, stock_quantity, low_stock_threshold,
-        is_active, image_url, sort_order, cb_percent, tags, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        is_active, image_url, sort_order, cb_percent, tags,
+        unit, allow_decimal, member_price, min_reorder_qty,
+        created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, category_id || null, name, sku || null, description || null, price, cost_price || 0,
       tax_type || 'none', tax_rate || 0,
       track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
       is_active !== false ? 1 : 0, image_url || null,
       sort_order || 0, cb_percent || 0, JSON.stringify(tags || []),
+      unit ? String(unit).trim() : 'pcs',
+      allow_decimal ? 1 : 0,
+      parsedMemberPrice,
+      parsedMinReorderQty,
       now(), now()
     );
 
@@ -123,7 +141,7 @@ router.post('/', (req: Request, res: Response) => {
 router.put('/:id', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const product = db.prepare('SELECT * FROM products WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const product = db.prepare('SELECT * FROM products WHERE id = ? AND deleted_at IS NULL').get(req.params.id) as any;
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
     }
@@ -131,8 +149,25 @@ router.put('/:id', (req: Request, res: Response) => {
     const {
       category_id, name, sku, description, price, cost_price,
       tax_type, tax_rate, track_inventory, stock_quantity,
-      low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids
+      low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids,
+      unit, allow_decimal, member_price, min_reorder_qty
     } = req.body;
+
+    let parsedMemberPrice = product.member_price;
+    if (member_price !== undefined) {
+      if (member_price === null || member_price === '') {
+        parsedMemberPrice = null;
+      } else {
+        const parsed = Math.max(0, Math.round(Number(member_price)));
+        if (!isNaN(parsed)) parsedMemberPrice = parsed;
+      }
+    }
+
+    let parsedMinReorderQty = product.min_reorder_qty;
+    if (min_reorder_qty !== undefined) {
+      const parsed = Number(min_reorder_qty);
+      if (!isNaN(parsed) && parsed >= 0) parsedMinReorderQty = parsed;
+    }
 
     db.prepare(`
       UPDATE products SET category_id = COALESCE(?, category_id), name = COALESCE(?, name),
@@ -146,17 +181,25 @@ router.put('/:id', (req: Request, res: Response) => {
         sort_order = COALESCE(?, sort_order),
         cb_percent = COALESCE(?, cb_percent),
         tags = COALESCE(?, tags),
+        unit = COALESCE(?, unit),
+        allow_decimal = COALESCE(?, allow_decimal),
+        member_price = ?,
+        min_reorder_qty = COALESCE(?, min_reorder_qty),
         updated_at = ?
       WHERE id = ?
     `).run(
       category_id, name, sku, description, price, cost_price,
       tax_type, tax_rate,
-      track_inventory ? 1 : track_inventory === 0 ? 0 : null,
+      track_inventory !== undefined ? (track_inventory ? 1 : 0) : null,
       stock_quantity, low_stock_threshold,
       is_active !== undefined ? (is_active ? 1 : 0) : null,
       image_url,
       sort_order, cb_percent,
       tags ? JSON.stringify(tags) : null,
+      unit !== undefined ? String(unit).trim() : null,
+      allow_decimal !== undefined ? (allow_decimal ? 1 : 0) : null,
+      parsedMemberPrice,
+      parsedMinReorderQty,
       now(), req.params.id
     );
 

@@ -1,6 +1,15 @@
 import { Router, Request, Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, generateBillNumber, now } from '../db';
 import { notifyKdsUpdate } from '../services/kds';
+import {
+  parseIntegerRupiah,
+  calculatePayrollPeriod,
+  validateMemberSalaryDeductionLimits,
+  generateDeductionNumber,
+  executeStockMovement,
+} from '../services/cooperative';
+import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -103,7 +112,9 @@ router.post('/generate', (req: Request, res: Response) => {
   }
 });
 
-router.post('/:id/payment', (req: Request, res: Response) => {
+// ── POST /api/bills/:id/payment ───────────────────────────────────────────────
+
+router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
   try {
     const { method, amount, transaction_id, notes } = req.body;
 
@@ -117,6 +128,198 @@ router.post('/:id/payment', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Bill not found' });
     }
 
+    const userId = req.user?.id || 'system';
+
+    // ── METHOD: SALARY DEDUCTION (POS Koperasi) ──────────────────────────────
+    if (method === 'salary_deduction') {
+      if (!bill.customer_id) {
+        return res.status(422).json({ error: 'Cannot process salary deduction: No customer associated with this bill.' });
+      }
+
+      const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(bill.customer_id) as any;
+      if (!customer) {
+        return res.status(404).json({ error: 'Customer not found' });
+      }
+
+      if (customer.is_member !== 1) {
+        return res.status(422).json({ error: `Customer '${customer.name}' is not registered as a cooperative member.` });
+      }
+
+      if (customer.is_active !== 1) {
+        return res.status(422).json({ error: `Member '${customer.name}' is inactive.` });
+      }
+
+      if (customer.salary_deduction_enabled !== 1) {
+        return res.status(422).json({ error: `Salary deduction is disabled for member '${customer.name}'.` });
+      }
+
+      // Validate integer amount if provided, or default to bill total/balance
+      const targetAmount = amount !== undefined ? amount : (bill.balance > 0 ? Math.round(bill.balance) : Math.round(bill.total));
+      const parsedAmountResult = parseIntegerRupiah(targetAmount, 'Salary deduction amount');
+      if (!parsedAmountResult.valid) {
+        return res.status(422).json({ error: parsedAmountResult.error });
+      }
+
+      const deductionAmount = parsedAmountResult.value!;
+
+      // ── Idempotency Check: Existing Deduction on this Bill ──────────────────
+      const existingDeduction = db.prepare(
+        'SELECT * FROM salary_deductions WHERE bill_id = ? AND status != ?'
+      ).get(bill.id, 'cancelled') as any;
+
+      if (existingDeduction) {
+        if (existingDeduction.amount === deductionAmount && existingDeduction.member_id === customer.id) {
+          // Idempotent retry: return existing state with 200 OK
+          return res.status(200).json({
+            bill,
+            salary_deduction: existingDeduction,
+            idempotent: true,
+          });
+        } else {
+          return res.status(409).json({
+            error: 'A salary deduction already exists for this bill with different parameters.',
+          });
+        }
+      }
+
+      if (bill.payment_status === 'paid') {
+        return res.status(400).json({ error: 'Bill is already paid' });
+      }
+
+      // Check for partial payment (disallowed in Task 3C)
+      const expectedBalance = Math.round(bill.balance);
+      if (deductionAmount !== expectedBalance) {
+        return res.status(422).json({
+          error: `Salary deduction must cover full remaining balance (Rp ${expectedBalance.toLocaleString('id-ID')}). Partial deductions are not allowed.`,
+        });
+      }
+
+      // Execute atomic transaction for salary deduction + stock reduction + bill payment
+      const paymentTx = db.transaction(() => {
+        const currentBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(bill.id) as any;
+        if (currentBill.payment_status === 'paid') {
+          return { error: 'Bill is already paid', status: 400 };
+        }
+
+        const periodMonth = calculatePayrollPeriod(db);
+
+        // Validate limits
+        const limitValidation = validateMemberSalaryDeductionLimits(db, customer, deductionAmount, periodMonth);
+        if (!limitValidation.allowed) {
+          return { error: limitValidation.error, status: 422 };
+        }
+
+        // Validate stock availability for tracked items in order
+        const orderItems = db.prepare(`
+          SELECT oi.product_id, oi.quantity, p.name as product_name, p.track_inventory, p.stock_quantity
+          FROM order_items oi
+          JOIN products p ON oi.product_id = p.id
+          WHERE oi.order_id = ? AND oi.status != 'cancelled'
+        `).all(bill.order_id) as any[];
+
+        const deductionId = uuidv4();
+        const deductionNumber = generateDeductionNumber(bill.bill_number);
+
+        // Deduct inventory per tracked item
+        for (const item of orderItems) {
+          if (item.track_inventory === 1) {
+            const stockResult = executeStockMovement(db, {
+              productId: item.product_id,
+              movementType: 'sale',
+              quantityChange: -item.quantity,
+              referenceType: 'salary_deduction',
+              referenceId: deductionId,
+              notes: `Sale via salary deduction ${deductionNumber}`,
+              createdBy: userId,
+            });
+
+            if (!stockResult.success) {
+              return { error: stockResult.error, status: 422 };
+            }
+          }
+        }
+
+        // Insert salary deduction record
+        db.prepare(`
+          INSERT INTO salary_deductions (
+            id, deduction_number, member_id, order_id, bill_id,
+            amount, period_month, status, created_by, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        `).run(
+          deductionId,
+          deductionNumber,
+          customer.id,
+          bill.order_id,
+          bill.id,
+          deductionAmount,
+          periodMonth,
+          userId,
+          now(),
+          now()
+        );
+
+        // Update bill status to paid
+        const paymentDetail = {
+          method: 'salary_deduction',
+          amount: deductionAmount,
+          deduction_number: deductionNumber,
+          deduction_id: deductionId,
+          period_month: periodMonth,
+          notes: notes || null,
+          timestamp: now(),
+        };
+
+        db.prepare(`
+          UPDATE bills SET
+            paid_amount = total,
+            balance = 0,
+            payment_status = 'paid',
+            payment_details = ?,
+            paid_at = ?,
+            updated_at = ?
+          WHERE id = ?
+        `).run(JSON.stringify(paymentDetail), now(), now(), bill.id);
+
+        // Complete order
+        db.prepare(`
+          UPDATE orders SET
+            status = 'completed',
+            completed_at = ?,
+            updated_at = ?
+          WHERE id = ?
+        `).run(now(), now(), bill.order_id);
+
+        // Release table if associated
+        const order = db.prepare('SELECT table_id FROM orders WHERE id = ?').get(bill.order_id) as any;
+        if (order && order.table_id) {
+          db.prepare("UPDATE tables SET status = 'available', updated_at = ? WHERE id = ?")
+            .run(now(), order.table_id);
+        }
+
+        const updatedBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(bill.id);
+        const createdDeduction = db.prepare(`
+          SELECT sd.*, c.name as member_name, c.member_no, c.employee_id
+          FROM salary_deductions sd
+          LEFT JOIN customers c ON sd.member_id = c.id
+          WHERE sd.id = ?
+        `).get(deductionId);
+
+        return { success: true, bill: updatedBill, salary_deduction: createdDeduction };
+      });
+
+      const txResult = paymentTx();
+      if (!txResult.success) {
+        return res.status(txResult.status || 400).json({ error: txResult.error });
+      }
+
+      notifyKdsUpdate();
+      return res.json({
+        bill: txResult.bill,
+        salary_deduction: txResult.salary_deduction,
+      });
+    }
+
+    // ── OTHER PAYMENT METHODS (Cash, Card, UPI, Wallet) ──────────────────────
     if (bill.payment_status === 'paid') {
       return res.status(400).json({ error: 'Bill is already paid' });
     }
