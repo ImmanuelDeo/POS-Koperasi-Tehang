@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { registerRoutes } from './routes';
 import { setupKdsWebSocket } from './services/kds';
+import { validateSecurityConfig, isOriginAllowed } from './config/security';
 
 let server: http.Server | null = null;
 let app: Express;
@@ -42,12 +43,36 @@ function getFrontendDir(): string | null {
 
 export function startServer(): Promise<void> {
   return new Promise((resolve, reject) => {
+    // ── Validate security & JWT config before accepting any requests ──
+    validateSecurityConfig();
+
     app = express();
 
-    app.use(cors());
+    // ── Restrictive CORS Allowlist (No Wildcards) ──────────────────────
+    app.use(
+      cors({
+        origin: (origin, callback) => {
+          if (isOriginAllowed(origin, PORT)) {
+            callback(null, true);
+          } else {
+            callback(new Error('Blocked by CORS policy: Origin not allowed'));
+          }
+        },
+        credentials: true,
+      })
+    );
+
+    // ── Security Headers ───────────────────────────────────────────────
+    app.use((_req: Request, res: Response, next: NextFunction) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      next();
+    });
+
     app.use(express.json());
 
-    // ── API health check ───────────────────────────────────────────────
+    // ── API health check (Public) ──────────────────────────────────────
     app.get('/api/health', (_req: Request, res: Response) => {
       res.json({
         status: 'ok',

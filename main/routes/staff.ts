@@ -74,7 +74,7 @@ router.post('/', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'name, password, and role are required' });
     }
 
-    const validRoles = ['owner', 'manager', 'cashier', 'waiter', 'chef'];
+    const validRoles = ['owner', 'admin', 'cashier', 'office_inventory', 'office_hr', 'manager', 'waiter', 'chef'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ error: `role must be one of: ${validRoles.join(', ')}` });
     }
@@ -118,10 +118,19 @@ router.put('/:id', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Staff member not found' });
     }
 
+    // Only owner can change another user to owner or edit an owner
+    const currentUser = (req as any).user;
+    if (member.role === 'owner' && currentUser && currentUser.role !== 'owner' && currentUser.id !== member.id) {
+      return res.status(403).json({ error: 'Only owners can modify owner accounts' });
+    }
+
     if (role) {
-      const validRoles = ['owner', 'manager', 'cashier', 'waiter', 'chef'];
+      const validRoles = ['owner', 'admin', 'cashier', 'office_inventory', 'office_hr', 'manager', 'waiter', 'chef'];
       if (!validRoles.includes(role)) {
         return res.status(400).json({ error: `role must be one of: ${validRoles.join(', ')}` });
+      }
+      if (role === 'owner' && currentUser && currentUser.role !== 'owner') {
+        return res.status(403).json({ error: 'Only owners can assign the owner role' });
       }
     }
 
@@ -165,6 +174,11 @@ router.put('/:id', (req: Request, res: Response) => {
 
 router.delete('/:id', (req: Request, res: Response) => {
   try {
+    const currentUser = (req as any).user;
+    if (currentUser && currentUser.role !== 'owner') {
+      return res.status(403).json({ error: 'Only owners can delete user accounts' });
+    }
+
     const db = getDatabase();
     const member = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id) as any;
     if (!member) {

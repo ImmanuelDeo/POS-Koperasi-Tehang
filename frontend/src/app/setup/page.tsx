@@ -27,9 +27,8 @@ const SERVICE_MODELS: Array<{ value: ServiceModel }> = [
   { value: 'finedine' },
 ];
 
-// Mirrors main/services/cloud-sync.ts DEFAULT_CLOUD_SERVER_URL — kept in sync
-// manually since the frontend can't import backend TS modules directly.
-const DEFAULT_CLOUD_SERVER_URL = 'https://blue.flopos.com/';
+// POS Koperasi: Cloud sync is disabled by default for privacy and local LAN operation
+const DEFAULT_CLOUD_SERVER_URL = '';
 
 export default function SetupPage() {
   const { logout } = useAuthStore();
@@ -43,7 +42,7 @@ export default function SetupPage() {
   const [serviceModel, setServiceModel] = useState<ServiceModel>('qsr');
   const [language, setLanguage] = useState<Language>('en');
   const [browserLanguage, setBrowserLanguage] = useState<Language>('en');
-  const [country, setCountry] = useState<string>('IN');
+  const [country, setCountry] = useState<string>('ID');
   const [countryQuery, setCountryQuery] = useState<string>('');
   const [form, setForm] = useState({
     name: '',
@@ -53,7 +52,7 @@ export default function SetupPage() {
     business_name: '',
   });
   const [termsAccepted, setTermsAccepted] = useState(false);
-  const [anonymousDataConsent, setAnonymousDataConsent] = useState(true);
+  const [anonymousDataConsent, setAnonymousDataConsent] = useState(false);
   const passwordsEntered = form.password.length > 0 && form.confirmPassword.length > 0;
   const passwordsMatch = !passwordsEntered || form.password === form.confirmPassword;
 
@@ -63,7 +62,7 @@ export default function SetupPage() {
   const masterPinValid = /^\d{4}$/.test(masterPin) && masterPin === masterPinConfirm;
 
   const [cloudEnabled, setCloudEnabled] = useState(false);
-  const [cloudServerUrl, setCloudServerUrl] = useState(DEFAULT_CLOUD_SERVER_URL);
+  const [cloudServerUrl, setCloudServerUrl] = useState('');
 
   const isPasswordValid = (password: string) => {
     if (!password || password.length < 8) return false;
@@ -499,17 +498,11 @@ export default function SetupPage() {
                     />
                     <span>
                       {t('setup.termsIntro')}{' '}
-                      <a href="https://flopos.com/terms" target="_blank" rel="noopener noreferrer" className="text-primary underline">
-                        {t('setup.terms')}
-                      </a>
-                      ,{' '}
-                      <a href="https://flopos.com/privacy" target="_blank" rel="noopener noreferrer" className="text-primary underline">
-                        {t('setup.privacy')}
-                      </a>
-                      , and{' '}
-                      <a href="https://flopos.com/disclaimer" target="_blank" rel="noopener noreferrer" className="text-primary underline">
-                        {t('setup.disclaimer')}
-                      </a>
+                      <span className="text-primary font-medium">{t('setup.terms')}</span>
+                      {', '}
+                      <span className="text-primary font-medium">{t('setup.privacy')}</span>
+                      {', and '}
+                      <span className="text-primary font-medium">{t('setup.disclaimer')}</span>
                       .
                     </span>
                   </label>

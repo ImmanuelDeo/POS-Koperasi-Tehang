@@ -18,39 +18,184 @@ import { kdsInfoRoutes } from './kds-info';
 import { printerRoutes } from './printers';
 import { databaseRoutes } from './database';
 import { getDatabase, now, parseItemJson } from '../db';
+import { authenticateToken, requireRole, requireMethodRoles, AuthenticatedRequest } from '../middleware/auth';
 
 export function registerRoutes(app: Express): void {
-  // Auth routes
+  // ── Public Auth routes (with internal public/protected routing) ───────────
   app.use('/api/auth', authRoutes);
 
-  // Resource routes
-  app.use('/api/categories', categoryRoutes);
-  app.use('/api/products', productRoutes);
-  app.use('/api/addon-groups', addonGroupRoutes);
-  app.use('/api/orders', orderRoutes);
-  app.use('/api/order-items', orderItemRoutes);
-  app.use('/api/kitchen', kitchenRoutes);
-  app.use('/api/bills', billRoutes);
-  app.use('/api/tables', tableRoutes);
-  app.use('/api/kitchen-stations', kitchenStationRoutes);
-  app.use('/api/customers', customerRoutes);
-  app.use('/api/staff', staffRoutes);   // users with POS roles
-  app.use('/api/users', staffRoutes);   // same router, dual-mounted
-  app.use('/api/settings', settingsRoutes);
-  app.use('/api/reports', reportRoutes);
-  app.use('/api/kds', kdsRoutes);
-  app.use('/api/kds-info', kdsInfoRoutes);
-  app.use('/api/printers', printerRoutes);
-  app.use('/api/db', databaseRoutes);
+  // ── Resource routes (Strictly Authenticated & Role Protected) ─────────────
+  app.use(
+    '/api/categories',
+    authenticateToken,
+    requireMethodRoles({
+      GET: ['owner', 'admin', 'cashier', 'office_inventory'],
+      POST: ['owner', 'admin', 'office_inventory'],
+      PUT: ['owner', 'admin', 'office_inventory'],
+      DELETE: ['owner', 'admin', 'office_inventory'],
+    }),
+    categoryRoutes
+  );
+
+  app.use(
+    '/api/products',
+    authenticateToken,
+    requireMethodRoles({
+      GET: ['owner', 'admin', 'cashier', 'office_inventory'],
+      POST: ['owner', 'admin', 'office_inventory'],
+      PUT: ['owner', 'admin', 'office_inventory'],
+      DELETE: ['owner', 'admin', 'office_inventory'],
+    }),
+    productRoutes
+  );
+
+  app.use(
+    '/api/addon-groups',
+    authenticateToken,
+    requireMethodRoles({
+      GET: ['owner', 'admin', 'cashier', 'office_inventory'],
+      POST: ['owner', 'admin', 'office_inventory'],
+      PUT: ['owner', 'admin', 'office_inventory'],
+      DELETE: ['owner', 'admin', 'office_inventory'],
+    }),
+    addonGroupRoutes
+  );
+
+  app.use(
+    '/api/orders',
+    authenticateToken,
+    requireMethodRoles({
+      GET: ['owner', 'admin', 'cashier', 'office_hr'],
+      POST: ['owner', 'admin', 'cashier'],
+      PUT: ['owner', 'admin', 'cashier'],
+      PATCH: ['owner', 'admin', 'cashier'],
+      DELETE: ['owner', 'admin', 'cashier'],
+    }),
+    orderRoutes
+  );
+
+  app.use('/api/order-items', authenticateToken, requireRole(['owner', 'admin', 'cashier']), orderItemRoutes);
+  app.use('/api/kitchen', authenticateToken, requireRole(['owner', 'admin', 'chef']), kitchenRoutes);
+
+  app.use(
+    '/api/bills',
+    authenticateToken,
+    requireMethodRoles({
+      GET: ['owner', 'admin', 'cashier', 'office_hr'],
+      POST: ['owner', 'admin', 'cashier'],
+      PUT: ['owner', 'admin', 'cashier'],
+      PATCH: ['owner', 'admin', 'cashier'],
+      DELETE: ['owner', 'admin', 'cashier'],
+    }),
+    billRoutes
+  );
+
+  app.use('/api/tables', authenticateToken, requireRole(['owner', 'admin', 'cashier']), tableRoutes);
+  app.use('/api/kitchen-stations', authenticateToken, requireRole(['owner', 'admin']), kitchenStationRoutes);
+
+  app.use(
+    '/api/customers',
+    authenticateToken,
+    requireMethodRoles({
+      GET: ['owner', 'admin', 'office_hr', 'cashier'],
+      POST: ['owner', 'admin', 'office_hr'],
+      PUT: ['owner', 'admin', 'office_hr'],
+      PATCH: ['owner', 'admin', 'office_hr'],
+      DELETE: ['owner', 'admin'],
+    }),
+    customerRoutes
+  );
+
+  // Dual-mounted users / staff management
+  app.use(
+    '/api/staff',
+    authenticateToken,
+    requireMethodRoles({
+      GET: ['owner', 'admin'],
+      POST: ['owner', 'admin'],
+      PUT: ['owner', 'admin'],
+      DELETE: ['owner'],
+    }),
+    staffRoutes
+  );
+
+  app.use(
+    '/api/users',
+    authenticateToken,
+    requireMethodRoles({
+      GET: ['owner', 'admin'],
+      POST: ['owner', 'admin'],
+      PUT: ['owner', 'admin'],
+      DELETE: ['owner'],
+    }),
+    staffRoutes
+  );
+
+  // Settings are restricted to owner and admin only
+  app.use(
+    '/api/settings',
+    authenticateToken,
+    requireRole(['owner', 'admin']),
+    settingsRoutes
+  );
+
+  app.use('/api/reports', authenticateToken, requireRole(['owner', 'admin', 'cashier']), reportRoutes);
+  app.use('/api/kds', authenticateToken, requireRole(['owner', 'admin', 'chef']), kdsRoutes);
+  app.use('/api/kds-info', authenticateToken, requireRole(['owner', 'admin', 'chef']), kdsInfoRoutes);
+
+  // Printer routes: separate print actions/status from configuration
+  app.use(
+    '/api/printers',
+    authenticateToken,
+    (req: AuthenticatedRequest, res, next) => {
+      const user = req.user!;
+      if (user.role === 'owner') return next();
+
+      const effectiveRoles = [user.role];
+      if (user.role === 'manager') effectiveRoles.push('admin');
+      if (user.role === 'waiter') effectiveRoles.push('cashier');
+
+      const isAdmin = effectiveRoles.includes('admin');
+      const isCashier = effectiveRoles.includes('cashier');
+
+      // Admin has full printer access (config + print)
+      if (isAdmin) return next();
+
+      // Cashier only has access to GET (status/list/detect/detail), and POST print actions (test, print-bill, print-kot)
+      if (isCashier) {
+        if (req.method === 'GET') {
+          return next();
+        }
+        if (req.method === 'POST') {
+          const printActionPaths = ['/print-bill', '/print-kot'];
+          const isPrintAction =
+            printActionPaths.includes(req.path) ||
+            /^\/[^/]+\/test$/.test(req.path);
+
+          if (isPrintAction) {
+            return next();
+          }
+        }
+      }
+
+      return res.status(403).json({
+        error: `Forbidden: Role '${user.role}' is not authorized for printer configuration`,
+      });
+    },
+    printerRoutes
+  );
+
+  // Database backups, exports & maintenance are STRICTLY owner-only
+  app.use('/api/db', authenticateToken, requireRole(['owner']), databaseRoutes);
 
   // Tax preview
-  app.post('/api/tax/preview', async (req, res) => {
+  app.post('/api/tax/preview', authenticateToken, requireRole(['owner', 'admin', 'cashier']), async (req, res) => {
     const { calculateTaxPreview } = await import('../services/tax');
     calculateTaxPreview(req, res);
   });
 
-  // Mobile pairing code — simple stub (rotates daily)
-  app.get('/api/mobile/pairing-code', (req, res) => {
+  // Mobile pairing code
+  app.get('/api/mobile/pairing-code', authenticateToken, requireRole(['owner', 'admin']), (_req, res) => {
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     res.json({
       pairing_code: today,
@@ -58,8 +203,8 @@ export function registerRoutes(app: Express): void {
     });
   });
 
-  // Legacy/flat customer search endpoint (frontend uses this)
-  app.get('/api/customers-search', (req, res) => {
+  // Customer search endpoint
+  app.get('/api/customers-search', authenticateToken, requireRole(['owner', 'admin', 'office_hr', 'cashier']), (req, res) => {
     try {
       const { q } = req.query;
       if (!q || String(q).length < 2) {
@@ -81,10 +226,10 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  // CRM lookup endpoint (frontend uses this)
-  app.get('/api/crm/lookup', (req, res) => {
+  // CRM lookup endpoint
+  app.get('/api/crm/lookup', authenticateToken, requireRole(['owner', 'admin', 'office_hr', 'cashier']), (req, res) => {
     try {
-      const { phone, country_code } = req.query;
+      const { phone } = req.query;
       if (!phone) {
         return res.status(400).json({ error: 'Phone number required' });
       }
@@ -102,16 +247,10 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  // Soft-delete order item (frontend calls this)
-  app.patch('/api/orders/:orderId/items/:itemId/cancel', (req, res) => {
+  // Cancel order item
+  app.patch('/api/orders/:orderId/items/:itemId/cancel', authenticateToken, requireRole(['owner', 'admin', 'cashier']), (req: AuthenticatedRequest, res) => {
     try {
       const { orderId, itemId } = req.params;
-      const userRole = req.headers['x-user-role'] as string;
-
-      if (!userRole || !['owner', 'manager'].includes(userRole.toLowerCase())) {
-        return res.status(403).json({ error: 'Only owner or manager can cancel items' });
-      }
-
       const db = getDatabase();
       const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
       if (!order) {
@@ -154,16 +293,10 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  // Restore cancelled order item (frontend calls this)
-  app.patch('/api/orders/:orderId/items/:itemId/restore', (req, res) => {
+  // Restore cancelled order item
+  app.patch('/api/orders/:orderId/items/:itemId/restore', authenticateToken, requireRole(['owner', 'admin', 'cashier']), (req: AuthenticatedRequest, res) => {
     try {
       const { orderId, itemId } = req.params;
-      const userRole = req.headers['x-user-role'] as string;
-
-      if (!userRole || !['owner', 'manager'].includes(userRole.toLowerCase())) {
-        return res.status(403).json({ error: 'Only owner or manager can restore items' });
-      }
-
       const db = getDatabase();
       const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
       if (!order) {
@@ -206,3 +339,4 @@ export function registerRoutes(app: Express): void {
     }
   });
 }
+

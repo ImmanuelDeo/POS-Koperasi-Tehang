@@ -9,7 +9,7 @@ import { initPrinter, printReceipt, printKOT } from './printers/thermal';
 import { registerIpcHandlers } from './ipc';
 import log from 'electron-log/main';
 import { autoUpdater } from 'electron-updater';
-
+import { isAutoUpdaterEnabled } from './config/security';
 
 log.initialize();
 log.transports.file.level = 'info';
@@ -21,6 +21,11 @@ let updateAvailable = false;
 let updateDownloaded = false;
 
 function setupAutoUpdater(): void {
+  if (!isAutoUpdaterEnabled()) {
+    console.log('[Updater] Auto-updater disabled by security policy (offline/local mode)');
+    return;
+  }
+
   autoUpdater.logger = log;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
@@ -102,6 +107,9 @@ function setupAutoUpdater(): void {
 }
 
 function checkForUpdates(): void {
+  if (!isAutoUpdaterEnabled()) {
+    return;
+  }
   if (!isDev) {
     autoUpdater.checkForUpdates().catch((err) => {
       console.error('[Update] Check failed:', err);
@@ -395,10 +403,12 @@ async function initialize(): Promise<void> {
     console.log('[Flo] Creating window...');
     createWindow();
     createTray();
-    createMenu();
-    setupAutoUpdater();
-
-    setTimeout(() => checkForUpdates(), 5000);
+    if (isAutoUpdaterEnabled()) {
+      setupAutoUpdater();
+      setTimeout(() => checkForUpdates(), 5000);
+    } else {
+      console.log('[Flo] Offline mode: Auto-updater is disabled by security policy');
+    }
 
     console.log('[Flo] Ready!');
   } catch (error) {

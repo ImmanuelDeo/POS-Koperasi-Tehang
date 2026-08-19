@@ -3,9 +3,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, now } from '../db';
+import { getJwtSecret } from '../config/security';
+import { authenticateToken, requireRole, AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'flo-local-secret-change-in-production';
 const JWT_EXPIRES_IN = '24h';
 
 /**
@@ -52,7 +53,7 @@ router.post('/login', (req: Request, res: Response) => {
 
     const token = jwt.sign(
       { userId: user.id, email: user.email, role: user.role },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: JWT_EXPIRES_IN }
     );
 
@@ -81,26 +82,16 @@ router.post('/login', (req: Request, res: Response) => {
 // ── POST /api/auth/tenants/select ─────────────────────────────────────────────
 // Frontend calls this after login (even when auto-selecting the single tenant).
 
-router.post('/tenants/select', (req: Request, res: Response) => {
+router.post('/tenants/select', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
-
+    const user = req.user!;
     const db = getDatabase();
-    const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(decoded.userId) as any;
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
     const tenant = buildLocalTenant(db, user.role);
 
-    // Re-issue token with tenant context embedded (same payload — desktop is single-tenant)
+    // Re-issue token with tenant context embedded
     const newToken = jwt.sign(
       { userId: user.id, email: user.email, role: user.role, tenantId: 1 },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: JWT_EXPIRES_IN }
     );
 
@@ -116,24 +107,18 @@ router.post('/tenants/select', (req: Request, res: Response) => {
 
 // ── POST /api/auth/logout ─────────────────────────────────────────────────────
 
-router.post('/logout', (_req: Request, res: Response) => {
+router.post('/logout', authenticateToken, (_req: AuthenticatedRequest, res: Response) => {
   res.json({ message: 'Logged out successfully' });
 });
 
 // ── POST /api/auth/refresh ────────────────────────────────────────────────────
 
-router.post('/refresh', (req: Request, res: Response) => {
+router.post('/refresh', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const user = req.user!;
     const newToken = jwt.sign(
-      { userId: decoded.userId, email: decoded.email, role: decoded.role, tenantId: decoded.tenantId },
-      JWT_SECRET,
+      { userId: user.id, email: user.email, role: user.role, tenantId: 1 },
+      getJwtSecret(),
       { expiresIn: JWT_EXPIRES_IN }
     );
 
@@ -149,18 +134,10 @@ router.post('/refresh', (req: Request, res: Response) => {
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
 
-router.get('/me', (req: Request, res: Response) => {
+router.get('/me', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
-
     const db = getDatabase();
-    const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(decoded.userId) as any;
+    const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(req.user!.id) as any;
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     const tenant = buildLocalTenant(db, user.role);
@@ -176,20 +153,11 @@ router.get('/me', (req: Request, res: Response) => {
 
 // ── POST /api/auth/password/change ────────────────────────────────────────────
 
-router.post('/password/change', (req: Request, res: Response) => {
+router.post('/password/change', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { current_password, password } = req.body;
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader?.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
-
     const db = getDatabase();
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(decoded.userId) as any;
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as any;
     if (!user) return res.status(404).json({ error: 'User not found' });
 
     if (!bcrypt.compareSync(current_password, user.password)) {
@@ -197,7 +165,7 @@ router.post('/password/change', (req: Request, res: Response) => {
     }
 
     const hashedPassword = bcrypt.hashSync(password, 10);
-    db.prepare('UPDATE users SET password = ?, updated_at = ? WHERE id = ?').run(hashedPassword, now(), decoded.userId);
+    db.prepare('UPDATE users SET password = ?, updated_at = ? WHERE id = ?').run(hashedPassword, now(), user.id);
 
     res.json({ message: 'Password changed successfully' });
   } catch (error: any) {
@@ -211,7 +179,7 @@ router.post('/password/change', (req: Request, res: Response) => {
 router.get('/setup/status', (_req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
+    const userCount = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1').get() as { count: number };
     const needsSetup = userCount.count === 0;
     res.json({ needsSetup });
   } catch (error: any) {
@@ -220,7 +188,7 @@ router.get('/setup/status', (_req: Request, res: Response) => {
 });
 
 // ── POST /api/auth/setup/initialize ─────────────────────────────────────────────
-// Creates the initial admin user and sets business type
+// Creates the initial admin user and sets business type (ONLY if user count == 0)
 
 router.post('/setup/initialize', (req: Request, res: Response) => {
   try {
@@ -230,11 +198,18 @@ router.post('/setup/initialize', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Name, email, and password are required' });
     }
 
-    if (!['retail', 'restaurant', 'salon'].includes(business_type)) {
-      return res.status(400).json({ error: 'Invalid business type' });
+    const db = getDatabase();
+
+    // Check if initial setup is already completed
+    const userCount = db.prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1').get() as { count: number };
+    if (userCount.count > 0) {
+      return res.status(403).json({ error: 'Setup has already been completed on this install' });
     }
 
-    const db = getDatabase();
+    const validTypes = ['retail', 'restaurant', 'salon', 'cooperative'];
+    if (business_type && !validTypes.includes(business_type)) {
+      return res.status(400).json({ error: 'Invalid business type' });
+    }
 
     const existingUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
     if (existingUser) {
@@ -249,10 +224,12 @@ router.post('/setup/initialize', (req: Request, res: Response) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(userId, name, email, hashedPassword, 'owner', 1, now(), now());
 
-    db.prepare(`
-      INSERT OR REPLACE INTO settings (key, value, updated_at)
-      VALUES ('business_type', ?, ?)
-    `).run(business_type, now());
+    if (business_type) {
+      db.prepare(`
+        INSERT OR REPLACE INTO settings (key, value, updated_at)
+        VALUES ('business_type', ?, ?)
+      `).run(business_type, now());
+    }
 
     if (business_name) {
       db.prepare(`
@@ -263,24 +240,11 @@ router.post('/setup/initialize', (req: Request, res: Response) => {
 
     const token = jwt.sign(
       { userId, email, role: 'owner' },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: JWT_EXPIRES_IN }
     );
 
-    const tenant = {
-      id: 1,
-      business_name: business_name || 'My Store',
-      slug: 'local',
-      database_name: 'local',
-      business_type,
-      country: 'IN',
-      currency: business_type === 'retail' ? 'INR' : (business_type === 'restaurant' ? 'INR' : 'INR'),
-      currency_symbol: '₹',
-      timezone: 'Asia/Kolkata',
-      plan: 'desktop',
-      status: 'active',
-      role: 'owner',
-    };
+    const tenant = buildLocalTenant(db, 'owner');
 
     res.json({
       access_token: token,
@@ -296,9 +260,9 @@ router.post('/setup/initialize', (req: Request, res: Response) => {
 });
 
 // ── POST /api/auth/setup/seed ───────────────────────────────────────────────────
-// Seeds demo data for the selected business type
+// Seeds demo data (requires owner role)
 
-router.post('/setup/seed', (req: Request, res: Response) => {
+router.post('/setup/seed', authenticateToken, requireRole(['owner']), (req: AuthenticatedRequest, res: Response) => {
   try {
     const { business_type, business_name } = req.body;
 
