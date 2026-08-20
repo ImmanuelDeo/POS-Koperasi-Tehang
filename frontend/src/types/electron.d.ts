@@ -37,8 +37,19 @@ export interface ElectronAPI {
   getUpdateStatus: () => Promise<UpdateStatus>;
   checkForUpdates: () => Promise<void>;
 
+  // Kiosk & Admin Recovery
+  adminKioskRecovery: (pin: string, action: 'exit_kiosk' | 'quit_app') => Promise<AdminKioskRecoveryResult>;
+  getKioskModeStatus: () => Promise<{ enabled: boolean }>;
+  onOpenAdminExitModal: (callback: () => void) => (() => void);
+
   // Platform
   platform: string;
+}
+
+export interface AdminKioskRecoveryResult {
+  success: boolean;
+  message?: string;
+  error?: string;
 }
 
 export type HealthFindingRisk = 'safe' | 'manual_review';
