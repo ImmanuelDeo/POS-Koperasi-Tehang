@@ -10,7 +10,16 @@ import { registerIpcHandlers } from './ipc';
 import log from 'electron-log/main';
 import { autoUpdater } from 'electron-updater';
 import { isAutoUpdaterEnabled, isKioskModeEnabled, isLocalAppOrigin } from './config/security';
-
+// Override userData directory if explicitly requested via environment variable (for isolated testing)
+const customUserDataDir = process.env.FLO_USER_DATA_DIR?.trim();
+if (customUserDataDir) {
+  const resolvedUserData = path.resolve(customUserDataDir);
+  if (!fs.existsSync(resolvedUserData)) {
+    fs.mkdirSync(resolvedUserData, { recursive: true });
+  }
+  app.setPath('userData', resolvedUserData);
+  console.log('[Flo] Isolated user data directory set:', resolvedUserData);
+}
 
 log.initialize();
 log.transports.file.level = 'info';

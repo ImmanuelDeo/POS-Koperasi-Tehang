@@ -9,8 +9,15 @@ const SCHEMA_VERSION = 9;
 
 let db: Database.Database;
 
+function usesElectronUserDataPath(): boolean {
+  return app.isPackaged || Boolean(process.env.FLO_USER_DATA_DIR?.trim());
+}
+
 export function getDbPath(): string {
-  const userDataPath = app.isPackaged ? app.getPath('userData') : path.join(__dirname, '../../');
+  const userDataPath = usesElectronUserDataPath()
+    ? app.getPath('userData')
+    : path.join(__dirname, '../../');
+
   return path.join(userDataPath, 'flo.db');
 }
 
