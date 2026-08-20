@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, generateBillNumber, now } from '../db';
 import { notifyKdsUpdate } from '../services/kds';
 import {
@@ -217,7 +216,6 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
           WHERE oi.order_id = ? AND oi.status != 'cancelled'
         `).all(bill.order_id) as any[];
 
-        const deductionId = uuidv4();
         const deductionNumber = generateDeductionNumber(bill.bill_number);
 
         // Deduct inventory per tracked item
@@ -228,7 +226,7 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
               movementType: 'sale',
               quantityChange: -item.quantity,
               referenceType: 'salary_deduction',
-              referenceId: deductionId,
+              referenceId: deductionNumber,
               notes: `Sale via salary deduction ${deductionNumber}`,
               createdBy: userId,
             });
@@ -240,13 +238,12 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
         }
 
         // Insert salary deduction record
-        db.prepare(`
+        const insertDeduction = db.prepare(`
           INSERT INTO salary_deductions (
-            id, deduction_number, member_id, order_id, bill_id,
+            deduction_number, member_id, order_id, bill_id,
             amount, period_month, status, created_by, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
         `).run(
-          deductionId,
           deductionNumber,
           customer.id,
           bill.order_id,
@@ -257,6 +254,8 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
           now(),
           now()
         );
+
+        const deductionId = Number(insertDeduction.lastInsertRowid);
 
         // Update bill status to paid
         const paymentDetail = {

@@ -241,7 +241,7 @@ export interface CooperativeMember {
 }
 
 export interface SalaryDeductionInfo {
-  id: string;
+  id: number | string;
   deduction_number: string;
   member_id: string;
   order_id: string;
