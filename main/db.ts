@@ -620,7 +620,7 @@ function createSchema(): void {
 
     -- ── Config tables ────────────────────────────────────────────────────
 
-    CREATE TABLE settings (
+    CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
