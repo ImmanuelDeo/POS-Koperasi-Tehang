@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3';
-import { v4 as uuidv4 } from 'uuid';
 import { now } from '../db';
 
 /**
@@ -304,19 +303,17 @@ export function executeStockMovement(
   // Update product stock quantity
   db.prepare('UPDATE products SET stock_quantity = ?, updated_at = ? WHERE id = ?').run(balanceAfter, now(), productId);
 
-  // Insert into stock_movements ledger
-  const movementId = uuidv4();
+  // Insert into stock_movements ledger (SQLite autoincrements integer ID)
   const validUnitCost = Math.max(0, Math.round(unitCost || 0));
 
   db.prepare(`
     INSERT INTO stock_movements (
-      id, product_id, movement_type, quantity,
+      product_id, movement_type, quantity,
       balance_before, balance_after, unit_cost,
       reference_type, reference_id, notes,
       created_by, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    movementId,
     productId,
     movementType,
     roundedQtyChange,
