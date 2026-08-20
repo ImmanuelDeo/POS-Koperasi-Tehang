@@ -15,7 +15,7 @@
     "build:linux": "npm run build:frontend && npm run build && electron-builder --linux",
     "pack": "electron-builder --dir",
     "start": "electron .",
-    "rebuild": "HOME=~/.electron-gyp node-gyp rebuild --target=$(node -p \"require('./node_modules/electron/package.json').version\") --arch=$(node -p \"process.arch\") --dist-url=https://electronjs.org/headers --runtime=electron --directory node_modules/better-sqlite3"
+    "rebuild": "electron-rebuild -f -w better-sqlite3"
   },
   "author": {
     "name": "Flo",
