@@ -32,7 +32,8 @@ router.get('/lookup', (req: AuthenticatedRequest, res: Response) => {
           is_active, is_member, salary_deduction_enabled,
           monthly_deduction_limit, outstanding_deduction_limit
         FROM customers
-        ORDER BY is_active DESC, is_member DESC, name ASC
+        WHERE (is_active IS NULL OR is_active = 1)
+        ORDER BY is_member DESC, name ASC
         LIMIT 30
       `).all() as any[];
     } else {
@@ -47,8 +48,9 @@ router.get('/lookup', (req: AuthenticatedRequest, res: Response) => {
           is_active, is_member, salary_deduction_enabled,
           monthly_deduction_limit, outstanding_deduction_limit
         FROM customers
-        WHERE name LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR phone LIKE ? OR (nik IS NOT NULL AND nik LIKE ?)
-        ORDER BY is_active DESC, is_member DESC, name ASC
+        WHERE (is_active IS NULL OR is_active = 1)
+          AND (name LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR phone LIKE ? OR (nik IS NOT NULL AND nik LIKE ?))
+        ORDER BY is_member DESC, name ASC
         LIMIT 30
       `).all(searchPattern, searchPattern, searchPattern, searchPattern, nikPattern) as any[];
     }
@@ -78,10 +80,10 @@ router.get('/lookup', (req: AuthenticatedRequest, res: Response) => {
         employee_id: member.employee_id || '-',
         name: member.name,
         department: member.department || 'Umum',
-        phone: member.phone || '',
+        phone: member.phone || '—',
         is_active: member.is_active ?? 1,
-        is_member: member.is_member ?? 1,
-        salary_deduction_enabled: member.salary_deduction_enabled ?? 1,
+        is_member: member.is_member === 1,
+        salary_deduction_enabled: member.salary_deduction_enabled === 1,
         monthly_deduction_limit: monthlyLimit,
         outstanding_deduction_limit: outstandingLimit,
         current_monthly_usage: monthlyUsage,
@@ -127,6 +129,8 @@ router.get('/', (req: AuthenticatedRequest, res: Response) => {
     if (is_active !== undefined) {
       query += ' AND is_active = ?';
       params.push(is_active === '1' || is_active === 'true' ? 1 : 0);
+    } else {
+      query += ' AND (is_active IS NULL OR is_active = 1)';
     }
 
     if (salary_deduction_enabled !== undefined) {

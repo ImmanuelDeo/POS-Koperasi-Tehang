@@ -56,6 +56,10 @@ router.get('/', (req: Request, res: Response) => {
     let query = 'SELECT c.*, COALESCE((SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id), 0) as visits_count, COALESCE((SELECT SUM(total) FROM orders o WHERE o.customer_id = c.id), 0) as total_spent FROM customers c WHERE 1=1';
     const params: any[] = [];
 
+    if (req.query.include_inactive !== 'true' && req.query.include_archived !== 'true') {
+      query += ' AND (c.is_active IS NULL OR c.is_active = 1)';
+    }
+
     if (req.query.search) {
       const rawSearch = String(req.query.search).trim();
       const normalizedNikSearch = normalizeNik(rawSearch);
@@ -95,7 +99,8 @@ router.get('/search', (req: Request, res: Response) => {
 
     const customers = db.prepare(`
       SELECT * FROM customers
-      WHERE phone LIKE ? OR name LIKE ? OR email LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR (nik IS NOT NULL AND nik LIKE ?)
+      WHERE (is_active IS NULL OR is_active = 1)
+        AND (phone LIKE ? OR name LIKE ? OR email LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR (nik IS NOT NULL AND nik LIKE ?))
       ORDER BY name LIMIT 30
     `).all(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, nikTerm) as any[];
 

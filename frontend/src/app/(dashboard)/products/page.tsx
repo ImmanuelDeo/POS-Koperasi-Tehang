@@ -97,9 +97,9 @@ export default function ProductsPage() {
 
   const [addonList, setAddonList] = useState<{ id?: number | string; name: string; price: number; is_active?: boolean }[]>([]);
   const [form, setForm] = useState({
-    name: '', category_id: '', price: '', cost_price: '', cb_percent: '0', sku: '', barcode: '',
+    name: '', category_id: '', price: '', cost_price: '', member_price: '', unit: 'pcs', cb_percent: '0', sku: '', barcode: '',
     tax_type: 'none', tax_rate: '0', description: '',
-    track_inventory: false, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
+    track_inventory: true, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
     tags: [] as string[],
     customTag: '',
     addon_group_ids: [] as (number | string)[],
@@ -235,9 +235,9 @@ export default function ProductsPage() {
 
   const resetForm = () => {
     setForm({
-      name: '', category_id: '', price: '', cost_price: '', cb_percent: '0', sku: '', barcode: '',
+      name: '', category_id: '', price: '', cost_price: '', member_price: '', unit: 'pcs', cb_percent: '0', sku: '', barcode: '',
       tax_type: 'none', tax_rate: '0', description: '',
-      track_inventory: false, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
+      track_inventory: true, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
       tags: [], customTag: '', addon_group_ids: [], image_url: null,
     });
     setImageTouched(false);
@@ -253,13 +253,15 @@ export default function ProductsPage() {
       category_id: product.category_id != null ? String(product.category_id) : '',
       price: String(product.price ?? ''),
       cost_price: String(product.cost_price ?? ''),
+      member_price: product.member_price != null ? String(product.member_price) : '',
+      unit: product.unit || 'pcs',
       cb_percent: String(product.cb_percent ?? 0),
       sku: product.sku || '',
       barcode: product.barcode || '',
       tax_type: 'none',
       tax_rate: '0',
       description: product.description || '',
-      track_inventory: Boolean(product.track_inventory),
+      track_inventory: product.track_inventory !== undefined ? Boolean(product.track_inventory) : true,
       stock_quantity: String(product.stock_quantity ?? '0'),
       low_stock_threshold: String(product.low_stock_threshold ?? '5'),
       is_active: Boolean(product.is_active),
@@ -281,6 +283,8 @@ export default function ProductsPage() {
         category_id: form.category_id || null,
         price: parsedPrice,
         cost_price: parsedCost,
+        member_price: form.member_price ? parseRupiahInput(form.member_price) : null,
+        unit: form.unit?.trim() || 'pcs',
         cb_percent: Number(form.cb_percent) || 0,
         sku: form.sku.trim() || null,
         barcode: form.barcode.trim() || null,
@@ -587,13 +591,20 @@ export default function ProductsPage() {
                   )}
                 </td>
                 <td className="p-4 text-right">
-                  <p className="font-medium">{fmt(Number(product.price || 0))}</p>
-                  {product.cost_price != null && product.cost_price > 0 && <p className="text-xs text-gray-400">Cost: {fmt(Number(product.cost_price))}</p>}
+                  <p className="font-semibold text-gray-900">{fmt(Number(product.price || 0))}</p>
+                  {product.member_price != null && product.member_price > 0 && (
+                    <span className="inline-block text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mt-0.5">
+                      Member: {fmt(Number(product.member_price))}
+                    </span>
+                  )}
+                  {product.cost_price != null && product.cost_price > 0 && (
+                    <p className="text-xs text-gray-400 mt-0.5">Modal: {fmt(Number(product.cost_price))}</p>
+                  )}
                 </td>
                 <td className="p-4 text-center">
                   {product.track_inventory ? (
-                    <span className={`text-sm font-medium ${(product.stock_quantity ?? 0) <= (product.low_stock_threshold || 0) ? 'text-red-600' : 'text-gray-900'}`}>
-                      {(product.stock_quantity ?? 0) <= 0 ? t('pos.outOfStock') : product.stock_quantity}
+                    <span className={`text-sm font-semibold ${(product.stock_quantity ?? 0) <= (product.low_stock_threshold || 0) ? 'text-red-600 font-bold' : 'text-gray-900'}`}>
+                      {(product.stock_quantity ?? 0) <= 0 ? t('pos.outOfStock') : `${product.stock_quantity} ${product.unit || 'pcs'}`}
                     </span>
                   ) : (
                     <span className="text-gray-400 text-sm">—</span>
@@ -692,18 +703,48 @@ export default function ProductsPage() {
                 />
                 <p className="text-xs text-gray-400 mt-1">{t('products.fieldBarcodeHint')}</p>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.priceLabel', { currency })}<span className="text-red-500 ml-1">*</span></label>
-                  <input type="text" inputMode="numeric" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })}
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {t('products.priceLabel', { currency })} <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={form.price}
+                    onChange={(e) => setForm({ ...form, price: e.target.value })}
                     placeholder="10000"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none" required />
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none"
+                    required
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">Harga umum / non-member</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
+                    <span>Harga Member</span>
+                    <span className="text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">Opsional</span>
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={form.member_price}
+                    onChange={(e) => setForm({ ...form, member_price: e.target.value })}
+                    placeholder="9500"
+                    className="w-full px-3 py-2 border border-emerald-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none bg-emerald-50/20"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">Khusus potongan gaji/anggota</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.fieldCostPrice')}</label>
-                  <input type="text" inputMode="numeric" value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: e.target.value })}
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={form.cost_price}
+                    onChange={(e) => setForm({ ...form, cost_price: e.target.value })}
                     placeholder="8000"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none" />
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">Harga modal / beli</p>
                 </div>
               </div>
               <div>
@@ -807,32 +848,116 @@ export default function ProductsPage() {
                   </div>
                 </div>
               )}
-              <div className="flex items-center gap-4">
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={form.track_inventory} onChange={(e) => setForm({ ...form, track_inventory: e.target.checked })}
-                    className="rounded border-gray-300 text-brand focus:ring-brand" />
-                  <span className="text-sm text-gray-700">{t('products.fieldTrackInventory')}</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })}
-                    className="rounded border-gray-300 text-brand focus:ring-brand" />
-                  <span className="text-sm text-gray-700">{t('products.fieldActive')}</span>
-                </label>
-              </div>
-              {!!form.track_inventory && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.fieldStock')}<span className="text-red-500 ml-1">*</span></label>
-                    <input type="number" min="0" value={form.stock_quantity} onChange={(e) => setForm({ ...form, stock_quantity: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none" required />
+              {/* ── Manajemen Stok & Inventaris ────────────────────────── */}
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Package size={16} className="text-brand" />
+                    <span className="text-sm font-semibold text-gray-800">Manajemen Stok & Satuan Produk</span>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.fieldLowStockThreshold')}</label>
-                    <input type="number" min="0" value={form.low_stock_threshold} onChange={(e) => setForm({ ...form, low_stock_threshold: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none" required />
-                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.track_inventory}
+                      onChange={(e) => setForm({ ...form, track_inventory: e.target.checked })}
+                      className="rounded border-gray-300 text-brand focus:ring-brand"
+                    />
+                    <span className="text-xs font-medium text-gray-600">Lacak Stok Otomatis</span>
+                  </label>
                 </div>
-              )}
+
+                {form.track_inventory ? (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">
+                          Satuan Produk (Unit) <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={form.unit}
+                          onChange={(e) => setForm({ ...form, unit: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-brand outline-none text-sm"
+                        >
+                          <option value="pcs">Pcs (Pieces)</option>
+                          <option value="kg">Kg (Kilogram)</option>
+                          <option value="liter">Liter</option>
+                          <option value="sak">Sak (Karung)</option>
+                          <option value="pack">Pack</option>
+                          <option value="dus">Dus (Karton)</option>
+                          <option value="botol">Botol</option>
+                          <option value="renceng">Renceng</option>
+                          <option value="bungkus">Bungkus</option>
+                          <option value="kaleng">Kaleng</option>
+                          <option value="lusin">Lusin</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">
+                          {editingProduct ? 'Stok Fisik Saat Ini' : 'Stok Fisik Awal'} <span className="text-red-500">*</span>
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            value={form.stock_quantity}
+                            onChange={(e) => setForm({ ...form, stock_quantity: e.target.value })}
+                            placeholder="0"
+                            className="w-full px-3 py-2 pr-12 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-brand outline-none text-sm font-semibold"
+                            required
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
+                            {form.unit || 'pcs'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">
+                          Peringatan Stok Minimum
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            value={form.low_stock_threshold}
+                            onChange={(e) => setForm({ ...form, low_stock_threshold: e.target.value })}
+                            placeholder="5"
+                            className="w-full px-3 py-2 pr-12 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-brand outline-none text-sm"
+                            required
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
+                            {form.unit || 'pcs'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 bg-blue-50/70 border border-blue-100 rounded-lg flex items-start gap-2 text-[11px] text-blue-800">
+                      <span className="text-blue-600 font-bold mt-0.5">ℹ️</span>
+                      <span>
+                        <strong>Audit Stok Otomatis:</strong> Setiap penambahan atau perubahan stok manual saat membuat/mengedit produk akan otomatis dicatat ke riwayat mutasi stok (<em>Stock Movement Ledger</em>) untuk pembukuan koperasi.
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-500 italic">
+                    Pelacakan stok dinonaktifkan. Produk ini dapat dijual tanpa batasan jumlah persediaan.
+                  </p>
+                )}
+
+                <div className="pt-1 flex items-center justify-between border-t border-slate-200">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.is_active}
+                      onChange={(e) => setForm({ ...form, is_active: e.target.checked })}
+                      className="rounded border-gray-300 text-brand focus:ring-brand"
+                    />
+                    <span className="text-xs font-medium text-gray-700">Status Produk Aktif (Dapat Dijual)</span>
+                  </label>
+                </div>
+              </div>
               <Button type="submit" className="w-full">
                 {editingProduct ? t('products.updateProduct') : t('products.createProduct')}
               </Button>

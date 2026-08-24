@@ -228,6 +228,28 @@ router.post('/', (req: Request, res: Response) => {
       }
     }
 
+    // Auto-record initial stock movement in ledger for full auditability
+    if (track_inventory && Number(stock_quantity) > 0) {
+      const initQty = Math.max(0, Math.round(Number(stock_quantity)));
+      db.prepare(`
+        INSERT INTO stock_movements (
+          product_id, movement_type, quantity,
+          balance_before, balance_after, unit_cost,
+          reference_type, reference_id, notes,
+          created_by, created_at
+        ) VALUES (?, 'in', ?, 0, ?, ?, 'initial_stock', ?, ?, ?, ?)
+      `).run(
+        id,
+        initQty,
+        initQty,
+        parsedCostPrice,
+        `INIT-${id.slice(0, 8)}`,
+        'Stok Awal Produk Baru (Manual Input)',
+        (req as any).user?.id || 'system',
+        now()
+      );
+    }
+
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     res.status(201).json({ product: formatProductResponse(product, db) });
   } catch (error: any) {
@@ -302,6 +324,34 @@ router.put('/:id', (req: Request, res: Response) => {
     if (tags !== undefined) {
       const tagArr = Array.isArray(tags) ? tags : typeof tags === 'string' ? [tags] : [];
       parsedTagsJson = JSON.stringify(tagArr);
+    }
+
+    // Auto-record stock movement if stock quantity changed during edit
+    if (track_inventory && stock_quantity !== undefined && stock_quantity !== null) {
+      const newStock = Math.max(0, Math.round(Number(stock_quantity)));
+      const oldStock = Math.max(0, Math.round(Number(product.stock_quantity || 0)));
+      const diff = newStock - oldStock;
+      if (diff !== 0) {
+        db.prepare(`
+          INSERT INTO stock_movements (
+            product_id, movement_type, quantity,
+            balance_before, balance_after, unit_cost,
+            reference_type, reference_id, notes,
+            created_by, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'manual_adjustment', ?, ?, ?, ?)
+        `).run(
+          req.params.id,
+          diff > 0 ? 'in' : 'out',
+          Math.abs(diff),
+          oldStock,
+          newStock,
+          parsedCostPrice || 0,
+          `ADJ-${Date.now()}`,
+          diff > 0 ? `Penambahan stok manual (+${diff})` : `Pengurangan stok manual (${diff})`,
+          (req as any).user?.id || 'system',
+          now()
+        );
+      }
     }
 
     db.prepare(`
