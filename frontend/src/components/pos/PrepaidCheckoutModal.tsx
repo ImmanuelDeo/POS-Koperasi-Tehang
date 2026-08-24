@@ -57,45 +57,30 @@ export default function PrepaidCheckoutModal({
   const [deductionNotes, setDeductionNotes] = useState('');
   const [processing, setProcessing] = useState(false);
 
-  // ── Salary Deduction Eligibility ──────────────────────────────────────────
+  // ── Salary Deduction Eligibility (Unlimited with Accumulated Usage Info) ──
   const isMemberSelected = !!member;
   const isMemberActive = member?.is_active === 1;
   const isDeductionEnabled = member?.salary_deduction_enabled === 1;
-  const remainingMonthly = member?.remaining_monthly_limit ?? 0;
-  const remainingOutstanding = member?.remaining_outstanding_limit ?? 0;
-
-  const isMonthlySufficient = remainingMonthly >= totalAmount;
-  const isOutstandingSufficient = remainingOutstanding >= totalAmount;
+  const totalMonthlyAccumulation = member?.current_monthly_usage ?? 0;
+  const newEstimatedAccumulation = totalMonthlyAccumulation + totalAmount;
 
   const isDeductionEligible =
     isMemberSelected &&
     isMemberActive &&
     isDeductionEnabled &&
-    isMonthlySufficient &&
-    isOutstandingSufficient &&
     totalAmount > 0;
 
   const deductionIneligibilityReason = useMemo(() => {
     if (!isMemberSelected) return 'Pilih member koperasi terlebih dahulu';
     if (!isMemberActive) return 'Akun member ini berstatus non-aktif';
     if (!isDeductionEnabled) return 'Fasilitas potong gaji dinonaktifkan untuk member ini';
-    if (!isMonthlySufficient) {
-      return `Sisa limit bulanan tidak mencukupi (Sisa: ${fmt(remainingMonthly)}, Tagihan: ${fmt(totalAmount)})`;
-    }
-    if (!isOutstandingSufficient) {
-      return `Sisa limit outstanding tidak mencukupi (Sisa: ${fmt(remainingOutstanding)}, Tagihan: ${fmt(totalAmount)})`;
-    }
+    if (totalAmount <= 0) return 'Total belanja harus lebih dari 0';
     return null;
   }, [
     isMemberSelected,
     isMemberActive,
     isDeductionEnabled,
-    isMonthlySufficient,
-    isOutstandingSufficient,
-    remainingMonthly,
-    remainingOutstanding,
     totalAmount,
-    fmt,
   ]);
 
   // ── Cash Calculations ─────────────────────────────────────────────────────
@@ -200,7 +185,7 @@ export default function PrepaidCheckoutModal({
               </span>
               {member && (
                 <span className="text-emerald-400 font-medium text-[11px]">
-                  Sisa Limit: {fmt(remainingMonthly)}
+                  Akumulasi Bon: {fmt(totalMonthlyAccumulation)}
                 </span>
               )}
             </div>
@@ -327,17 +312,13 @@ export default function PrepaidCheckoutModal({
 
                     <div className="pt-2 border-t border-emerald-200/60 grid grid-cols-2 gap-2 text-xs">
                       <div>
-                        <span className="text-[10px] text-gray-500 block">Sisa Limit Bulanan</span>
-                        <strong className="text-emerald-950 font-bold">{fmt(remainingMonthly)}</strong>
+                        <span className="text-[10px] text-gray-500 block">Akumulasi Bon Bulan Ini</span>
+                        <strong className="text-emerald-950 font-bold">{fmt(totalMonthlyAccumulation)}</strong>
                       </div>
                       <div>
-                        <span className="text-[10px] text-gray-500 block">Estimasi Sisa Pasca Bayar</span>
-                        <strong
-                          className={`font-bold ${
-                            remainingMonthly - totalAmount < 0 ? 'text-red-600' : 'text-emerald-700'
-                          }`}
-                        >
-                          {fmt(Math.max(0, remainingMonthly - totalAmount))}
+                        <span className="text-[10px] text-gray-500 block">Akumulasi Setelah Transaksi</span>
+                        <strong className="text-emerald-700 font-bold">
+                          {fmt(newEstimatedAccumulation)}
                         </strong>
                       </div>
                     </div>
@@ -347,7 +328,7 @@ export default function PrepaidCheckoutModal({
                   {isDeductionEligible ? (
                     <div className="flex items-center gap-2 p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium">
                       <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
-                      <span>Member memenuhi syarat untuk potongan gaji penuh.</span>
+                      <span>Bebas limit • Transaksi dicatat langsung ke akumulasi potong gaji.</span>
                     </div>
                   ) : (
                     <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs">

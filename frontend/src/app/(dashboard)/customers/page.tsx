@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 
 
 import toast from 'react-hot-toast';
-import { Plus, Search, X, Edit, Wallet, History, TrendingUp, TrendingDown, AlertCircle, FileText, FileDown, Download } from 'lucide-react';
+import { Plus, Search, X, Edit, Wallet, History, TrendingUp, TrendingDown, AlertCircle, FileText, FileDown, Download, Trash2 } from 'lucide-react';
 import { useSearchParams, useRouter } from 'next/navigation';
 
 import type { Customer } from '@/lib/types';
@@ -154,6 +154,22 @@ export default function CustomersPage() {
       toast.success(`Bon PDF untuk ${c.name} berhasil diunduh`);
     } catch (err: any) {
       toast.error('Gagal mengunduh bon potong gaji anggota');
+    }
+  };
+
+  const handleDeleteCustomer = async (c: Customer) => {
+    const confirmed = window.confirm(
+      `Apakah Anda yakin ingin menghapus data "${c.name}"?\n\nJika member ini telah memiliki riwayat transaksi atau bon potongan gaji, akun akan dinonaktifkan (arsip) agar pembukuan keuangan tetap valid.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await api.delete(`/customers/${c.id}`);
+      toast.success(res.data?.message || 'Data member berhasil dihapus');
+      fetchCustomers();
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || 'Gagal menghapus data member';
+      toast.error(errorMsg);
     }
   };
 
@@ -312,6 +328,15 @@ export default function CustomersPage() {
                   </Button>
                   <Button variant="ghost" size="sm" onClick={() => openLedger(c)} title={t('customer.viewLedgerTitle')}>
                     <History size={14} />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDeleteCustomer(c)}
+                    title="Hapus Member"
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                  >
+                    <Trash2 size={14} />
                   </Button>
                 </td>
               </tr>

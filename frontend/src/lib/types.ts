@@ -281,6 +281,7 @@ export interface CooperativeMember {
   monthly_deduction_limit: number;
   outstanding_deduction_limit: number;
   current_monthly_usage?: number;
+  total_accumulated_deductions?: number;
   current_outstanding?: number;
   remaining_monthly_limit: number;
   remaining_outstanding_limit: number;

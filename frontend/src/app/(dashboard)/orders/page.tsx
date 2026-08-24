@@ -439,7 +439,7 @@ export default function OrdersPage() {
         {
           business_name: currentTenant?.business_name || t('common.businessNameFallback'),
           currency,
-          country: currentTenant?.country || 'IN',
+          country: currentTenant?.country || 'ID',
         },
         { isReprint }
       );

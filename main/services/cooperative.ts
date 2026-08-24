@@ -201,6 +201,19 @@ export function getMemberMonthlyUsage(db: Database.Database, memberId: string, p
 }
 
 /**
+ * Calculate total accumulated salary deductions (pending + confirmed) across all periods for a given member.
+ */
+export function getMemberTotalAccumulatedUsage(db: Database.Database, memberId: string): number {
+  const row = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) as total
+    FROM salary_deductions
+    WHERE member_id = ? AND status IN ('pending', 'confirmed')
+  `).get(memberId) as { total: number };
+
+  return row ? row.total : 0;
+}
+
+/**
  * Calculate outstanding exposure (pending + rejected) for a given member.
  */
 export function getMemberOutstandingExposure(db: Database.Database, memberId: string): number {

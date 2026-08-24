@@ -225,43 +225,40 @@ export function buildClassicReceiptBytes(
   // Payment methods
   if (bill.payment_details && bill.payment_details.length > 0) {
     for (const p of bill.payment_details) {
-      enc.text(padRow(capitalize(p.method), formatAmount(p.amount, currency, locale), cols)).newline();
+      if (p.method === 'salary_deduction') {
+        enc.bold(true).text('METODE : POTONG GAJI (BON)').bold(false).newline();
+        enc.text(padRow('Nominal Bon:', formatAmount(p.amount, currency, locale), cols)).newline();
+        enc.rule({ style: 'single' });
+        enc.align('center').text('Tanda Tangan Anggota / Kasir').newline();
+        enc.newline().text('(............................)').newline().align('left');
+      } else {
+        enc.text(padRow(capitalize(p.method), formatAmount(p.amount, currency, locale), cols)).newline();
+      }
     }
   }
 
   enc.newline();
 
-  // Tax breakdown (optional)
-  if (showTaxBreakdown && bill.tax_breakdown && bill.tax_breakdown.length > 0) {
-    for (const t of bill.tax_breakdown) {
-      enc
-        .text(padRow(` ${t.title}@${t.rate}%`, formatAmount(t.amount, currency, locale), cols))
-        .newline();
-    }
-  }
-
   // Footer
   if (showFooter) {
-    if (gstin) {
-      enc
-        .text(padRow(`GSTIN: ${gstin}`, `Bill #${bill.bill_number}`, cols))
-        .newline();
-    }
     if (address) {
       enc.align('center').text(truncate(address, cols)).newline().align('left');
     }
     if (phone) {
-      enc.align('center').text(`Call: ${phone}`).newline().align('left');
+      enc.align('center').text(`Telp: ${phone}`).newline().align('left');
     }
     enc.newline();
-    enc.align('center').text('Thank you! Please visit again').newline();
+    enc.align('center').text('Terima kasih atas kunjungan Anda').newline();
+    enc.align('center').text('Barang tidak dapat ditukar/dikembalikan').newline();
+    enc.align('center').text('Simpan struk sbg bukti yg sah').newline();
     if (footerNote) {
       enc.text(truncate(footerNote, cols)).newline();
     }
     enc.align('left');
   }
 
-  enc.newline().newline().newline().cut();
+  // 5 line feeds for Blueprint ECO-58D manual tear bar margin (NO CUTTER)
+  enc.newline().newline().newline().newline().newline();
 
   return enc.encode();
 }
@@ -359,7 +356,8 @@ export function buildCompactReceiptBytes(
   }
   enc.align('left');
 
-  enc.newline().newline().newline().cut();
+  // 5 line feeds for Blueprint ECO-58D manual tear bar margin (NO CUTTER)
+  enc.newline().newline().newline().newline().newline();
 
   return enc.encode();
 }
@@ -511,7 +509,8 @@ export function buildDetailedReceiptBytes(
   }
   enc.align('left');
 
-  enc.newline().newline().newline().cut();
+  // 5 line feeds for Blueprint ECO-58D manual tear bar margin (NO CUTTER)
+  enc.newline().newline().newline().newline().newline();
 
   return enc.encode();
 }
@@ -539,10 +538,8 @@ function truncate(str: string, max: number): string {
 }
 
 function formatAmount(value: number | string, currency: string, locale: string): string {
-  return `${currency}${Number(value).toLocaleString(locale, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+  const num = Math.round(Number(value) || 0);
+  return `${currency}${num.toLocaleString(locale)}`;
 }
 
 function capitalize(str: string): string {

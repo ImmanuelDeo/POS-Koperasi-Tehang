@@ -636,8 +636,8 @@ export default function SettingsPage() {
   };
 
   const emptyPrinterForm: PrinterForm = {
-    name: '', connection_type: 'network', ip_address: '', port: '9100',
-    usb_device_path: '/dev/usb/lp0', paper_width: '80mm',
+    name: '', connection_type: 'usb', ip_address: '', port: '9100',
+    usb_device_path: '/dev/usb/lp0', paper_width: '58mm',
   };
 
   type DetectedPrinter = {
@@ -685,7 +685,7 @@ export default function SettingsPage() {
       } = {
         name: p.name,
         connection_type: p.connectionType === 'network' ? 'network' : 'usb',
-        paper_width: p.paperWidth || '80mm',
+        paper_width: p.paperWidth || '58mm',
       };
       if (p.connectionType === 'network') {
         payload.ip_address = p.ipAddress || '';
@@ -714,7 +714,7 @@ export default function SettingsPage() {
       name: p.name, connection_type: p.connection_type,
       ip_address: p.ip_address || '', port: String(p.port || 9100),
       usb_device_path: p.usb_device_path || '/dev/usb/lp0',
-      paper_width: p.paper_width || '80mm',
+      paper_width: p.paper_width || '58mm',
     });
     setEditingPrinterId(p.id);
     setShowPrinterForm(true);
@@ -778,8 +778,8 @@ export default function SettingsPage() {
       await api.post(`/printers/${printer.id}/test`);
       toast.success(t('settings.testPrintSent'));
     } catch (err: unknown) {
-      const error = err as { response?: { data?: { error?: string } } };
-      toast.error(error?.response?.data?.error || t('settings.testPrintFailed'));
+      const error = err as { response?: { data?: { error?: string; message?: string } } };
+      toast.error(error?.response?.data?.message || error?.response?.data?.error || t('settings.testPrintFailed'), { duration: 7000 });
     } finally {
       setTestingPrinterId(null);
     }
@@ -926,6 +926,7 @@ export default function SettingsPage() {
     autoPrintKot: boolean; autoPrintBill: boolean;
     webPrintSize: PaperSize; whatsappShareEnabled: boolean;
     printerUseUnicode: boolean;
+    showMaskedNikOnReceipt: boolean;
   };
   const initPrinting = (): PrintingForm => ({
     printerEnabled: posSettings.printerEnabled,
@@ -936,10 +937,11 @@ export default function SettingsPage() {
     webPrintSize: posSettings.webPrintSize,
     whatsappShareEnabled: posSettings.whatsappShareEnabled,
     printerUseUnicode: posSettings.printerUseUnicode,
+    showMaskedNikOnReceipt: posSettings.showMaskedNikOnReceipt,
   });
   const [printingForm, setPrintingForm] = useState<PrintingForm>(initPrinting);
   const [savedPrinting, setSavedPrinting] = useState<PrintingForm>(initPrinting);
-  const savePrinting = (silent: boolean = false) => {
+  const savePrinting = async (silent: boolean = false) => {
     posSettings.setPrinterEnabled(printingForm.printerEnabled);
     posSettings.setPrinterPaperSize(printingForm.printerPaperSize);
     setPrintMethod(printingForm.printMethod);
@@ -948,6 +950,14 @@ export default function SettingsPage() {
     posSettings.setWebPrintSize(printingForm.webPrintSize);
     posSettings.setWhatsappShareEnabled(printingForm.whatsappShareEnabled);
     posSettings.setPrinterUseUnicode(printingForm.printerUseUnicode);
+    posSettings.setShowMaskedNikOnReceipt(printingForm.showMaskedNikOnReceipt);
+
+    try {
+      await api.put('/settings/business', {
+        show_masked_nik_on_receipt: printingForm.showMaskedNikOnReceipt,
+      });
+    } catch {}
+
     setSavedPrinting(printingForm);
     if (!silent) toast.success(t('settings.printingSettingsSaved'));
   };
@@ -2669,6 +2679,18 @@ export default function SettingsPage() {
                     <p className="text-sm text-gray-500">{t('settings.autoPrintBillHint')}</p>
                   </div>
                   <Toggle value={printingForm.autoPrintBill} onChange={(v) => setPrintingForm((p) => ({ ...p, autoPrintBill: v }))} />
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-900">Cetak NIK Masked pada Struk Anggota</p>
+                    <p className="text-sm text-gray-500">
+                      Default tidak aktif. Jika aktif, mencetak 8 digit pertama NIK dan 8 tanda bintang (contoh: 32730123********) pada struk transaksi anggota koperasi.
+                    </p>
+                  </div>
+                  <Toggle
+                    value={printingForm.showMaskedNikOnReceipt}
+                    onChange={(v) => setPrintingForm((p) => ({ ...p, showMaskedNikOnReceipt: v }))}
+                  />
                 </div>
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex-1 min-w-0">

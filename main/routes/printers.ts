@@ -1,11 +1,18 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
 import { v4 as uuidv4 } from 'uuid';
-import { printViaNetwork, printViaUSB, buildTestPage, printReceipt, printKOT, detectConnectedPrinters } from '../printers/thermal';
+import {
+  detectConnectedPrinters,
+  buildTestPage,
+  dispatchPrint,
+  printReceiptById,
+} from '../printers/thermal';
+import { createAuditLog } from '../services/audit';
+import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 
-// GET /api/printers — list all
+// GET /api/printers — list all configured printers
 router.get('/', (_req: Request, res: Response) => {
   try {
     const db = getDatabase();
@@ -16,11 +23,11 @@ router.get('/', (_req: Request, res: Response) => {
   }
 });
 
-// GET /api/printers/detect — detect connected USB/network printers
+// GET /api/printers/detect — detect connected USB/network/bluetooth printers from OS
 router.get('/detect', async (_req: Request, res: Response) => {
   try {
     const printers = await detectConnectedPrinters();
-    console.log('[Printer] Detected printers:', printers);
+    console.log('[Printer] Detected printers from OS:', printers.length);
     res.json({ printers });
   } catch (error: any) {
     console.error('[Printer] Detection error:', error);
@@ -28,7 +35,7 @@ router.get('/detect', async (_req: Request, res: Response) => {
   }
 });
 
-// GET /api/printers/:id
+// GET /api/printers/:id — get printer by ID
 router.get('/:id', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
@@ -40,8 +47,8 @@ router.get('/:id', (req: Request, res: Response) => {
   }
 });
 
-// POST /api/printers — create
-router.post('/', (req: Request, res: Response) => {
+// POST /api/printers — create new printer configuration
+router.post('/', (req: AuthenticatedRequest, res: Response) => {
   try {
     const { name, connection_type, ip_address, port, usb_device_path, paper_width, is_default } = req.body;
 
@@ -57,12 +64,11 @@ router.post('/', (req: Request, res: Response) => {
     const db = getDatabase();
     const id = uuidv4();
 
-    // Check if this is the first printer - auto-set as default
     const existingPrinters = db.prepare('SELECT COUNT(*) as count FROM printers').get() as any;
     const isFirstPrinter = existingPrinters?.count === 0;
-    
-    // If new printer should be default, or it's the first printer, clear existing default first
-    if (is_default || isFirstPrinter) {
+    const makeDefault = Boolean(is_default || isFirstPrinter);
+
+    if (makeDefault) {
       db.prepare('UPDATE printers SET is_default = 0').run();
     }
 
@@ -70,14 +76,32 @@ router.post('/', (req: Request, res: Response) => {
       INSERT INTO printers (id, name, connection_type, ip_address, port, usb_device_path, paper_width, is_default, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, name, connection_type,
+      id,
+      name,
+      connection_type,
       ip_address || null,
       port || 9100,
       usb_device_path || null,
-      paper_width || '80mm',
-      (is_default || isFirstPrinter) ? 1 : 0,
-      now(), now()
+      paper_width || '58mm',
+      makeDefault ? 1 : 0,
+      now(),
+      now()
     );
+
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'printer.settings.updated',
+      target_type: 'printer',
+      target_id: id,
+      details: {
+        operation: 'create',
+        name,
+        connection_type,
+        paper_width: paper_width || '58mm',
+        is_default: makeDefault,
+      },
+    });
 
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(id);
     res.status(201).json({ printer });
@@ -86,8 +110,8 @@ router.post('/', (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/printers/:id — update
-router.put('/:id', (req: Request, res: Response) => {
+// PUT /api/printers/:id — update printer
+router.put('/:id', (req: AuthenticatedRequest, res: Response) => {
   try {
     const db = getDatabase();
     const existing = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id) as any;
@@ -118,8 +142,24 @@ router.put('/:id', (req: Request, res: Response) => {
       usb_device_path !== undefined ? (usb_device_path || null) : existing.usb_device_path,
       paper_width || null,
       is_default !== undefined ? (is_default ? 1 : 0) : null,
-      now(), req.params.id
+      now(),
+      req.params.id
     );
+
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'printer.settings.updated',
+      target_type: 'printer',
+      target_id: req.params.id,
+      details: {
+        operation: 'update',
+        name: name || existing.name,
+        connection_type: connection_type || existing.connection_type,
+        paper_width: paper_width || existing.paper_width,
+        is_default: is_default !== undefined ? is_default : existing.is_default,
+      },
+    });
 
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
     res.json({ printer });
@@ -128,202 +168,206 @@ router.put('/:id', (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/printers/:id
-router.delete('/:id', (req: Request, res: Response) => {
+// DELETE /api/printers/:id — delete printer
+router.delete('/:id', (req: AuthenticatedRequest, res: Response) => {
   try {
     const db = getDatabase();
-    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
+    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id) as any;
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
 
     db.prepare('DELETE FROM printers WHERE id = ?').run(req.params.id);
+
+    // If deleted printer was default, assign default to first remaining printer
+    if (printer.is_default === 1) {
+      const firstRemaining = db.prepare('SELECT id FROM printers ORDER BY created_at ASC LIMIT 1').get() as any;
+      if (firstRemaining) {
+        db.prepare('UPDATE printers SET is_default = 1 WHERE id = ?').run(firstRemaining.id);
+      }
+    }
+
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'printer.settings.updated',
+      target_type: 'printer',
+      target_id: req.params.id,
+      details: { operation: 'delete', name: printer.name },
+    });
+
     res.json({ message: 'Printer deleted' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// POST /api/printers/:id/set-default
-router.post('/:id/set-default', (req: Request, res: Response) => {
-  try {
-    const db = getDatabase();
-    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id);
-    if (!printer) return res.status(404).json({ error: 'Printer not found' });
-
-    db.prepare('UPDATE printers SET is_default = 0').run();
-    db.prepare('UPDATE printers SET is_default = 1, updated_at = ? WHERE id = ?').run(now(), req.params.id);
-
-    res.json({ message: 'Default printer set' });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST /api/printers/:id/test — send a test print job
-router.post('/:id/test', async (req: Request, res: Response) => {
+// POST /api/printers/:id/set-default — set as default printer
+router.post('/:id/set-default', (req: AuthenticatedRequest, res: Response) => {
   try {
     const db = getDatabase();
     const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id) as any;
     if (!printer) return res.status(404).json({ error: 'Printer not found' });
 
-    const testData = buildTestPage(printer.paper_width);
-    let success = false;
+    db.prepare('UPDATE printers SET is_default = 0').run();
+    db.prepare('UPDATE printers SET is_default = 1, updated_at = ? WHERE id = ?').run(now(), req.params.id);
 
-    switch (printer.connection_type) {
-      case 'network':
-        if (!printer.ip_address) return res.status(400).json({ error: 'No IP address configured' });
-        success = await printViaNetwork(printer.ip_address, printer.port || 9100, testData);
-        break;
-      case 'usb':
-        // node-thermal-printer auto-detects USB printers, no path needed
-        success = await printViaUSB(testData, undefined);
-        break;
-      case 'webusb':
-        // WebUSB is handled entirely in the browser; return the bytes for the frontend to send
-        return res.json({ success: true, webusb: true, bytes: Array.from(testData) });
-    }
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'printer.settings.updated',
+      target_type: 'printer',
+      target_id: req.params.id,
+      details: { operation: 'set_default', name: printer.name },
+    });
 
-    if (success) {
-      res.json({ success: true });
-    } else {
-      res.status(502).json({ error: 'Printer did not respond or print failed' });
-    }
+    res.json({ message: 'Default printer set', printer: { ...printer, is_default: 1 } });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// POST /api/printers/print-bill — print bill via backend (desktop app)
-router.post('/print-bill', async (req: Request, res: Response) => {
+// POST /api/printers/:id/test — test print job 58mm
+router.post('/:id/test', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { billId, orderId } = req.body;
-    console.log('[Print Bill] Request:', { billId, orderId });
-    
+    const db = getDatabase();
+    const printer = db.prepare('SELECT * FROM printers WHERE id = ?').get(req.params.id) as any;
+    if (!printer) {
+      return res.status(404).json({
+        success: false,
+        code: 'PRINTER_NOT_FOUND',
+        message: 'Printer tidak ditemukan.',
+      });
+    }
+
+    const testData = buildTestPage(printer.paper_width || '58mm', printer.name);
+    const printRes = await dispatchPrint(printer, testData);
+
+    if (printRes.success) {
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'printer.test_print.completed',
+        target_type: 'printer',
+        target_id: printer.id,
+        details: { printer_name: printer.name, paper_width: printer.paper_width || '58mm' },
+      });
+
+      return res.json({
+        success: true,
+        jobId: `TEST-${Date.now()}`,
+        printerName: printer.name,
+        printedAt: new Date().toISOString(),
+      });
+    }
+
+    return res.status(502).json({
+      success: false,
+      code: printRes.code || 'PRINT_FAILED',
+      message: printRes.message || 'Printer tidak merespons. Periksa koneksi printer.',
+    });
+  } catch (error: any) {
+    console.error('[Printer Test] Error:', error);
+    res.status(500).json({
+      success: false,
+      code: 'PRINT_FAILED',
+      message: 'Terjadi kesalahan sistem saat mencoba test print: ' + error.message,
+    });
+  }
+});
+
+// POST /api/printers/print-bill — print bill receipt (server is the source of truth)
+router.post('/print-bill', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { billId, orderId, isReprint } = req.body;
+
     if (!billId && !orderId) {
-      console.log('[Print Bill] Error: No billId or orderId provided');
-      return res.status(400).json({ error: 'billId or orderId is required' });
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_PRINT_DATA',
+        message: 'billId atau orderId diperlukan untuk mencetak struk.',
+      });
     }
 
     const db = getDatabase();
-    const printer = db.prepare('SELECT * FROM printers WHERE is_default = 1').get();
-    console.log('[Print Bill] Default printer:', printer);
-    
-    if (!printer) {
-      console.log('[Print Bill] Error: No default printer');
-      return res.status(400).json({ error: 'No default printer configured. Add a printer in Settings.' });
-    }
 
-    // Get bill and order data
-    let bill: any;
-    if (billId) {
-      bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId);
-    } else {
-      bill = db.prepare('SELECT b.* FROM bills b WHERE b.order_id = ?').get(orderId);
-    }
-
-    if (!bill) {
-      console.log('[Print Bill] Error: Bill not found');
-      return res.status(404).json({ error: 'Bill not found' });
-    }
-    console.log('[Print Bill] Bill:', bill.bill_number, 'Total:', bill.total);
-
-    const order: any = db.prepare('SELECT * FROM orders WHERE id = ?').get(bill.order_id);
-    if (!order) {
-      console.log('[Print Bill] Error: Order not found');
-      return res.status(404).json({ error: 'Order not found' });
-    }
-    console.log('[Print Bill] Order:', order.order_number);
-
-    // Fetch order items
-    const items: any[] = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(bill.order_id);
-    order.items = items;
-    console.log('[Print Bill] Items count:', items.length);
-
-    // Fetch table info
-    if (order.table_id) {
-      const table: any = db.prepare('SELECT * FROM tables WHERE id = ?').get(order.table_id);
-      if (table) {
-        order.table = { name: table.number };
+    let targetBillId = billId;
+    if (!targetBillId && orderId) {
+      const foundBill = db.prepare('SELECT id FROM bills WHERE order_id = ?').get(orderId) as any;
+      if (foundBill) {
+        targetBillId = foundBill.id;
       }
     }
 
-    // Fetch business settings for bill template
-    const businessName = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
-    const businessAddress = db.prepare("SELECT value FROM settings WHERE key = 'address'").get() as any;
-    const businessPhone = db.prepare("SELECT value FROM settings WHERE key = 'phone'").get() as any;
-    const gstin = db.prepare("SELECT value FROM settings WHERE key = 'gstin'").get() as any;
-    const billTemplate = db.prepare("SELECT value FROM settings WHERE key = 'bill_template'").get() as any;
-
-    const business = {
-      name: businessName?.value || 'Store',
-      address: businessAddress?.value || '',
-      phone: businessPhone?.value || '',
-      gstin: gstin?.value || '',
-    };
-    console.log('[Print Bill] Business:', business.name, 'Template:', billTemplate?.value || 'compact');
-
-    // Use existing printReceipt function with template support
-    console.log('[Print Bill] Calling printReceipt...');
-    const success = await printReceipt(order, bill, business, billTemplate?.value || 'compact');
-    console.log('[Print Bill] Print result:', success);
-
-    if (success) {
-      res.json({ success: true });
-    } else {
-      res.status(502).json({ error: 'Print failed. Check printer connection and settings.' });
+    if (!targetBillId) {
+      return res.status(404).json({
+        success: false,
+        code: 'INVALID_PRINT_DATA',
+        message: 'Data tagihan/bill tidak ditemukan untuk transaksi ini.',
+      });
     }
+
+    const printRes = await printReceiptById(targetBillId, Boolean(isReprint), req.user?.id);
+
+    if (printRes.success) {
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: isReprint ? 'receipt.reprinted' : 'receipt.printed',
+        target_type: 'bill',
+        target_id: String(targetBillId),
+        details: {
+          is_reprint: Boolean(isReprint),
+          printer_name: printRes.printerName,
+          job_id: printRes.jobId,
+        },
+      });
+
+      return res.json(printRes);
+    }
+
+    return res.status(502).json(printRes);
   } catch (error: any) {
     console.error('[Print Bill] Error:', error);
-    console.error('[Print Bill] Error stack:', error.stack);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      success: false,
+      code: 'PRINT_FAILED',
+      message: 'Cetak struk gagal karena gangguan internal sistem.',
+    });
   }
 });
 
-// POST /api/printers/print-kot — print KOT via backend (desktop app)
-router.post('/print-kot', async (req: Request, res: Response) => {
+// POST /api/printers/retry-print — retry print job for a bill
+router.post('/retry-print', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { orderId, stationName, items } = req.body;
-    
-    if (!orderId) {
-      return res.status(400).json({ error: 'orderId is required' });
+    const { billId } = req.body;
+    if (!billId) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_PRINT_DATA',
+        message: 'billId diperlukan untuk melakukan retry print.',
+      });
     }
 
     const db = getDatabase();
-    const printer = db.prepare('SELECT * FROM printers WHERE is_default = 1').get();
-    
-    if (!printer) {
-      return res.status(400).json({ error: 'No default printer configured. Add a printer in Settings.' });
-    }
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'printer.print.retry_requested',
+      target_type: 'bill',
+      target_id: String(billId),
+      details: { retry: true },
+    });
 
-    const order: any = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
+    const printRes = await printReceiptById(billId, false, req.user?.id);
+    if (printRes.success) {
+      return res.json(printRes);
     }
-
-    // Fetch order items from database
-    const orderItems: any[] = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(orderId);
-    
-    // Fetch table info if available
-    let tableName: string | undefined;
-    if (order.table_id) {
-      const table: any = db.prepare('SELECT * FROM tables WHERE id = ?').get(order.table_id);
-      if (table) {
-        order.table = { name: table.number };
-      }
-    }
-
-    // Use existing printKOT function
-    const kotItems = items || orderItems;
-    const station = stationName || 'Kitchen';
-    const success = await printKOT(order, kotItems, station);
-
-    if (success) {
-      res.json({ success: true });
-    } else {
-      res.status(502).json({ error: 'KOT print failed. Check printer connection.' });
-    }
+    return res.status(502).json(printRes);
   } catch (error: any) {
-    console.error('[Print KOT] Error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      success: false,
+      code: 'PRINT_FAILED',
+      message: 'Gagal mengulang cetak struk: ' + error.message,
+    });
   }
 });
 

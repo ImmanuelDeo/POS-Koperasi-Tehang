@@ -109,8 +109,8 @@ export const usePrinterStore = create<PrinterState>()(
               await api.post('/printers/print-bill', { billId: bill.id, useUnicode: printerUseUnicode, isReprint });
               return;
             } catch (err: unknown) {
-              const e = err as { response?: { data?: { error?: string } }; message?: string };
-              throw new Error(e.response?.data?.error || e.message || 'Print failed');
+              const e = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
+              throw new Error(e.response?.data?.message || e.response?.data?.error || e.message || 'Print failed');
             }
           }
 

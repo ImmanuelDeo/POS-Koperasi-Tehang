@@ -233,45 +233,11 @@ export function registerRoutes(app: Express): void {
   app.use('/api/kds', authenticateToken, requireRole(['owner', 'admin', 'chef']), kdsRoutes);
   app.use('/api/kds-info', authenticateToken, requireRole(['owner', 'admin', 'chef']), kdsInfoRoutes);
 
-  // Printer routes: separate print actions/status from configuration
+  // Printer routes: owner, admin, manager, and cashier have full printer settings & print access
   app.use(
     '/api/printers',
     authenticateToken,
-    (req: AuthenticatedRequest, res, next) => {
-      const user = req.user!;
-      if (user.role === 'owner') return next();
-
-      const effectiveRoles = [user.role];
-      if (user.role === 'manager') effectiveRoles.push('admin');
-      if (user.role === 'waiter') effectiveRoles.push('cashier');
-
-      const isAdmin = effectiveRoles.includes('admin');
-      const isCashier = effectiveRoles.includes('cashier');
-
-      // Admin has full printer access (config + print)
-      if (isAdmin) return next();
-
-      // Cashier only has access to GET (status/list/detect/detail), and POST print actions (test, print-bill, print-kot)
-      if (isCashier) {
-        if (req.method === 'GET') {
-          return next();
-        }
-        if (req.method === 'POST') {
-          const printActionPaths = ['/print-bill', '/print-kot'];
-          const isPrintAction =
-            printActionPaths.includes(req.path) ||
-            /^\/[^/]+\/test$/.test(req.path);
-
-          if (isPrintAction) {
-            return next();
-          }
-        }
-      }
-
-      return res.status(403).json({
-        error: `Forbidden: Role '${user.role}' is not authorized for printer configuration`,
-      });
-    },
+    requireRole(['owner', 'admin', 'manager', 'cashier', 'waiter']),
     printerRoutes
   );
 

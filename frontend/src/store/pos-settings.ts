@@ -39,6 +39,7 @@ export interface PosSettingsState {
   billShowAddress: boolean;
   billShowPhone: boolean;
   billShowGstn: boolean;
+  showMaskedNikOnReceipt: boolean;
   // Thermal printer unicode support
   printerUseUnicode: boolean;
   // Kitchen workflow toggles (issue #133) — business-level settings, synced
@@ -72,6 +73,7 @@ export interface PosSettingsState {
   setBillShowAddress: (v: boolean) => void;
   setBillShowPhone: (v: boolean) => void;
   setBillShowGstn: (v: boolean) => void;
+  setShowMaskedNikOnReceipt: (v: boolean) => void;
   setBillingType: (v: 'postpaid' | 'prepaid') => void;
   setTablesRequired: (v: boolean) => void;
   setPrinterUseUnicode: (v: boolean) => void;
@@ -110,6 +112,7 @@ export const usePosSettingsStore = create<PosSettingsState>()(
       billShowAddress: true,
       billShowPhone: true,
       billShowGstn: false,
+      showMaskedNikOnReceipt: false,
       printerUseUnicode: false,
       kdsEnabled: false,
       kotPrintingEnabled: false,
@@ -141,6 +144,7 @@ export const usePosSettingsStore = create<PosSettingsState>()(
       setBillShowAddress: (v) => set({ billShowAddress: v }),
       setBillShowPhone: (v) => set({ billShowPhone: v }),
       setBillShowGstn: (v) => set({ billShowGstn: v }),
+      setShowMaskedNikOnReceipt: (v) => set({ showMaskedNikOnReceipt: v }),
       setBillingType: (v) => set({ billingType: v }),
       setTablesRequired: (v) => set({ tablesRequired: v }),
       setPrinterUseUnicode: (v) => set({ printerUseUnicode: v }),

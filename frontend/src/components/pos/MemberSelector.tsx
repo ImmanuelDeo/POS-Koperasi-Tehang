@@ -231,9 +231,14 @@ export default function MemberSelector({
                         <CreditCard size={13} className="text-gray-400" />
                         Potong Gaji:{' '}
                         <strong className={deductionEnabled ? 'text-emerald-700 font-semibold' : 'text-gray-500'}>
-                          {deductionEnabled ? 'Tersedia' : 'Non-Aktif'}
+                          {deductionEnabled ? 'Bebas Limit' : 'Non-Aktif'}
                         </strong>
                       </span>
+                      {deductionEnabled && (m.current_monthly_usage ?? 0) > 0 && (
+                        <span className="text-[11px] text-gray-500">
+                          Akumulasi Bulan Ini: <strong className="text-gray-800">{fmt(m.current_monthly_usage || 0)}</strong>
+                        </span>
+                      )}
                     </div>
                   </div>
 

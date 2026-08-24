@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
 import { normalizeNik, maskNik } from '../services/privacy';
+import { createAuditLog } from '../services/audit';
 
 const router = Router();
 
@@ -275,20 +276,57 @@ router.put('/:id', (req: Request, res: Response) => {
 router.delete('/:id', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
+    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id) as any;
     if (!customer) {
-      return res.status(404).json({ error: 'Customer not found' });
+      return res.status(404).json({ error: 'Customer / Member not found' });
     }
 
-    const recentOrders = db.prepare(`
-      SELECT * FROM orders WHERE customer_id = ? AND date(created_at) > date('now', '-30 days')
-    `).get(req.params.id);
-    if (recentOrders) {
-      return res.status(400).json({ error: 'Cannot delete customer with recent orders' });
+    const orderCount = (db.prepare('SELECT COUNT(*) as count FROM orders WHERE customer_id = ?').get(req.params.id) as any)?.count || 0;
+    const deductionCount = (db.prepare('SELECT COUNT(*) as count FROM salary_deductions WHERE member_id = ?').get(req.params.id) as any)?.count || 0;
+
+    const userRole = (req as any).user?.role;
+    const userId = (req as any).user?.id;
+
+    if (orderCount === 0 && deductionCount === 0) {
+      db.prepare('DELETE FROM loyalty_ledger WHERE customer_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM customers WHERE id = ?').run(req.params.id);
+
+      createAuditLog(db, {
+        actor_user_id: userId,
+        actor_role: userRole,
+        action: 'member.deleted',
+        target_type: 'member',
+        target_id: String(req.params.id),
+        details: { name: customer.name, member_no: customer.member_no, mode: 'hard_delete' },
+        ip_address: req.ip || null,
+      });
+
+      return res.json({ success: true, message: `Member ${customer.name} berhasil dihapus permanen` });
     }
 
-    db.prepare('DELETE FROM customers WHERE id = ?').run(req.params.id);
-    res.json({ message: 'Customer deleted' });
+    // Has transactions: archive/deactivate to preserve financial audit trail
+    db.prepare(`
+      UPDATE customers SET
+        is_active = 0,
+        salary_deduction_enabled = 0,
+        updated_at = ?
+      WHERE id = ?
+    `).run(now(), req.params.id);
+
+    createAuditLog(db, {
+      actor_user_id: userId,
+      actor_role: userRole,
+      action: 'member.archived',
+      target_type: 'member',
+      target_id: String(req.params.id),
+      details: { name: customer.name, member_no: customer.member_no, orders: orderCount, deductions: deductionCount, mode: 'soft_delete' },
+      ip_address: req.ip || null,
+    });
+
+    return res.json({
+      success: true,
+      message: `Member ${customer.name} dinonaktifkan (arsip) karena memiliki ${orderCount} transaksi & ${deductionCount} bon tercatat.`,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

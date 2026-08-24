@@ -5,6 +5,7 @@ import {
   parseIntegerRupiah,
   calculatePayrollPeriod,
   getMemberMonthlyUsage,
+  getMemberTotalAccumulatedUsage,
   getMemberOutstandingExposure,
 } from '../services/cooperative';
 import { normalizeNik, validateNik, maskNik } from '../services/privacy';
@@ -60,6 +61,7 @@ router.get('/lookup', (req: AuthenticatedRequest, res: Response) => {
       const outstandingLimit = member.outstanding_deduction_limit ?? 0;
 
       const monthlyUsage = getMemberMonthlyUsage(db, member.id, periodMonth);
+      const totalAccumulated = getMemberTotalAccumulatedUsage(db, member.id);
       const currentOutstanding = getMemberOutstandingExposure(db, member.id);
 
       const remainingMonthly = Math.max(0, monthlyLimit - monthlyUsage);
@@ -83,6 +85,7 @@ router.get('/lookup', (req: AuthenticatedRequest, res: Response) => {
         monthly_deduction_limit: monthlyLimit,
         outstanding_deduction_limit: outstandingLimit,
         current_monthly_usage: monthlyUsage,
+        total_accumulated_deductions: totalAccumulated,
         current_outstanding: currentOutstanding,
         remaining_monthly_limit: remainingMonthly,
         remaining_outstanding_limit: remainingOutstanding,
@@ -196,6 +199,7 @@ router.get('/:id', (req: AuthenticatedRequest, res: Response) => {
 
     const periodMonth = calculatePayrollPeriod(db);
     const monthlyUsage = getMemberMonthlyUsage(db, member.id, periodMonth);
+    const totalAccumulated = getMemberTotalAccumulatedUsage(db, member.id);
     const currentOutstanding = getMemberOutstandingExposure(db, member.id);
     const monthlyLimit = member.monthly_deduction_limit ?? 0;
     const outstandingLimit = member.outstanding_deduction_limit ?? 0;
@@ -223,6 +227,7 @@ router.get('/:id', (req: AuthenticatedRequest, res: Response) => {
         nik_masked: masked,
         has_nik: Boolean(member.nik && String(member.nik).trim().length > 0),
         current_monthly_usage: monthlyUsage,
+        total_accumulated_deductions: totalAccumulated,
         current_outstanding: currentOutstanding,
         remaining_monthly_limit: Math.max(0, monthlyLimit - monthlyUsage),
         remaining_outstanding_limit: Math.max(0, outstandingLimit - currentOutstanding),
@@ -579,6 +584,68 @@ router.patch('/:id/limit', (req: AuthenticatedRequest, res: Response) => {
 
     const updated = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
     res.json({ member: updated });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── DELETE /api/members/:id ──────────────────────────────────────────────────
+// Delete or archive a member
+
+router.delete('/:id', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const db = getDatabase();
+    const member = db.prepare('SELECT * FROM customers WHERE id = ? AND is_member = 1').get(req.params.id) as any;
+    if (!member) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    const orderCount = (db.prepare('SELECT COUNT(*) as count FROM orders WHERE customer_id = ?').get(req.params.id) as any)?.count || 0;
+    const deductionCount = (db.prepare('SELECT COUNT(*) as count FROM salary_deductions WHERE member_id = ?').get(req.params.id) as any)?.count || 0;
+
+    const userRole = req.user?.role;
+    const userId = req.user?.id;
+
+    if (orderCount === 0 && deductionCount === 0) {
+      db.prepare('DELETE FROM loyalty_ledger WHERE customer_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM customers WHERE id = ?').run(req.params.id);
+
+      createAuditLog(db, {
+        actor_user_id: userId,
+        actor_role: userRole,
+        action: 'member.deleted',
+        target_type: 'member',
+        target_id: String(req.params.id),
+        details: { name: member.name, member_no: member.member_no, mode: 'hard_delete' },
+        ip_address: req.ip || null,
+      });
+
+      return res.json({ success: true, message: `Member ${member.name} berhasil dihapus permanen` });
+    }
+
+    // Has transactions: soft delete / archive to protect accounting audit trail
+    db.prepare(`
+      UPDATE customers SET
+        is_active = 0,
+        salary_deduction_enabled = 0,
+        updated_at = ?
+      WHERE id = ?
+    `).run(now(), req.params.id);
+
+    createAuditLog(db, {
+      actor_user_id: userId,
+      actor_role: userRole,
+      action: 'member.archived',
+      target_type: 'member',
+      target_id: String(req.params.id),
+      details: { name: member.name, member_no: member.member_no, orders: orderCount, deductions: deductionCount, mode: 'soft_delete' },
+      ip_address: req.ip || null,
+    });
+
+    return res.json({
+      success: true,
+      message: `Member ${member.name} dinonaktifkan (arsip) karena memiliki ${orderCount} transaksi & ${deductionCount} bon tercatat.`,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
