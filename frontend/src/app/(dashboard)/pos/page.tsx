@@ -95,16 +95,45 @@ export default function POSPage() {
   // Barcode scanner listener
   const anyModalOpen = showMemberSelector || showPrepaidCheckout || showAdminExitModal;
 
-  useBarcodeScanner((code) => {
+  useBarcodeScanner(async (code) => {
     const trimmed = code.trim();
-    const product = products.find(
+    if (!trimmed) return;
+
+    // 1. Check in-memory catalog first
+    let product = products.find(
       (p) => p.barcode === trimmed || (p.sku && p.sku.toLowerCase() === trimmed.toLowerCase())
     );
+
+    // 2. Fallback to backend exact lookup if not in cached memory
+    if (!product) {
+      try {
+        const res = await api.get(`/products/lookup-barcode?code=${encodeURIComponent(trimmed)}`);
+        if (res.data?.product) {
+          product = res.data.product;
+        }
+      } catch (err: any) {
+        if (err.response?.status === 404) {
+          toast.error('Produk belum terdaftar.');
+        } else if (err.response?.status === 409) {
+          toast.error('Barcode bermasalah. Hubungi admin.');
+        } else if (err.response?.status === 422) {
+          toast.error('Produk tidak aktif.');
+        } else {
+          toast.error('Gagal memproses scan barcode.');
+        }
+        return;
+      }
+    }
+
     if (product) {
+      if (!product.is_active) {
+        toast.error('Produk tidak aktif.');
+        return;
+      }
       handleProductClick(product);
       toast.success(`+1 ${product.name}`, { duration: 1000 });
     } else {
-      toast.error(`Produk barcode "${trimmed}" tidak ditemukan`);
+      toast.error('Produk belum terdaftar.');
     }
   }, !anyModalOpen);
 

@@ -5,7 +5,7 @@ import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2, X, Package, Folder, Puzzle, FileSpreadsheet, Download, Upload, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Package, Folder, Puzzle, FileSpreadsheet, Download, Upload, CheckCircle, AlertCircle, AlertTriangle, Search } from 'lucide-react';
 import type { Product, Category, AddonGroup } from '@/lib/types';
 import TagBadge, { tagLabel } from '@/components/pos/DietaryBadge';
 import ImageUploader from '@/components/products/ImageUploader';
@@ -59,6 +59,7 @@ export default function ProductsPage() {
   const { currentTenant } = useAuthStore();
   const [activeTab, setActiveTab] = useState<TabType>('products');
   const [products, setProducts] = useState<Product[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [categories, setCategories] = useState<Category[]>([]);
   const [addonGroups, setAddonGroups] = useState<AddonGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -402,13 +403,25 @@ export default function ProductsPage() {
 
       {activeTab === 'products' && (
         <>
-          <div className="flex justify-end gap-2 mb-4">
-            <Button variant="outline" onClick={() => openCsvModal('products')}>
-              <FileSpreadsheet size={16} className="mr-1" /> CSV
-            </Button>
-            <Button onClick={() => { resetForm(); setShowForm(true); }}>
-              <Plus size={16} className="mr-1" /> {t('products.addProduct')}
-            </Button>
+          <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 mb-4">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Cari nama, SKU, atau scan barcode produk..."
+                className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-brand outline-none"
+              />
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <Button variant="outline" onClick={() => openCsvModal('products')}>
+                <FileSpreadsheet size={16} className="mr-1" /> CSV
+              </Button>
+              <Button onClick={() => { resetForm(); setShowForm(true); }}>
+                <Plus size={16} className="mr-1" /> {t('products.addProduct')}
+              </Button>
+            </div>
           </div>
 
       {/* Product Table */}
@@ -427,7 +440,17 @@ export default function ProductsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {products.map((product) => {
+            {products
+              .filter((product) => {
+                if (!searchQuery.trim()) return true;
+                const q = searchQuery.toLowerCase().trim();
+                return (
+                  product.name.toLowerCase().includes(q) ||
+                  (product.sku && product.sku.toLowerCase().includes(q)) ||
+                  (product.barcode && product.barcode.toLowerCase().includes(q))
+                );
+              })
+              .map((product) => {
               const parentCat = categories.find((c) => String(c.id) === String(product.category_id || product.category?.id));
               const isCategoryInactive = Boolean(parentCat && !parentCat.is_active);
               const taxLabel = product.tax_type === 'none' || !product.tax_type

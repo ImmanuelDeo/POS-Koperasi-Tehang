@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 let db: Database.Database;
 
@@ -345,6 +345,27 @@ function runIncrementalMigrations(fromVersion: number): void {
 
     migrationV10();
     console.log('[DB] Migration to v10 complete');
+  }
+
+  // Migration to version 11 (Product Barcode Unique Index)
+  if (fromVersion < 11) {
+    console.log('[DB] Applying migration to v11 (Product Barcode unique index & SKU index)...');
+    const migrationV11 = db.transaction(() => {
+      // 1. Ensure barcode column exists on products table
+      if (!columnExists('products', 'barcode')) {
+        db.exec(`ALTER TABLE products ADD COLUMN barcode TEXT`);
+      }
+
+      // 2. Partial unique index on barcode (single-tenant schema)
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_unique
+        ON products(barcode) WHERE barcode IS NOT NULL AND trim(barcode) != ''`);
+
+      // 3. Index on SKU
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)`);
+    });
+
+    migrationV11();
+    console.log('[DB] Migration to v11 complete');
   }
 
   // Update schema version
@@ -754,6 +775,12 @@ function createSchema(): void {
       ON audit_logs(action, created_at);
     CREATE INDEX idx_audit_logs_actor
       ON audit_logs(actor_user_id);
+
+    -- ── Schema v11 Indexes (Product Barcode & SKU) ────────────────────────
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_unique
+      ON products(barcode) WHERE barcode IS NOT NULL AND trim(barcode) != '';
+    CREATE INDEX IF NOT EXISTS idx_products_sku
+      ON products(sku);
   `);
 }
 

@@ -18,9 +18,9 @@ router.get('/', (req: Request, res: Response) => {
       query += ' AND is_active = 1';
     }
     if (req.query.search) {
-      query += ' AND (name LIKE ? OR sku LIKE ?)';
+      query += ' AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ?)';
       const searchTerm = `%${req.query.search}%`;
-      params.push(searchTerm, searchTerm);
+      params.push(searchTerm, searchTerm, searchTerm);
     }
     if (req.query.low_stock === 'true') {
       query += ' AND track_inventory = 1 AND stock_quantity <= low_stock_threshold';
@@ -48,6 +48,73 @@ router.get('/', (req: Request, res: Response) => {
     });
 
     res.json({ products: productsWithRelations });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /api/products/lookup-barcode ─────────────────────────────────────────
+// Exact-match barcode lookup for POS Scanner and Stock Flow (registered before /:id)
+
+router.get('/lookup-barcode', (req: Request, res: Response) => {
+  try {
+    const { code } = req.query;
+    if (!code || typeof code !== 'string') {
+      return res.status(400).json({ error: 'Parameter barcode "code" wajib diisi' });
+    }
+
+    const cleanCode = code.trim();
+    if (cleanCode.length < 1 || cleanCode.length > 128) {
+      return res.status(400).json({ error: 'Panjang barcode tidak valid (1 - 128 karakter)' });
+    }
+
+    if (/[\x00-\x1F\x7F]/.test(cleanCode)) {
+      return res.status(400).json({ error: 'Barcode memuat karakter kontrol tidak valid' });
+    }
+
+    const db = getDatabase();
+
+    // Exact match on barcode prioritized
+    let matchingProducts = db.prepare(`
+      SELECT * FROM products
+      WHERE deleted_at IS NULL AND barcode = ?
+    `).all(cleanCode) as any[];
+
+    // Fallback to SKU exact match if not matched by barcode
+    if (matchingProducts.length === 0) {
+      matchingProducts = db.prepare(`
+        SELECT * FROM products
+        WHERE deleted_at IS NULL AND sku = ?
+      `).all(cleanCode) as any[];
+    }
+
+    if (matchingProducts.length === 0) {
+      return res.status(404).json({ error: 'Produk belum terdaftar' });
+    }
+
+    if (matchingProducts.length > 1) {
+      return res.status(409).json({ error: 'Barcode bermasalah. Hubungi admin.' });
+    }
+
+    const product = matchingProducts[0];
+
+    if (product.is_active === 0) {
+      return res.status(422).json({ error: 'Produk tidak aktif', product });
+    }
+
+    // Load category and addons
+    const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(product.category_id);
+    const addonGroupIds = db.prepare('SELECT addon_group_id FROM addon_group_product WHERE product_id = ?').all(product.id).map((r: any) => r.addon_group_id);
+    const addonGroups = addonGroupIds.length > 0
+      ? db.prepare(`SELECT * FROM addon_groups WHERE id IN (${addonGroupIds.map(() => '?').join(',')})`).all(...addonGroupIds)
+      : [];
+
+    const addonGroupsWithAddons = addonGroups.map((group: any) => {
+      const addons = db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(group.id);
+      return { ...group, addons };
+    });
+
+    res.json({ product: { ...product, category, addon_groups: addonGroupsWithAddons } });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -81,7 +148,7 @@ router.get('/:id', (req: Request, res: Response) => {
 router.post('/', (req: Request, res: Response) => {
   try {
     const {
-      category_id, name, sku, description, price, cost_price,
+      category_id, name, sku, barcode, description, price, cost_price,
       tax_type, tax_rate, track_inventory, stock_quantity,
       low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids,
       unit, allow_decimal, member_price, min_reorder_qty
@@ -92,6 +159,22 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     const db = getDatabase();
+
+    let cleanBarcode: string | null = null;
+    if (barcode !== undefined && barcode !== null) {
+      const str = String(barcode).trim();
+      if (str.length > 0) {
+        if (str.length > 128 || /[\x00-\x1F\x7F]/.test(str)) {
+          return res.status(422).json({ error: 'Format barcode tidak valid (maksimal 128 karakter, tanpa karakter kontrol)' });
+        }
+        const existing = db.prepare('SELECT id FROM products WHERE barcode = ? AND deleted_at IS NULL').get(str) as any;
+        if (existing) {
+          return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
+        }
+        cleanBarcode = str;
+      }
+    }
+
     const id = uuidv4();
 
     let parsedMemberPrice: number | null = null;
@@ -105,14 +188,14 @@ router.post('/', (req: Request, res: Response) => {
       : 0;
 
     const result = db.prepare(`
-      INSERT INTO products (id, category_id, name, sku, description, price, cost,
+      INSERT INTO products (id, category_id, name, sku, barcode, description, price, cost,
         tax_type, tax_rate, track_inventory, stock_quantity, low_stock_threshold,
         is_active, image_url, sort_order, cb_percent, tags,
         unit, allow_decimal, member_price, min_reorder_qty,
         created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, category_id || null, name, sku || null, description || null, price, cost_price || 0,
+      id, category_id || null, name, sku || null, cleanBarcode, description || null, price, cost_price || 0,
       tax_type || 'none', tax_rate || 0,
       track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
       is_active !== false ? 1 : 0, image_url || null,
@@ -134,6 +217,9 @@ router.post('/', (req: Request, res: Response) => {
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
     res.status(201).json({ product });
   } catch (error: any) {
+    if (error.message?.includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -147,11 +233,30 @@ router.put('/:id', (req: Request, res: Response) => {
     }
 
     const {
-      category_id, name, sku, description, price, cost_price,
+      category_id, name, sku, barcode, description, price, cost_price,
       tax_type, tax_rate, track_inventory, stock_quantity,
       low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids,
       unit, allow_decimal, member_price, min_reorder_qty
     } = req.body;
+
+    let cleanBarcode = product.barcode;
+    if (barcode !== undefined) {
+      if (barcode === null || String(barcode).trim().length === 0) {
+        cleanBarcode = null;
+      } else {
+        const str = String(barcode).trim();
+        if (str.length > 128 || /[\x00-\x1F\x7F]/.test(str)) {
+          return res.status(422).json({ error: 'Format barcode tidak valid (maksimal 128 karakter, tanpa karakter kontrol)' });
+        }
+        if (str !== product.barcode) {
+          const existing = db.prepare('SELECT id FROM products WHERE barcode = ? AND id != ? AND deleted_at IS NULL').get(str, req.params.id) as any;
+          if (existing) {
+            return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
+          }
+        }
+        cleanBarcode = str;
+      }
+    }
 
     let parsedMemberPrice = product.member_price;
     if (member_price !== undefined) {
@@ -171,7 +276,7 @@ router.put('/:id', (req: Request, res: Response) => {
 
     db.prepare(`
       UPDATE products SET category_id = COALESCE(?, category_id), name = COALESCE(?, name),
-        sku = COALESCE(?, sku), description = COALESCE(?, description), price = COALESCE(?, price),
+        sku = COALESCE(?, sku), barcode = ?, description = COALESCE(?, description), price = COALESCE(?, price),
         cost = COALESCE(?, cost),
         tax_type = COALESCE(?, tax_type), tax_rate = COALESCE(?, tax_rate),
         track_inventory = COALESCE(?, track_inventory),
@@ -188,7 +293,7 @@ router.put('/:id', (req: Request, res: Response) => {
         updated_at = ?
       WHERE id = ?
     `).run(
-      category_id, name, sku, description, price, cost_price,
+      category_id, name, sku, cleanBarcode, description, price, cost_price,
       tax_type, tax_rate,
       track_inventory !== undefined ? (track_inventory ? 1 : 0) : null,
       stock_quantity, low_stock_threshold,
@@ -217,6 +322,9 @@ router.put('/:id', (req: Request, res: Response) => {
     const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
     res.json({ product: updated });
   } catch (error: any) {
+    if (error.message?.includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
