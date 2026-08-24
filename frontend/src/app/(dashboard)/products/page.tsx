@@ -14,6 +14,7 @@ import { useFormatCurrency } from '@/hooks/useFormatCurrency';
 import { useConfirm } from '@/hooks/use-confirm';
 import { nameToColor } from '@/lib/image-utils';
 import { useI18n } from '@/hooks/useI18n';
+import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 
 const PRESET_TAGS = [
   { key: 'veg', labelKey: 'pos.tagVeg' },
@@ -121,6 +122,33 @@ export default function ProductsPage() {
   const fmt = useFormatCurrency();
   const isRestaurant = (currentTenant?.business_type ?? 'restaurant') === 'restaurant';
   const isOwnerOrManager = currentTenant?.role === 'owner' || currentTenant?.role === 'manager';
+
+  // ── 2D/1D Barcode Scanner Integration (Zero-Click Auto-Fill) ──────────────
+  useBarcodeScanner(
+    (code) => {
+      const trimmed = code.trim();
+      if (!trimmed) return;
+
+      if (showForm) {
+        // Modal Add/Edit Product is open: auto-fill the barcode field
+        setForm((prev) => ({ ...prev, barcode: trimmed }));
+        toast.success(`✓ Barcode [${trimmed}] berhasil dipindai ke formulir!`, {
+          id: 'barcode-scan-toast',
+          duration: 3000,
+          icon: '🏷️',
+        });
+      } else if (activeTab === 'products') {
+        // Modal is closed: filter/search products list
+        setSearchQuery(trimmed);
+        toast.success(`Filter barcode: ${trimmed}`, { id: 'barcode-filter-toast', duration: 2000 });
+      }
+    },
+    {
+      enabled: true,
+      targetInputId: showForm ? 'product-barcode-input' : undefined,
+      interceptEditable: true,
+    }
+  );
 
   const fetchData = async () => {
     try {
@@ -647,10 +675,21 @@ export default function ProductsPage() {
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.fieldBarcode')}</label>
-                <input type="text" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })}
+                <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center justify-between">
+                  <span>{t('products.fieldBarcode')}</span>
+                  <span className="text-[11px] font-normal text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                    ⚡ Auto-Scan 2D Scanner Ready
+                  </span>
+                </label>
+                <input
+                  id="product-barcode-input"
+                  data-barcode-scan="true"
+                  type="text"
+                  value={form.barcode}
+                  onChange={(e) => setForm({ ...form, barcode: e.target.value })}
                   placeholder={t('products.fieldBarcodePlaceholder')}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none font-mono" />
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none font-mono text-sm"
+                />
                 <p className="text-xs text-gray-400 mt-1">{t('products.fieldBarcodeHint')}</p>
               </div>
               <div className="grid grid-cols-2 gap-4">

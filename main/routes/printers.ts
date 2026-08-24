@@ -3,6 +3,7 @@ import { getDatabase, now } from '../db';
 import { v4 as uuidv4 } from 'uuid';
 import {
   detectConnectedPrinters,
+  detectConnectedScanners,
   buildTestPage,
   dispatchPrint,
   printReceiptById,
@@ -31,6 +32,16 @@ router.get('/detect', async (_req: Request, res: Response) => {
     res.json({ printers });
   } catch (error: any) {
     console.error('[Printer] Detection error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/printers/scanners — detect connected 2D/1D barcode scanners
+router.get('/scanners', async (_req: Request, res: Response) => {
+  try {
+    const scanners = await detectConnectedScanners();
+    res.json({ scanners });
+  } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });

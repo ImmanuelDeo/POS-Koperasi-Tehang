@@ -217,6 +217,43 @@ export function detectWindowsPrinters(): PrinterInfo[] {
   return printers;
 }
 
+export interface ScannerInfo {
+  name: string;
+  hwid: string;
+  vendorId: string;
+  productId: string;
+  status: string;
+  isConnected: boolean;
+}
+
+export async function detectConnectedScanners(): Promise<ScannerInfo[]> {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+  try {
+    const psCmd = `Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like '*34EB*' -or $_.FriendlyName -like '*Barcode*' -or $_.FriendlyName -like '*Scanner*' } | Select-Object FriendlyName, InstanceId, Status | ConvertTo-Json -Compress`;
+    const output = execSync(`powershell -NoProfile -NonInteractive -Command "${psCmd}"`, {
+      encoding: 'utf8',
+      timeout: 5000,
+    }).trim();
+
+    if (output) {
+      const parsed = JSON.parse(output);
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+      return list.map((item: any) => ({
+        name: item.FriendlyName || '2D Barcode Scanner',
+        hwid: item.InstanceId || 'USB\\VID_34EB&PID_1502',
+        vendorId: '0x34EB',
+        productId: '0x1502',
+        status: item.Status || 'OK',
+        isConnected: true,
+      }));
+    }
+  } catch {}
+
+  return [];
+}
+
 function detectWindowsMakeModel(name: string, driver: string): { make: string; model: string } {
   let make = 'Blueprint';
   let model = 'Blueprint ECO-58D';
