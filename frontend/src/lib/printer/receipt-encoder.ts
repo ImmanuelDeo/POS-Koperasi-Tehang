@@ -126,9 +126,9 @@ export function buildClassicReceiptBytes(
     isReprint = false,
   } = opts;
   const cols = CHARS[paperWidth];
-  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'INR', getCountryByCode(tenant.country ?? 'IN')?.locale);
+  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'IDR', getCountryByCode(tenant.country ?? 'ID')?.locale);
   const currency = padCurrencyPrefix(useUnicode ? rawCurrency : normalizeCurrencyToAscii(rawCurrency));
-  const locale = getCountryByCode(tenant.country ?? 'IN')?.locale ?? 'en-US';
+  const locale = getCountryByCode(tenant.country ?? 'ID')?.locale ?? 'id-ID';
   const order = bill.order;
 
   const enc = new ReceiptPrinterEncoder({ columns: cols });
@@ -277,9 +277,9 @@ export function buildCompactReceiptBytes(
 ): Uint8Array {
   const { paperWidth = 58, footerNote, useUnicode = false, isReprint = false } = opts;
   const cols = CHARS[paperWidth];
-  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'INR', getCountryByCode(tenant.country ?? 'IN')?.locale);
+  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'IDR', getCountryByCode(tenant.country ?? 'ID')?.locale);
   const currency = padCurrencyPrefix(useUnicode ? rawCurrency : normalizeCurrencyToAscii(rawCurrency));
-  const locale = getCountryByCode(tenant.country ?? 'IN')?.locale ?? 'en-US';
+  const locale = getCountryByCode(tenant.country ?? 'ID')?.locale ?? 'id-ID';
   const order = bill.order;
 
   const enc = new ReceiptPrinterEncoder({ columns: cols });
@@ -375,9 +375,9 @@ export function buildDetailedReceiptBytes(
 ): Uint8Array {
   const { paperWidth = 58, footerNote, gstin, address, phone, useUnicode = false, isReprint = false } = opts;
   const cols = CHARS[paperWidth];
-  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'INR', getCountryByCode(tenant.country ?? 'IN')?.locale);
+  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'IDR', getCountryByCode(tenant.country ?? 'ID')?.locale);
   const currency = padCurrencyPrefix(useUnicode ? rawCurrency : normalizeCurrencyToAscii(rawCurrency));
-  const locale = getCountryByCode(tenant.country ?? 'IN')?.locale ?? 'en-US';
+  const locale = getCountryByCode(tenant.country ?? 'ID')?.locale ?? 'id-ID';
   const order = bill.order;
 
   const enc = new ReceiptPrinterEncoder({ columns: cols });

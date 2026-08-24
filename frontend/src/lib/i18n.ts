@@ -1,15 +1,16 @@
-export type Language = 'en' | 'es';
+export type Language = 'id' | 'en' | 'es';
+import id from './i18n/id.json';
 import en from './i18n/en.json';
 import es from './i18n/es.json';
 
-const translations: Record<Language, Record<string, string>> = { en, es };
+const translations: Record<Language, Record<string, string>> = { id, en, es };
 
 const PLURAL_RE = /\{(\w+),\s*plural,\s*((?:\s*(?:zero|one|two|few|many|other)\s*\{[^}]*\})+)\s*\}/g;
 
 function formatIcuPlural(template: string, params: Record<string, string | number>, lang: Language): string {
   return template.replace(PLURAL_RE, (_match, name: string, cases: string) => {
     const raw = Number(params[name] ?? 0);
-    const locale = lang === 'es' ? 'es-AR' : 'en';
+    const locale = lang === 'es' ? 'es-AR' : lang === 'id' ? 'id-ID' : 'en';
     const pr = new Intl.PluralRules(locale).select(raw);
     const ordered = ['zero', 'one', 'two', 'few', 'many', 'other'];
     const seen: Record<string, string> = {};
@@ -28,8 +29,8 @@ function formatIcuPlural(template: string, params: Record<string, string | numbe
   });
 }
 
-export function t(key: string, lang: Language, params?: Record<string, string | number>): string {
-  let value = translations[lang]?.[key] ?? translations.en[key] ?? key;
+export function t(key: string, lang: Language = 'id', params?: Record<string, string | number>): string {
+  let value = translations[lang]?.[key] ?? translations.id?.[key] ?? translations.en?.[key] ?? key;
   if (params) {
     value = formatIcuPlural(value, params, lang);
     for (const [k, v] of Object.entries(params)) {
@@ -40,10 +41,12 @@ export function t(key: string, lang: Language, params?: Record<string, string | 
 }
 
 export function getBrowserLanguage(): Language {
-  if (typeof navigator !== 'undefined' && navigator.language?.toLowerCase().startsWith('es')) {
-    return 'es';
+  if (typeof navigator !== 'undefined') {
+    const navLang = navigator.language?.toLowerCase() || '';
+    if (navLang.startsWith('es')) return 'es';
+    if (navLang.startsWith('en')) return 'en';
   }
-  return 'en';
+  return 'id';
 }
 
 /**

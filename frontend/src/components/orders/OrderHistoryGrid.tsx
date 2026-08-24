@@ -203,14 +203,14 @@ function HistoryOrderCard({ order, currency, locale }: { order: HistoryOrder; cu
 export default function OrderHistoryGrid() {
   const [orders] = useState<HistoryOrder[]>(MOCK_HISTORY);
   const currentTenant = useAuthStore((s) => s.currentTenant);
-  const currency = getCurrencySymbol(currentTenant?.currency || 'INR', getCountryByCode(currentTenant?.country ?? 'IN')?.locale);
-  const locale = getCountryByCode(currentTenant?.country ?? 'IN')?.locale ?? 'en-IN';
+  const currency = getCurrencySymbol(currentTenant?.currency || 'IDR', getCountryByCode(currentTenant?.country ?? 'ID')?.locale);
+  const locale = getCountryByCode(currentTenant?.country ?? 'ID')?.locale ?? 'id-ID';
 
   return (
     <div className="p-4">
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">Order History</h1>
-        <Badge variant="outline">{orders.length} orders</Badge>
+        <h1 className="text-2xl font-bold">Riwayat Transaksi</h1>
+        <Badge variant="outline">{orders.length} transaksi</Badge>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 auto-rows-max content-start items-start">

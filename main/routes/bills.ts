@@ -360,16 +360,23 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
     const newBalance = Math.max(0, bill.total - newPaidAmount);
     const paymentStatus = newBalance <= 0.01 ? 'paid' : 'partial';
 
+    const paymentDetail = {
+      method,
+      amount: paidAmount,
+      transaction_id: transaction_id || null,
+      notes: notes || null,
+      timestamp: now(),
+    };
+
     db.prepare(`
       UPDATE bills SET paid_amount = ?, balance = ?, payment_status = ?,
-        payment_details = COALESCE(payment_details, ?) || ?,
+        payment_details = ?,
         paid_at = CASE WHEN ? = 'paid' THEN ? ELSE paid_at END,
         updated_at = ?
       WHERE id = ?
     `).run(
       newPaidAmount, newBalance, paymentStatus,
-      JSON.stringify({ method, amount: paidAmount, transaction_id, notes, timestamp: now() }),
-      ',' + JSON.stringify({ method, amount: paidAmount, transaction_id, notes, timestamp: now() }),
+      JSON.stringify(paymentDetail),
       paymentStatus, paymentStatus === 'paid' ? now() : null,
       now(), req.params.id
     );

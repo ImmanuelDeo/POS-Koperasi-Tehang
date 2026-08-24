@@ -16,13 +16,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Flo",
-  description: "Smart Point of Sale for restaurants",
+  title: "POS Koperasi Tehang",
+  description: "Sistem kasir, stok, transaksi, dan manajemen anggota untuk Koperasi Tehang.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Flo",
+    title: "POS Koperasi Tehang",
   },
   icons: {
     icon: [
@@ -34,7 +34,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#3248FF",
+  themeColor: "#0F766E",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,

@@ -1897,12 +1897,13 @@ export default function SettingsPage() {
                   <select
                     value={language}
                     onChange={(e) => {
-                      const lang = e.target.value as 'en' | 'es';
+                      const lang = e.target.value as 'id' | 'en' | 'es';
                       setLanguage(lang);
                       api.put('/settings/business', { language: lang }).catch(() => toast.error(t('settings.saveFailed')));
                     }}
                     className="block w-full rounded-md border-gray-200 shadow-sm focus:border-brand focus:ring-brand sm:text-sm px-3 py-2 border"
                   >
+                    <option value="id">Bahasa Indonesia</option>
                     <option value="en">{t('settings.languageEn')}</option>
                     <option value="es">{t('settings.languageEs')}</option>
                   </select>

@@ -617,7 +617,7 @@ function parseAddons(addons: any): any[] {
 }
 
 function formatCurrency(amount: number): string {
-  return '₹' + (Number(amount) || 0).toFixed(2);
+  return 'Rp ' + Math.round(Number(amount) || 0).toLocaleString('id-ID');
 }
 
 function rightAlign(text: string, width: number = 24): string {

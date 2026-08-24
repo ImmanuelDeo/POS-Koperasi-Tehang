@@ -1,4 +1,4 @@
-export function formatDate(iso?: string, locale: string = 'en-US', options?: Intl.DateTimeFormatOptions): string {
+export function formatDate(iso?: string, locale: string = 'id-ID', options?: Intl.DateTimeFormatOptions): string {
   if (!iso) return '';
   try {
     const d = new Date(iso);
@@ -16,7 +16,7 @@ export function formatDate(iso?: string, locale: string = 'en-US', options?: Int
   }
 }
 
-export function formatTime(iso?: string, locale: string = 'en-US', options?: Intl.DateTimeFormatOptions): string {
+export function formatTime(iso?: string, locale: string = 'id-ID', options?: Intl.DateTimeFormatOptions): string {
   if (!iso) return '';
   try {
     const d = new Date(iso);

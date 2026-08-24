@@ -6,8 +6,8 @@ export function useFormatDate() {
   const currentTenant = useAuthStore((s) => s.currentTenant);
   
   const locale = useMemo(() => {
-    if (!currentTenant?.country) return 'en-US';
-    return getCountryByCode(currentTenant.country)?.locale ?? 'en-US';
+    if (!currentTenant?.country) return 'id-ID';
+    return getCountryByCode(currentTenant.country)?.locale ?? 'id-ID';
   }, [currentTenant?.country]);
 
   const timeZone = currentTenant?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;

@@ -151,7 +151,7 @@ function LoginContent() {
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <img src="/logo.png" alt="Flo" width={120} height={77} className="mx-auto mb-3" />
+          <img src="/logo.png" alt="Logo POS Koperasi Tehang" width={220} height={55} className="h-12 w-auto mx-auto mb-3 object-contain" />
           <p className="text-muted-foreground mt-2">{t('auth.signInTitle')}</p>
         </div>
         {dbError && (

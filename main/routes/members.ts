@@ -17,25 +17,33 @@ const router = Router();
 router.get('/lookup', (req: Request, res: Response) => {
   try {
     const { q } = req.query;
-    if (!q || String(q).trim().length === 0) {
-      return res.json({ members: [] });
-    }
-
     const db = getDatabase();
-    const searchTerm = `%${String(q).trim()}%`;
     const periodMonth = calculatePayrollPeriod(db);
 
-    const rows = db.prepare(`
-      SELECT
-        id, member_no, employee_id, name, department, phone,
-        is_active, salary_deduction_enabled,
-        monthly_deduction_limit, outstanding_deduction_limit
-      FROM customers
-      WHERE is_member = 1
-        AND (name LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR phone LIKE ?)
-      ORDER BY name ASC
-      LIMIT 20
-    `).all(searchTerm, searchTerm, searchTerm, searchTerm) as any[];
+    let rows: any[];
+    if (!q || String(q).trim().length === 0) {
+      rows = db.prepare(`
+        SELECT
+          id, member_no, employee_id, name, department, phone,
+          is_active, is_member, salary_deduction_enabled,
+          monthly_deduction_limit, outstanding_deduction_limit
+        FROM customers
+        ORDER BY is_active DESC, is_member DESC, name ASC
+        LIMIT 30
+      `).all() as any[];
+    } else {
+      const searchTerm = `%${String(q).trim()}%`;
+      rows = db.prepare(`
+        SELECT
+          id, member_no, employee_id, name, department, phone,
+          is_active, is_member, salary_deduction_enabled,
+          monthly_deduction_limit, outstanding_deduction_limit
+        FROM customers
+        WHERE name LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR phone LIKE ?
+        ORDER BY is_active DESC, is_member DESC, name ASC
+        LIMIT 30
+      `).all(searchTerm, searchTerm, searchTerm, searchTerm) as any[];
+    }
 
     const sanitizedMembers = rows.map((member) => {
       const monthlyLimit = member.monthly_deduction_limit ?? 0;
@@ -49,13 +57,14 @@ router.get('/lookup', (req: Request, res: Response) => {
 
       return {
         id: member.id,
-        member_no: member.member_no,
-        employee_id: member.employee_id,
+        member_no: member.member_no || (member.is_member ? 'MBR-' + String(member.id).slice(-4) : '-'),
+        employee_id: member.employee_id || '-',
         name: member.name,
-        department: member.department,
-        phone: member.phone,
-        is_active: member.is_active,
-        salary_deduction_enabled: member.salary_deduction_enabled,
+        department: member.department || 'Umum',
+        phone: member.phone || '',
+        is_active: member.is_active ?? 1,
+        is_member: member.is_member ?? 1,
+        salary_deduction_enabled: member.salary_deduction_enabled ?? 1,
         monthly_deduction_limit: monthlyLimit,
         outstanding_deduction_limit: outstandingLimit,
         current_monthly_usage: monthlyUsage,

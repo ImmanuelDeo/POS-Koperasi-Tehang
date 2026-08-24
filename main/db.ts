@@ -132,6 +132,24 @@ function runMigrations(): void {
     runIncrementalMigrations(currentVersion);
   }
 
+  // Ensure default country/currency are IDR/Rp/ID for POS Koperasi (non-destructive)
+  try {
+    db.prepare(`
+      UPDATE settings
+      SET value = CASE key
+        WHEN 'country' THEN 'ID'
+        WHEN 'currency' THEN 'IDR'
+        WHEN 'currency_symbol' THEN 'Rp'
+        WHEN 'timezone' THEN 'Asia/Jakarta'
+      END,
+      updated_at = CURRENT_TIMESTAMP
+      WHERE key IN ('country', 'currency', 'currency_symbol', 'timezone')
+        AND value IN ('IN', 'INR', '₹', 'Asia/Kolkata')
+    `).run();
+  } catch {
+    // Safe fallback if settings table query fails
+  }
+
   console.log('[DB] Migrations complete');
 }
 
@@ -688,11 +706,11 @@ function seedData(): void {
     db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(key, value);
 
   insert('schema_version',      String(SCHEMA_VERSION));
-  insert('business_name',       'Shop');
-  insert('country',             'IN');
-  insert('currency',            'INR');
-  insert('currency_symbol',     '₹');
-  insert('timezone',            'Asia/Kolkata');
+  insert('business_name',       'POS Koperasi Tehang');
+  insert('country',             'ID');
+  insert('currency',            'IDR');
+  insert('currency_symbol',     'Rp');
+  insert('timezone',            'Asia/Jakarta');
   insert('address',             '');
   insert('phone',               '');
   insert('email',               '');
@@ -710,19 +728,19 @@ function seedData(): void {
   db.prepare(`
     INSERT OR IGNORE INTO users (id, name, email, password, role)
     VALUES (?, ?, ?, ?, ?)
-  `).run('user-1', 'Owner', 'admin@flo.local', hashedPassword, 'owner');
+  `).run('user-1', 'Pengelola Koperasi', 'admin@flo.local', hashedPassword, 'owner');
 
-  // Default KDS/Chef accounts
+  // Default staff accounts (Koperasi roles)
   const chefPassword = bcrypt.hashSync('chef123', 10);
   db.prepare(`
     INSERT OR IGNORE INTO users (id, name, email, password, role)
     VALUES (?, ?, ?, ?, ?)
-  `).run('user-2', 'Chef', 'chef@flo.local', chefPassword, 'chef');
+  `).run('user-2', 'Kasir Koperasi', 'chef@flo.local', chefPassword, 'chef');
 
   db.prepare(`
     INSERT OR IGNORE INTO users (id, name, email, password, role)
     VALUES (?, ?, ?, ?, ?)
-  `).run('user-3', 'Kitchen Manager', 'kitchen@flo.local', chefPassword, 'manager');
+  `).run('user-3', 'Staf Operasional', 'kitchen@flo.local', chefPassword, 'manager');
 
   // Default printer (will be detected on first run)
   db.prepare(`
@@ -730,11 +748,13 @@ function seedData(): void {
     VALUES (?, ?, ?, ?, ?)
   `).run('printer-1', 'Thermal Printer', 'usb', '80mm', 1);
 
-  // Sample categories
+  // Sample categories (Koperasi Sembako)
   const cats = [
-    ['cat-1', 'Food',      '#FF6B6B', '🍔', 1],
-    ['cat-2', 'Beverages', '#4ECDC4', '🥤', 2],
-    ['cat-3', 'Desserts',  '#FFE66D', '🍰', 3],
+    ['cat-1', 'Beras & Minyak',            '#0F766E', '🌾', 1],
+    ['cat-2', 'Sembako Pokok',             '#2563EB', '📦', 2],
+    ['cat-3', 'Bumbu & Dapur',             '#D97706', '🧂', 3],
+    ['cat-4', 'Minuman Kemasan',           '#0284C7', '🥤', 4],
+    ['cat-5', 'Perlengkapan Rumah Tangga', '#7C3AED', '🧼', 5],
   ];
   for (const [id, name, color, icon, sort] of cats) {
     db.prepare(`
@@ -743,27 +763,27 @@ function seedData(): void {
     `).run(id, name, color, icon, sort);
   }
 
-  // Sample products
+  // Sample products (Koperasi Sembako)
+  // [id, catId, name, price, member_price, unit, stock, sort]
   const products = [
-    ['prod-1', 'cat-1', 'Cheeseburger',     250.00, 1],
-    ['prod-2', 'cat-1', 'Veggie Wrap',       180.00, 2],
-    ['prod-3', 'cat-1', 'Chicken Sandwich',  220.00, 3],
-    ['prod-4', 'cat-1', 'French Fries',       80.00, 4],
-    ['prod-5', 'cat-2', 'Cola',               60.00, 1],
-    ['prod-6', 'cat-2', 'Fresh Lime Soda',    70.00, 2],
-    ['prod-7', 'cat-2', 'Mango Lassi',        90.00, 3],
-    ['prod-8', 'cat-2', 'Mineral Water',      30.00, 4],
-    ['prod-9', 'cat-3', 'Chocolate Brownie', 120.00, 1],
-    ['prod-10','cat-3', 'Ice Cream Scoop',    80.00, 2],
+    ['prod-1', 'cat-1', 'Beras Ramos 5 kg',        72000.00, 68000.00, 'sak',   50, 1],
+    ['prod-2', 'cat-1', 'Minyak Goreng 2 L',       34000.00, 32000.00, 'pouch', 80, 2],
+    ['prod-3', 'cat-2', 'Gula Pasir 1 kg',         17500.00, 16500.00, 'kg',    100, 1],
+    ['prod-4', 'cat-2', 'Telur Ayam 1 kg',         28000.00, 26000.00, 'kg',    40, 2],
+    ['prod-5', 'cat-2', 'Tepung Terigu 1 kg',      12500.00, 11500.00, 'kg',    60, 3],
+    ['prod-6', 'cat-2', 'Mi Instan Goreng',         3500.00,  3000.00, 'pcs',   240, 4],
+    ['prod-7', 'cat-3', 'Bumbu Racik Sachet',       2500.00,  2000.00, 'pcs',   150, 1],
+    ['prod-8', 'cat-4', 'Teh Celup Kotak',          8500.00,  8000.00, 'box',   75, 1],
+    ['prod-9', 'cat-5', 'Sabun Cuci Piring 750 ml',14000.00, 13000.00, 'pouch', 50, 1],
   ];
-  for (const [id, catId, name, price, sort] of products) {
+  for (const [id, catId, name, price, memberPrice, unit, stock, sort] of products) {
     db.prepare(`
-      INSERT OR IGNORE INTO products (id, category_id, name, price, sort_order, is_active)
-      VALUES (?, ?, ?, ?, ?, 1)
-    `).run(id, catId, name, price, sort);
+      INSERT OR IGNORE INTO products (id, category_id, name, price, member_price, unit, stock_quantity, track_inventory, sort_order, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 1)
+    `).run(id, catId, name, price, memberPrice, unit, stock, sort);
   }
 
-  // Sample tables
+  // Sample tables (Preserved for compatibility)
   const tables = [
     ['tbl-1', 'T1', 4], ['tbl-2', 'T2', 4],  ['tbl-3', 'T3', 6],
     ['tbl-4', 'T4', 2], ['tbl-5', 'T5', 4],  ['tbl-6', 'T6', 8],

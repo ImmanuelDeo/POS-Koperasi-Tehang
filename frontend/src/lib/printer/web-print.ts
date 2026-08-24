@@ -77,9 +77,9 @@ export function generateBillHtml(
 ): string {
   const { paperSize = 'a4', includeGst = false, gstin, address, phone, footerNote, businessName, useUnicode = false, isReprint = false } = opts;
   const displayName = businessName ?? tenant.business_name;
-  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'INR', getCountryByCode(tenant.country ?? 'IN')?.locale);
+  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'IDR', getCountryByCode(tenant.country ?? 'ID')?.locale);
   const currency = useUnicode ? rawCurrency : normalizeCurrencyToAscii(rawCurrency);
-  const locale = getCountryByCode(tenant.country ?? 'IN')?.locale ?? 'en-US';
+  const locale = getCountryByCode(tenant.country ?? 'ID')?.locale ?? 'id-ID';
   const order = bill.order;
 
   const styles = getPaperStyles(paperSize);

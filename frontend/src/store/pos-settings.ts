@@ -17,7 +17,7 @@ export interface PosSettingsState {
   // UI language for i18n routing. Synced from tenant on auth load.
   // Initial value reads the browser locale; persist middleware overrides
   // on reload, so user choices persist across sessions.
-  language: 'en' | 'es';
+  language: 'id' | 'en' | 'es';
   // Printer settings
   printerPaperSize: PaperSize;
   printerEnabled: boolean;
@@ -53,7 +53,7 @@ export interface PosSettingsState {
   setShowProductImages: (show: boolean) => void;
   setCustomerMandatory: (mandatory: boolean) => void;
   setEnforcePhoneLength: (enabled: boolean) => void;
-  setLanguage: (lang: 'en' | 'es') => void;
+  setLanguage: (lang: 'id' | 'en' | 'es') => void;
   setPrinterPaperSize: (size: PaperSize) => void;
   setPrinterEnabled: (enabled: boolean) => void;
   setPrinterPrintMode: (mode: PrinterPrintMode) => void;
@@ -87,8 +87,8 @@ export const usePosSettingsStore = create<PosSettingsState>()(
       customerMandatory: false,
       enforcePhoneLength: false,
       billingType: 'postpaid',
-      tablesRequired: true,
-      language: 'en',
+      tablesRequired: false,
+      language: 'id',
       // Printer defaults
       printerPaperSize: 'thermal58',
       printerEnabled: false,
@@ -111,8 +111,8 @@ export const usePosSettingsStore = create<PosSettingsState>()(
       billShowPhone: true,
       billShowGstn: false,
       printerUseUnicode: false,
-      kdsEnabled: true,
-      kotPrintingEnabled: true,
+      kdsEnabled: false,
+      kotPrintingEnabled: false,
       // Default false so the sidebar hides the WhatsApp nav entry until the
       // tenant actually enables the integration. Synced from /api/whatsapp/status
       // on auth load (see Sidebar.tsx) and updated by the WhatsApp page after

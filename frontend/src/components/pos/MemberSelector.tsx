@@ -29,33 +29,15 @@ export default function MemberSelector({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Focus input on open
-  useEffect(() => {
-    if (isOpen) {
-      setQuery('');
-      setMembers([]);
-      setError(null);
-      setTimeout(() => {
-        searchInputRef.current?.focus();
-      }, 100);
-    }
-  }, [isOpen]);
-
   // Debounced search
   const performSearch = useCallback(async (searchTerm: string) => {
     const trimmed = searchTerm.trim();
-    if (trimmed.length < 2) {
-      setMembers([]);
-      setLoading(false);
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
     try {
       const response = await api.get('/members/lookup', {
-        params: { q: trimmed },
+        params: trimmed ? { q: trimmed } : {},
       });
       const results: CooperativeMember[] = response.data?.members || [];
       setMembers(results);
@@ -68,6 +50,18 @@ export default function MemberSelector({
     }
   }, []);
 
+  // Focus input & load initial members on open
+  useEffect(() => {
+    if (isOpen) {
+      setQuery('');
+      setError(null);
+      performSearch('');
+      setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 100);
+    }
+  }, [isOpen, performSearch]);
+
   const handleQueryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setQuery(val);
@@ -78,7 +72,7 @@ export default function MemberSelector({
 
     debounceTimerRef.current = setTimeout(() => {
       performSearch(val);
-    }, 250);
+    }, 200);
   };
 
   // Keyboard navigation
@@ -118,6 +112,7 @@ export default function MemberSelector({
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
           >
@@ -134,14 +129,14 @@ export default function MemberSelector({
               type="text"
               value={query}
               onChange={handleQueryChange}
-              placeholder="Ketik minimal 2 karakter untuk mencari..."
+              placeholder="Ketik nama karyawan, NIK, atau nomor HP..."
               className="w-full pl-10 pr-10 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium text-gray-900 placeholder:text-gray-400 focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all"
             />
             {query && (
               <button
                 onClick={() => {
                   setQuery('');
-                  setMembers([]);
+                  performSearch('');
                   searchInputRef.current?.focus();
                 }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
@@ -157,7 +152,7 @@ export default function MemberSelector({
           {loading && (
             <div className="flex flex-col items-center justify-center py-12 text-gray-400 gap-2">
               <RefreshCw size={24} className="animate-spin text-emerald-600" />
-              <p className="text-xs font-medium">Mencari data member...</p>
+              <p className="text-xs font-medium">Memuat data member...</p>
             </div>
           )}
 
@@ -168,19 +163,12 @@ export default function MemberSelector({
             </div>
           )}
 
-          {!loading && !error && query.trim().length >= 2 && members.length === 0 && (
+          {!loading && !error && members.length === 0 && (
             <div className="text-center py-12 text-gray-400 space-y-1">
               <UserX size={36} className="mx-auto text-gray-300 mb-2" />
               <p className="text-sm font-semibold text-gray-600">Member tidak ditemukan</p>
-              <p className="text-xs text-gray-400">Tidak ada data yang cocok dengan &quot;{query}&quot;</p>
-            </div>
-          )}
-
-          {!loading && !error && query.trim().length < 2 && (
-            <div className="text-center py-10 text-gray-400 space-y-2">
-              <Search size={32} className="mx-auto text-gray-300" />
-              <p className="text-xs text-gray-500">
-                Silakan ketik nama karyawan, NIK, atau nomor anggota koperasi di kotak pencarian di atas.
+              <p className="text-xs text-gray-400">
+                {query ? `Tidak ada data yang cocok dengan "${query}"` : 'Belum ada data anggota yang terdaftar'}
               </p>
             </div>
           )}

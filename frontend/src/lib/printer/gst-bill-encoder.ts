@@ -49,9 +49,9 @@ export function buildGstBillBytes(
 ): Uint8Array {
   const { paperWidth = 58, showFooter = true, gstin, address, phone, useUnicode = false } = opts;
   const cols = CHARS[paperWidth];
-  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'INR', getCountryByCode(tenant.country ?? 'IN')?.locale);
+  const rawCurrency = getCurrencySymbol(tenant.currency ?? 'IDR', getCountryByCode(tenant.country ?? 'ID')?.locale);
   const currency = padCurrencyPrefix(useUnicode ? rawCurrency : normalizeCurrencyToAscii(rawCurrency));
-  const locale = getCountryByCode(tenant.country ?? 'IN')?.locale ?? 'en-US';
+  const locale = getCountryByCode(tenant.country ?? 'ID')?.locale ?? 'id-ID';
   const order = bill.order;
 
   const enc = new ReceiptPrinterEncoder({ columns: cols });

@@ -1,11 +1,11 @@
 {
-  "name": "Flo",
-  "short_name": "Flo",
-  "description": "Smart Point of Sale for restaurants, salons, and retail",
+  "name": "POS Koperasi Tehang",
+  "short_name": "Koperasi Tehang",
+  "description": "Sistem kasir, stok, transaksi, dan manajemen anggota untuk Koperasi Tehang.",
   "start_url": "/dashboard",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#3248FF",
+  "theme_color": "#0F766E",
   "orientation": "any",
   "icons": [
     {

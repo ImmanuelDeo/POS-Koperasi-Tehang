@@ -1,7 +1,7 @@
 {
   "name": "flo-desktop",
   "version": "1.5.5",
-  "description": "Flo - Self-hosted Point of Sale System",
+  "description": "POS Koperasi Tehang - Sistem Kasir dan Manajemen Koperasi",
   "main": "dist/index.js",
   "scripts": {
     "dev": "npm run build:frontend && npm run build && electron .",
@@ -18,10 +18,10 @@
     "rebuild": "electron-rebuild -f -w better-sqlite3"
   },
   "author": {
-    "name": "Flo",
-    "email": "support@flo.local"
+    "name": "POS Koperasi Tehang",
+    "email": "support@koperasi.local"
   },
-  "homepage": "https://flo.local",
+  "homepage": "https://koperasi.local",
   "license": "MIT",
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",
@@ -56,7 +56,7 @@
   },
   "build": {
     "appId": "com.flo.desktop",
-    "productName": "Flo",
+    "productName": "POS Koperasi Tehang",
     "asar": true,
     "asarUnpack": "**/node_modules/better-sqlite3/**/*",
     "directories": {

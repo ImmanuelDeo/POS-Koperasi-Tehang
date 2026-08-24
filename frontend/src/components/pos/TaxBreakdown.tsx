@@ -21,8 +21,8 @@ interface Props {
 export default function TaxBreakdown({ taxAmount, taxBreakdown, theme = 'dark' }: Props) {
   const { t } = useI18n();
   const currentTenant = useAuthStore((s) => s.currentTenant);
-  const tenantCountry = currentTenant?.country;
-  const tenantCurrency = currentTenant?.currency ?? 'INR';
+  const tenantCountry = currentTenant?.country ?? 'ID';
+  const tenantCurrency = currentTenant?.currency ?? 'IDR';
   const [expanded, setExpanded] = useState(false);
   const breakdownArray = Array.isArray(taxBreakdown) ? taxBreakdown : [];
   const hasBreakdown = breakdownArray.length > 0;

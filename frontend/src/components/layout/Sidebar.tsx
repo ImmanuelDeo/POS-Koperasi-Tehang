@@ -38,6 +38,9 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 
+// POS Koperasi: Restaurant-specific features (Tables, KDS, Addon Groups) are hidden in cooperative mode
+const SHOW_RESTAURANT_FEATURES = false;
+
 // null = show for all business types
 const ALL_NAV_ITEMS = [
   { href: '/pos', labelKey: 'nav.pos', icon: ShoppingCart, roles: ['owner', 'manager', 'cashier'], businessTypes: null },
@@ -64,6 +67,10 @@ export default function AppSidebar() {
   const role = currentTenant?.role || 'cashier';
   const businessType = currentTenant?.business_type || 'restaurant';
   const navItems = ALL_NAV_ITEMS.filter((item) => {
+    // Hide restaurant-specific items in POS Koperasi mode
+    if (!SHOW_RESTAURANT_FEATURES && (item.href === '/tables' || item.href.startsWith('/settings?tab=kds') || item.href === '/addon-groups')) {
+      return false;
+    }
     if (item.href === '/tables' && !tablesRequired) return false;
     // KDS disabled → hide the nav entry entirely (issue #133).
     if (item.href === '/settings?tab=kds' && !kdsEnabled) return false;

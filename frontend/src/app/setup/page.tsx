@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
-import { ArrowLeft, ArrowRight, Check, Cloud, Database, KeyRound, Search, Sparkles, UtensilsCrossed, Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Cloud, Database, KeyRound, Search, Sparkles, Store, Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { COUNTRIES, getCountryByCode, countryName, type Country } from '@/lib/countries';
 import { getBrowserLanguage, t as translate, type Language } from '@/lib/i18n';
@@ -96,7 +96,7 @@ export default function SetupPage() {
 
   const selectedCountry: Country | undefined = getCountryByCode(country);
   const q = countryQuery.trim().toLowerCase();
-  const languageOptions: Language[] = browserLanguage === 'es' ? ['es', 'en'] : ['en', 'es'];
+  const languageOptions: Language[] = ['id', 'en', 'es'];
   const filteredCountries = COUNTRIES.filter((c) => {
     if (!q) return true;
     return (
@@ -193,7 +193,7 @@ export default function SetupPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background to-muted px-4 py-12">
       <div className="w-full max-w-2xl">
         <div className="text-center mb-8">
-          <img src="/logo.png" alt="Flo" width={80} height={52} className="mx-auto mb-4" />
+          <img src="/logo.png" alt="Logo POS Koperasi Tehang" width={220} height={55} className="h-12 w-auto mx-auto mb-4 object-contain" />
           <h1 className="text-3xl font-bold">{t('setup.welcome')}</h1>
           <p className="text-muted-foreground mt-2">{t('setup.tagline')}</p>
         </div>
@@ -223,7 +223,7 @@ export default function SetupPage() {
                 <div className="grid gap-3 sm:grid-cols-2">
                   {languageOptions.map((option) => {
                     const selected = language === option;
-                    const label = option === 'es' ? t('setup.languageSpanish') : t('setup.languageEnglish');
+                    const label = option === 'id' ? 'Bahasa Indonesia' : option === 'es' ? t('setup.languageSpanish') : t('setup.languageEnglish');
                     return (
                       <button
                         key={option}
@@ -545,7 +545,7 @@ export default function SetupPage() {
                 <div className="grid gap-4">
                   {SETUP_PROFILES.map((item) => {
                     const selected = profile === item.value;
-                    const Icon = item.value === 'demo' ? Database : item.value === 'express' ? Sparkles : UtensilsCrossed;
+                    const Icon = item.value === 'demo' ? Database : item.value === 'express' ? Sparkles : Store;
                     return (
                       <button
                         key={item.value}

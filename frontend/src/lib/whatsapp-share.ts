@@ -30,8 +30,8 @@ export function getWhatsAppShareUrl(
   opts: WhatsAppShareOptions = {}
 ): string {
   const { pointsEarned = 0, walletBalance, businessPhone } = opts;
-  const currency = getCurrencySymbol(tenant.currency ?? 'INR', getCountryByCode(tenant.country ?? 'IN')?.locale);
-  const locale = getCountryByCode(tenant.country ?? 'IN')?.locale ?? 'en-US';
+  const currency = getCurrencySymbol(tenant.currency ?? 'IDR', getCountryByCode(tenant.country ?? 'ID')?.locale);
+  const locale = getCountryByCode(tenant.country ?? 'ID')?.locale ?? 'id-ID';
 
   // Build the message
   const lines: string[] = [];
@@ -92,8 +92,8 @@ export function getWhatsAppMessage(
   opts: WhatsAppShareOptions = {}
 ): string {
   const { pointsEarned = 0, walletBalance } = opts;
-  const currency = tenant.currency ?? '₹';
-  const locale = getCountryByCode(tenant.country ?? 'IN')?.locale ?? 'en-US';
+  const currency = tenant.currency ?? 'Rp';
+  const locale = getCountryByCode(tenant.country ?? 'ID')?.locale ?? 'id-ID';
 
   const lines: string[] = [];
 
@@ -123,7 +123,9 @@ export function getWhatsAppMessage(
 // ---------------------------------------------------------------------------
 
 function formatAmount(value: number | string, currency: string, locale: string): string {
-  return `${currency}${Number(value).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const num = Number(value) || 0;
+  const isIdr = currency === 'Rp' || currency === 'IDR';
+  return `${currency} ${num.toLocaleString(locale, { minimumFractionDigits: isIdr ? 0 : 2, maximumFractionDigits: isIdr ? 0 : 2 })}`;
 }
 
 /**

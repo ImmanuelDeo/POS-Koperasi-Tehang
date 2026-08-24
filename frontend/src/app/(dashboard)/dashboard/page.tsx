@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/store/auth';
 import api from '@/lib/api';
-import { Banknote, ChefHat, Clock, LayoutGrid, TrendingUp, ClipboardList, ArrowRight, Timer, Trophy, Tags, BarChart3, Wallet } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Banknote, ChefHat, Clock, LayoutGrid, TrendingUp, ClipboardList, ArrowRight, Timer, Trophy, Tags, BarChart3, Wallet, RefreshCw } from 'lucide-react';
 import { useI18n } from '@/hooks/useI18n';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
 import { getCountryByCode } from '@/lib/countries';
@@ -133,10 +134,11 @@ export default function DashboardPage() {
   const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const isOwner = currentTenant?.role === 'owner';
   const fmt = useFormatCurrency();
-  const locale = currentTenant?.country ? (getCountryByCode(currentTenant.country)?.locale ?? 'en-US') : 'en-US';
+  const locale = currentTenant?.country ? (getCountryByCode(currentTenant.country)?.locale ?? 'id-ID') : 'id-ID';
   const timeZone = currentTenant?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const todayLocal = getLocalDateString(new Date(), timeZone);
   const [selectedDate, setSelectedDate] = useState(todayLocal);
@@ -148,26 +150,54 @@ export default function DashboardPage() {
     }
   }, [currentTenant, isOwner, router]);
 
-  useEffect(() => {
+  const fetchDashboardData = useCallback(async (showFullLoading = false) => {
     if (!isOwner) return;
-    setLoading(true);
-    Promise.all([
-      isToday ? api.get('/reports/daily-stats') : api.get('/reports/summary', { params: { date: selectedDate } }),
-      api.get('/reports/topProducts', { params: { start_date: selectedDate, end_date: selectedDate, limit: 5 } }),
-      api.get('/reports/recentOrders', { params: { date: selectedDate, limit: 6 } }),
-      api.get('/reports/insights', { params: { days: 30 } }),
-    ])
-      .then(([statsRes, topRes, recentRes, insightsRes]) => {
-        setStats(isToday ? statsRes.data : null);
-        setDaySummary(isToday ? null : statsRes.data.summary);
-        setTopProducts(topRes.data.topProducts || []);
-        setRecentOrders(recentRes.data.recentOrders || []);
-        setInsights(insightsRes.data);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOwner, selectedDate]);
+    if (showFullLoading) setLoading(true);
+    else setIsRefreshing(true);
+
+    try {
+      const results = await Promise.allSettled([
+        isToday ? api.get('/reports/daily-stats') : api.get('/reports/summary', { params: { date: selectedDate } }),
+        api.get('/reports/topProducts', { params: { start_date: selectedDate, end_date: selectedDate, limit: 5 } }),
+        api.get('/reports/recentOrders', { params: { date: selectedDate, limit: 6 } }),
+        api.get('/reports/insights', { params: { days: 30 } }),
+      ]);
+
+      const [statsResult, topResult, recentResult, insightsResult] = results;
+
+      if (statsResult.status === 'fulfilled') {
+        setStats(isToday ? statsResult.value.data : null);
+        setDaySummary(isToday ? null : statsResult.value.data.summary);
+      }
+      if (topResult.status === 'fulfilled') {
+        setTopProducts(topResult.value.data.topProducts || []);
+      }
+      if (recentResult.status === 'fulfilled') {
+        setRecentOrders(recentResult.value.data.recentOrders || []);
+      }
+      if (insightsResult.status === 'fulfilled') {
+        setInsights(insightsResult.value.data);
+      }
+    } catch {
+      // Safe error fallback
+    } finally {
+      setLoading(false);
+      setIsRefreshing(false);
+    }
+  }, [isOwner, isToday, selectedDate]);
+
+  useEffect(() => {
+    fetchDashboardData(true);
+  }, [fetchDashboardData]);
+
+  // Auto-refresh interval every 15s for real-time live data
+  useEffect(() => {
+    if (!isOwner || !isToday) return;
+    const interval = setInterval(() => {
+      fetchDashboardData(false);
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [isOwner, isToday, fetchDashboardData]);
 
   if (!isOwner) return null;
 
@@ -256,14 +286,27 @@ export default function DashboardPage() {
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between gap-4 flex-wrap">
         <h1 className="text-2xl font-bold text-gray-900">{t('dashboard.title')}</h1>
-        <input
-          type="date"
-          value={selectedDate}
-          max={todayLocal}
-          onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
-          className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand/30"
-          aria-label={t('dashboard.selectDate')}
-        />
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fetchDashboardData(false)}
+            disabled={isRefreshing || loading}
+            className="flex items-center gap-1.5 text-gray-700 hover:text-gray-900 border-gray-200"
+            title="Segarkan Data"
+          >
+            <RefreshCw size={14} className={isRefreshing ? 'animate-spin text-primary' : ''} />
+            <span className="hidden sm:inline">Segarkan</span>
+          </Button>
+          <input
+            type="date"
+            value={selectedDate}
+            max={todayLocal}
+            onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
+            className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand/30"
+            aria-label={t('dashboard.selectDate')}
+          />
+        </div>
       </div>
 
       {loading ? (

@@ -67,7 +67,7 @@ export default function RegisterPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4 py-12">
       <div className="w-full max-w-lg">
         <div className="text-center mb-8">
-          <img src="/logo.svg" alt="Flo" width={120} height={77} className="mx-auto mb-3" />
+          <img src="/logo.svg" alt="Logo POS Koperasi Tehang" width={80} height={80} className="h-16 w-16 mx-auto mb-3 object-contain" />
           <p className="text-gray-500 mt-2">{t('auth.registerSubtitle')}</p>
         </div>
 
