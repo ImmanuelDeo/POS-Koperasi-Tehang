@@ -231,14 +231,9 @@ export default function MemberSelector({
                         <CreditCard size={13} className="text-gray-400" />
                         Potong Gaji:{' '}
                         <strong className={deductionEnabled ? 'text-emerald-700 font-semibold' : 'text-gray-500'}>
-                          {deductionEnabled ? 'Aktif' : 'Non-Aktif'}
+                          {deductionEnabled ? 'Tersedia' : 'Non-Aktif'}
                         </strong>
                       </span>
-                      {deductionEnabled && (
-                        <span className="text-gray-600">
-                          Sisa Limit: <strong className="text-gray-900 font-semibold">{fmt(m.remaining_monthly_limit)}</strong>
-                        </span>
-                      )}
                     </div>
                   </div>
 

@@ -107,8 +107,11 @@ export default function ProductsPage() {
   const [imageTouched, setImageTouched] = useState(false);
 
   const [showCsvModal, setShowCsvModal] = useState(false);
-  const [csvType, setCsvType] = useState<'categories' | 'products' | 'addons'>('categories');
+  const [csvType, setCsvType] = useState<'categories' | 'products' | 'addons'>('products');
   const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvFileText, setCsvFileText] = useState<string>('');
+  const [csvPreview, setCsvPreview] = useState<any | null>(null);
+  const [csvValidating, setCsvValidating] = useState(false);
   const [csvResult, setCsvResult] = useState<Record<string, unknown> | null>(null);
   const [csvUploading, setCsvUploading] = useState(false);
   const [catDeleteModal, setCatDeleteModal] = useState<{ open: boolean; id: number | null; name: string; productCount: number }>({ open: false, id: null, name: '', productCount: 0 });
@@ -140,38 +143,62 @@ export default function ProductsPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchData(); }, []);
 
-  const openCsvModal = (type: 'categories' | 'products' | 'addons') => {
+  const openCsvModal = (type: 'categories' | 'products' | 'addons' = 'products') => {
     setCsvType(type);
     setCsvFile(null);
+    setCsvFileText('');
+    setCsvPreview(null);
     setCsvResult(null);
     setShowCsvModal(true);
   };
 
-  const downloadCsv = async (path: string, filename: string) => {
+  const downloadCsvTemplate = async () => {
     try {
-      const res = await api.get(path, { responseType: 'blob' });
+      const res = await api.get('/catalog-csv/template', { responseType: 'blob' });
       const url = URL.createObjectURL(res.data as Blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = filename;
+      a.download = 'katalog-produk-koperasi-template.csv';
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      toast.error(t('common.downloadFailed'));
+      toast.error('Gagal mengunduh template CSV');
     }
   };
 
-  const handleCsvUpload = async () => {
-    if (!csvFile) return;
-    setCsvUploading(true);
+  const handleCsvFileSelect = async (file: File | null) => {
+    setCsvFile(file);
+    setCsvPreview(null);
     setCsvResult(null);
+    if (!file) {
+      setCsvFileText('');
+      return;
+    }
+
+    setCsvValidating(true);
     try {
-      const text = await csvFile.text();
-      const res = await api.post(`/menu-csv/import/${csvType}`, { csv: text });
-      setCsvResult(res.data);
+      const text = await file.text();
+      setCsvFileText(text);
+      const res = await api.post('/catalog-csv/preview', { csv: text });
+      setCsvPreview(res.data);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Gagal memvalidasi CSV';
+      toast.error(msg);
+    } finally {
+      setCsvValidating(false);
+    }
+  };
+
+  const handleExecuteImport = async () => {
+    if (!csvFileText) return;
+    setCsvUploading(true);
+    try {
+      const res = await api.post('/catalog-csv/import', { csv: csvFileText });
+      setCsvResult(res.data?.result || res.data);
+      toast.success(res.data?.message || 'Impor katalog berhasil');
       fetchData();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? t('common.importFailed');
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Gagal mengimpor katalog';
       toast.error(msg);
     } finally {
       setCsvUploading(false);
@@ -980,113 +1007,162 @@ export default function ProductsPage() {
       )}
 
       {showCsvModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg">
-            <div className="flex justify-between items-center mb-5">
-              <h2 className="text-lg font-bold">
-                {t('products.csvModalTitle', { type: csvType === 'categories' ? t('products.tabCategories') : csvType === 'products' ? t('products.tabProducts') : t('products.tabAddonGroups') })}
-              </h2>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="flex justify-between items-center pb-4 border-b border-gray-100 shrink-0">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">
+                  Impor Katalog Produk CSV
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Impor batch data produk sembako, barcode scanner, harga, dan stok awal
+                </p>
+              </div>
               <button onClick={() => setShowCsvModal(false)} className="text-gray-400 hover:text-gray-600">
                 <X size={20} />
               </button>
             </div>
 
-            <div className="space-y-5">
+            <div className="space-y-4 py-4 overflow-y-auto flex-1">
               {/* Download section */}
-              <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                <p className="text-sm font-medium text-gray-700">{t('products.download')}</p>
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => downloadCsv(`/menu-csv/template/${csvType}`, `${csvType}-template.csv`)}
-                    className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 font-medium"
-                  >
-                    <Download size={14} /> {t('products.csvBlankTemplate')}
-                  </button>
-                  <button
-                    onClick={() => downloadCsv(`/menu-csv/export/${csvType}`, `${csvType}-export.csv`)}
-                    className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 font-medium"
-                  >
-                    <Download size={14} /> {t('products.csvCurrentData')}
-                  </button>
+              <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-emerald-900">Unduh Template CSV</p>
+                  <p className="text-xs text-emerald-700 mt-0.5">
+                    Format resmi berisi contoh barcode, harga umum, harga member, dan stok awal.
+                  </p>
                 </div>
-                {csvType === 'products' && (
-                  <p className="text-xs text-gray-500">{t('products.csvProductsHelp')}</p>
-                )}
-                {csvType === 'categories' && (
-                  <p className="text-xs text-gray-500">{t('products.csvCategoriesHelp')}</p>
-                )}
-                {csvType === 'addons' && (
-                  <p className="text-xs text-gray-500">{t('products.csvAddonsHelp')}</p>
-                )}
+                <button
+                  onClick={downloadCsvTemplate}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium shadow-sm transition-colors shrink-0"
+                >
+                  <Download size={14} /> Download Template
+                </button>
               </div>
 
               {/* Upload section */}
-              <div className="space-y-3">
-                <p className="text-sm font-medium text-gray-700">{t('products.uploadCsv')}</p>
-                <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
-                  <Upload size={20} className="text-gray-400 mb-1" />
-                  <span className="text-sm text-gray-500">
-                    {csvFile ? csvFile.name : t('products.csvChooseFile')}
+              <div className="space-y-2">
+                <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 hover:border-brand/50 transition-colors bg-white">
+                  <Upload size={22} className="text-gray-400 mb-1" />
+                  <span className="text-sm font-medium text-gray-700">
+                    {csvFile ? csvFile.name : 'Pilih atau Tarik File CSV ke Sini'}
                   </span>
+                  <span className="text-xs text-gray-400 mt-0.5">Mendukung file .csv UTF-8 hingga 1.000 baris</span>
                   <input
                     type="file"
                     accept=".csv,text/csv"
                     className="hidden"
-                    onChange={(e) => { setCsvFile(e.target.files?.[0] ?? null); setCsvResult(null); }}
+                    onChange={(e) => handleCsvFileSelect(e.target.files?.[0] ?? null)}
                   />
                 </label>
-                {csvFile && (
-                  <Button onClick={handleCsvUpload} disabled={csvUploading} className="w-full">
-                    {csvUploading ? t('products.csvImporting') : t('common.import')}
-                  </Button>
-                )}
               </div>
 
-              {/* Result */}
-              {csvResult && (
-                <div className="rounded-xl border border-gray-100 overflow-hidden">
-                  <div className="flex items-center gap-2 px-4 py-3 bg-green-50 border-b border-gray-100">
-                    <CheckCircle size={15} className="text-green-600" />
-                    <span className="text-sm font-medium text-green-800">{t('products.importComplete')}</span>
+              {/* Validating indicator */}
+              {csvValidating && (
+                <div className="flex items-center justify-center py-6 text-sm text-gray-500 gap-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-brand border-t-transparent" />
+                  Memvalidasi isi file CSV & memeriksa duplikat barcode...
+                </div>
+              )}
+
+              {/* Preview Cards */}
+              {csvPreview && !csvValidating && (
+                <div className="space-y-3">
+                  {/* Summary Bar */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                    <div className="p-2.5 rounded-lg bg-gray-50 border border-gray-100">
+                      <p className="text-[11px] text-gray-500 uppercase font-medium">Total Baris</p>
+                      <p className="text-base font-bold text-gray-900">{csvPreview.total_rows}</p>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-100">
+                      <p className="text-[11px] text-emerald-700 uppercase font-medium">Valid</p>
+                      <p className="text-base font-bold text-emerald-800">{csvPreview.valid_rows_count}</p>
+                    </div>
+                    <div className={`p-2.5 rounded-lg border ${csvPreview.error_rows_count > 0 ? 'bg-red-50 border-red-100' : 'bg-gray-50 border-gray-100'}`}>
+                      <p className={`text-[11px] uppercase font-medium ${csvPreview.error_rows_count > 0 ? 'text-red-700' : 'text-gray-500'}`}>Error</p>
+                      <p className={`text-base font-bold ${csvPreview.error_rows_count > 0 ? 'text-red-800' : 'text-gray-900'}`}>{csvPreview.error_rows_count}</p>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-100">
+                      <p className="text-[11px] text-blue-700 uppercase font-medium">Kategori Baru</p>
+                      <p className="text-base font-bold text-blue-800">{csvPreview.new_categories?.length || 0}</p>
+                    </div>
                   </div>
-                  <div className="px-4 py-3 text-sm text-gray-700 space-y-1">
-                    {csvType === 'addons' ? (
-                      <>
-                        <p>{t('products.csvGroupsCreated')} <span className="font-medium">{String(csvResult.groups_created ?? 0)}</span></p>
-                        <p>{t('products.csvAddonsCreated')} <span className="font-medium">{String(csvResult.addons_created ?? 0)}</span></p>
-                      </>
-                    ) : (
-                      <p>{t('common.created')} <span className="font-medium">{String(csvResult.created ?? 0)}</span></p>
-                    )}
-                    <p>{t('common.skipped')} <span className="font-medium">{String(csvResult.skipped ?? 0)}</span></p>
-                  </div>
-                  {Array.isArray(csvResult.warnings) && (csvResult.warnings as string[]).length > 0 && (
-                    <div className="px-4 py-3 border-t border-gray-100 bg-amber-50">
-                      <div className="flex items-center gap-2 mb-2">
-                        <AlertCircle size={14} className="text-amber-500" />
-                        <span className="text-xs font-medium text-amber-700">{t('products.csvMissingFields')}</span>
-                      </div>
-                      <ul className="space-y-1">
-                        {(csvResult.warnings as string[]).map((w, i) => (
-                          <li key={i} className="text-xs text-amber-800">{w}</li>
-                        ))}
-                      </ul>
+
+                  {/* Stock summary badge */}
+                  {csvPreview.total_initial_stock_items > 0 && (
+                    <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 flex justify-between items-center">
+                      <span>📦 <strong className="font-semibold">{csvPreview.total_initial_stock_items} produk</strong> memiliki stok awal</span>
+                      <span>Total Nilai HPP Stok: <strong className="font-semibold text-slate-900">{fmt(csvPreview.total_initial_stock_value)}</strong></span>
                     </div>
                   )}
-                  {Array.isArray(csvResult.errors) && (csvResult.errors as string[]).length > 0 && (
-                    <div className="px-4 py-3 border-t border-gray-100">
-                      <div className="flex items-center gap-2 mb-2">
-                        <AlertCircle size={14} className="text-red-500" />
-                        <span className="text-xs font-medium text-red-700">{t('products.csvSkippedErrors')}</span>
+
+                  {/* Categories notice */}
+                  {Array.isArray(csvPreview.new_categories) && csvPreview.new_categories.length > 0 && (
+                    <div className="px-3 py-2 bg-blue-50/70 border border-blue-100 rounded-lg text-xs text-blue-800">
+                      ✨ Kategori baru otomatis dibuat: <span className="font-semibold">{csvPreview.new_categories.join(', ')}</span>
+                    </div>
+                  )}
+
+                  {/* Errors List */}
+                  {Array.isArray(csvPreview.errors) && csvPreview.errors.length > 0 && (
+                    <div className="rounded-xl border border-red-200 bg-red-50/50 p-3 space-y-2">
+                      <div className="flex items-center gap-2 text-red-800 font-semibold text-xs">
+                        <AlertCircle size={15} className="text-red-600 shrink-0" />
+                        <span>Validasi Gagal — Harap perbaiki {csvPreview.errors.length} baris error berikut:</span>
                       </div>
-                      <ul className="space-y-1">
-                        {(csvResult.errors as string[]).map((e, i) => (
-                          <li key={i} className="text-xs text-gray-600">{e}</li>
+                      <div className="max-h-40 overflow-y-auto divide-y divide-red-100 text-xs">
+                        {csvPreview.errors.map((err: any, idx: number) => (
+                          <div key={idx} className="py-1.5 flex items-start gap-2 text-red-700">
+                            <span className="font-mono bg-red-100 text-red-800 px-1.5 py-0.5 rounded text-[11px] font-bold shrink-0">
+                              Baris {err.row}
+                            </span>
+                            <span>
+                              {err.barcode && <strong className="font-mono">[{err.barcode}] </strong>}
+                              {err.name && <span>{err.name}: </span>}
+                              {err.message}
+                            </span>
+                          </div>
                         ))}
-                      </ul>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Success Result */}
+                  {csvResult && (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 space-y-2">
+                      <div className="flex items-center gap-2 text-emerald-900 font-bold text-sm">
+                        <CheckCircle size={18} className="text-emerald-600" />
+                        <span>Impor Katalog Berhasil!</span>
+                      </div>
+                      <div className="text-xs text-emerald-800 space-y-1">
+                        <p>✓ <strong>{String(csvResult.created_products_count ?? 0)} produk</strong> berhasil ditambahkan ke katalog.</p>
+                        {Number(csvResult.created_categories_count ?? 0) > 0 && (
+                          <p>✓ <strong>{String(csvResult.created_categories_count)} kategori baru</strong> berhasil dibuat.</p>
+                        )}
+                        {Number(csvResult.initial_stock_items_count ?? 0) > 0 && (
+                          <p>✓ <strong>{String(csvResult.initial_stock_items_count)} mutasi stok awal</strong> dicatat di buku besar mutasi.</p>
+                        )}
+                        <p className="text-emerald-700 font-mono text-[11px] pt-1">Batch ID: {String(csvResult.batch_id)}</p>
+                      </div>
                     </div>
                   )}
                 </div>
+              )}
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="pt-4 border-t border-gray-100 flex justify-end gap-2 shrink-0">
+              <Button variant="outline" onClick={() => setShowCsvModal(false)}>
+                {csvResult ? 'Tutup' : 'Batal'}
+              </Button>
+              {csvPreview && csvPreview.valid && !csvResult && (
+                <Button
+                  onClick={handleExecuteImport}
+                  disabled={csvUploading}
+                  className="bg-brand hover:bg-brand/90 text-white"
+                >
+                  {csvUploading ? 'Mengimpor...' : `Konfirmasi & Impor ${csvPreview.valid_rows_count} Produk`}
+                </Button>
               )}
             </div>
           </div>

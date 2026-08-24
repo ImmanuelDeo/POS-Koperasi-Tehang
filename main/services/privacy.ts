@@ -58,26 +58,25 @@ export function validateNik(
 }
 
 /**
- * Masks an NIK for safe display across cashier UI, lists, and standard reports.
- * Example: '3273010101900001' -> '3273********0001'
+ * Masks an NIK for safe display across cashier POS UI and standard views.
+ * Rule: Shows the first 8 digits visible for identity crosscheck against member ID/KTP,
+ * and masks the remaining digits with asterisks (*).
+ * Example (16 digits): '3273010101900001' -> '32730101********'
  */
 export function maskNik(nik: string | null | undefined): string | null {
   if (!nik) return null;
   const clean = String(nik).trim();
   if (clean.length === 0) return null;
 
-  if (clean.length === 16) {
-    return `${clean.slice(0, 4)}********${clean.slice(12, 16)}`;
+  if (clean.length >= 8) {
+    const visiblePrefix = clean.slice(0, 8);
+    const maskedSuffix = '*'.repeat(Math.max(4, clean.length - 8));
+    return `${visiblePrefix}${maskedSuffix}`;
   }
 
-  // Fallback masking for non-standard lengths
-  if (clean.length > 8) {
-    const keep = Math.min(3, Math.floor(clean.length / 4));
-    const maskedLen = clean.length - keep * 2;
-    return `${clean.slice(0, keep)}${'*'.repeat(maskedLen)}${clean.slice(clean.length - keep)}`;
-  }
-
-  return '********';
+  // Fallback masking for non-standard lengths < 8
+  const keep = Math.min(4, Math.floor(clean.length / 2));
+  return `${clean.slice(0, keep)}${'*'.repeat(Math.max(4, clean.length - keep))}`;
 }
 
 /**

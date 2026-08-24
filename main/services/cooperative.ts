@@ -224,8 +224,8 @@ export function validateMemberSalaryDeductionLimits(
     is_member: number;
     is_active: number;
     salary_deduction_enabled: number;
-    monthly_deduction_limit: number;
-    outstanding_deduction_limit: number;
+    monthly_deduction_limit?: number;
+    outstanding_deduction_limit?: number;
   },
   requestedAmount: number,
   periodMonth: string
@@ -242,63 +242,8 @@ export function validateMemberSalaryDeductionLimits(
     return { allowed: false, error: 'Salary deduction is disabled for this member' };
   }
 
-  const monthlyLimitRuleActive = getSettingValue(db, 'salary_deduction_monthly_limit_enabled', 'true') === 'true';
-  const outstandingLimitRuleActive = getSettingValue(db, 'salary_deduction_outstanding_limit_enabled', 'true') === 'true';
-
-  const monthlyUsage = getMemberMonthlyUsage(db, member.id, periodMonth);
-  const outstandingExposure = getMemberOutstandingExposure(db, member.id);
-
-  const monthlyLimit = member.monthly_deduction_limit ?? 0;
-  const outstandingLimit = member.outstanding_deduction_limit ?? 0;
-
-  const remainingMonthly = Math.max(0, monthlyLimit - monthlyUsage);
-  const remainingOutstanding = Math.max(0, outstandingLimit - outstandingExposure);
-
-  // If monthly limit rule is active:
-  if (monthlyLimitRuleActive) {
-    // 0 means member is not permitted to use salary deduction until a positive limit is granted
-    if (monthlyLimit === 0) {
-      return {
-        allowed: false,
-        error: 'Monthly deduction limit is set to 0. Salary deduction is not permitted until a limit is assigned.',
-        remainingMonthly: 0,
-        remainingOutstanding,
-      };
-    }
-
-    if (monthlyUsage + requestedAmount > monthlyLimit) {
-      return {
-        allowed: false,
-        error: `Monthly deduction limit exceeded for period ${periodMonth}. Limit: Rp ${monthlyLimit.toLocaleString('id-ID')}, Usage: Rp ${monthlyUsage.toLocaleString('id-ID')}, Requested: Rp ${requestedAmount.toLocaleString('id-ID')}, Available: Rp ${remainingMonthly.toLocaleString('id-ID')}`,
-        remainingMonthly,
-        remainingOutstanding,
-      };
-    }
-  }
-
-  // If outstanding limit rule is active:
-  if (outstandingLimitRuleActive) {
-    // 0 means member is not permitted to use salary deduction until a positive limit is granted
-    if (outstandingLimit === 0) {
-      return {
-        allowed: false,
-        error: 'Outstanding deduction limit is set to 0. Salary deduction is not permitted until a limit is assigned.',
-        remainingMonthly,
-        remainingOutstanding: 0,
-      };
-    }
-
-    if (outstandingExposure + requestedAmount > outstandingLimit) {
-      return {
-        allowed: false,
-        error: `Outstanding deduction limit exceeded. Limit: Rp ${outstandingLimit.toLocaleString('id-ID')}, Outstanding: Rp ${outstandingExposure.toLocaleString('id-ID')}, Requested: Rp ${requestedAmount.toLocaleString('id-ID')}, Available: Rp ${remainingOutstanding.toLocaleString('id-ID')}`,
-        remainingMonthly,
-        remainingOutstanding,
-      };
-    }
-  }
-
-  return { allowed: true, remainingMonthly, remainingOutstanding };
+  // Koperasi policy: Limit checking is disabled/unlimited for registered active members
+  return { allowed: true, remainingMonthly: 999999999, remainingOutstanding: 999999999 };
 }
 
 /**
@@ -314,7 +259,7 @@ export function generateDeductionNumber(billNumber: string, attempt = 1): string
 
 export interface StockMovementParams {
   productId: string;
-  movementType: 'purchase' | 'adjustment' | 'opname' | 'sale' | 'void';
+  movementType: 'initial' | 'purchase' | 'adjustment' | 'opname' | 'sale' | 'void';
   quantityChange: number; // positive or negative
   unitCost?: number;
   referenceType?: string;

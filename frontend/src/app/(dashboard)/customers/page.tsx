@@ -249,7 +249,7 @@ export default function CustomersPage() {
                 {t('customers.columnCustomer')} <SortIcon field="name" />
               </th>
               <th className="text-left p-4 text-xs font-medium text-gray-500 uppercase">
-                NIK (Masked)
+                NIK
               </th>
               <th className="text-left p-4 text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 group transition-colors" onClick={() => onSort('phone')}>
                 {t('customer.phone')} <SortIcon field="phone" />
@@ -277,9 +277,9 @@ export default function CustomersPage() {
                   {c.email && <div className="text-xs text-gray-400">{c.email}</div>}
                 </td>
                 <td className="p-4">
-                  {c.nik_masked ? (
+                  {c.nik || c.nik_masked ? (
                     <span className="font-mono text-xs text-gray-900 bg-gray-100 px-2 py-0.5 rounded border border-gray-200">
-                      {c.nik_masked}
+                      {c.nik || c.nik_masked}
                     </span>
                   ) : (
                     <span className="text-[11px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">

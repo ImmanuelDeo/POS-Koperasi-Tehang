@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
+import { normalizeNik, maskNik } from '../services/privacy';
 
 const router = Router();
 
@@ -16,6 +17,25 @@ function getWalletBalance(customerId: string | number): number {
   `).get(customerId) as { total: number };
 
   return Math.max(0, credits.total - debits.total);
+}
+
+function formatCustomerResponse(c: any, userRole?: string) {
+  if (!c) return null;
+  const masked = maskNik(c.nik);
+  const canViewFullNik = userRole === 'owner' || userRole === 'office_hr' || userRole === 'admin';
+  return {
+    ...c,
+    nik: canViewFullNik ? (c.nik || null) : masked,
+    nik_masked: masked,
+    has_nik: Boolean(c.nik && String(c.nik).trim().length > 0),
+    is_member: c.is_member ?? 1,
+    salary_deduction_enabled: c.salary_deduction_enabled ?? 1,
+    monthly_deduction_limit: c.monthly_deduction_limit ?? 0,
+    outstanding_deduction_limit: c.outstanding_deduction_limit ?? 0,
+    member_no: c.member_no || (c.is_member ? 'MBR-' + String(c.id).slice(-4) : '-'),
+    employee_id: c.employee_id || '-',
+    department: c.department || 'Umum',
+  };
 }
 
 // Cleanup endpoint: delete all customers with null IDs - must be before /:id
@@ -36,9 +56,13 @@ router.get('/', (req: Request, res: Response) => {
     const params: any[] = [];
 
     if (req.query.search) {
-      const search = `%${req.query.search}%`;
-      query += ' AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)';
-      params.push(search, search, search);
+      const rawSearch = String(req.query.search).trim();
+      const normalizedNikSearch = normalizeNik(rawSearch);
+      const searchPattern = `%${rawSearch}%`;
+      const nikPattern = normalizedNikSearch ? `%${normalizedNikSearch}%` : searchPattern;
+
+      query += ' AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR c.member_no LIKE ? OR c.employee_id LIKE ? OR (c.nik IS NOT NULL AND c.nik LIKE ?))';
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, nikPattern);
     }
 
     query += ' ORDER BY c.name';
@@ -47,8 +71,9 @@ router.get('/', (req: Request, res: Response) => {
       query += ` LIMIT ${parseInt(req.query.per_page as string)}`;
     }
 
-    const customers = db.prepare(query).all(...params);
-    res.json({ data: customers });
+    const userRole = (req as any).user?.role;
+    const customers = db.prepare(query).all(...params) as any[];
+    res.json({ data: customers.map((c) => formatCustomerResponse(c, userRole)) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -57,20 +82,24 @@ router.get('/', (req: Request, res: Response) => {
 router.get('/search', (req: Request, res: Response) => {
   try {
     const { q } = req.query;
-    if (!q || String(q).length < 2) {
-      return res.status(400).json({ error: 'Search query must be at least 2 characters' });
+    if (!q || String(q).trim().length < 1) {
+      return res.status(400).json({ error: 'Search query must not be empty' });
     }
 
     const db = getDatabase();
-    const searchTerm = `%${q}%`;
+    const rawQ = String(q).trim();
+    const normalizedNikQ = normalizeNik(rawQ);
+    const searchTerm = `%${rawQ}%`;
+    const nikTerm = normalizedNikQ ? `%${normalizedNikQ}%` : searchTerm;
 
     const customers = db.prepare(`
       SELECT * FROM customers
-      WHERE phone LIKE ? OR name LIKE ? OR email LIKE ?
-      ORDER BY name LIMIT 20
-    `).all(searchTerm, searchTerm, searchTerm);
+      WHERE phone LIKE ? OR name LIKE ? OR email LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR (nik IS NOT NULL AND nik LIKE ?)
+      ORDER BY name LIMIT 30
+    `).all(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, nikTerm) as any[];
 
-    res.json({ customers });
+    const userRole = (req as any).user?.role;
+    res.json({ customers: customers.map((c) => formatCustomerResponse(c, userRole)) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -79,7 +108,7 @@ router.get('/search', (req: Request, res: Response) => {
 router.get('/:id', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
+    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id) as any;
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found' });
     }
@@ -93,7 +122,8 @@ router.get('/:id', (req: Request, res: Response) => {
       SELECT * FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 10
     `).all(req.params.id);
 
-    res.json({ customer: { ...customer, walletBalance, loyaltyHistory, recentOrders } });
+    const userRole = (req as any).user?.role;
+    res.json({ customer: { ...formatCustomerResponse(customer, userRole), walletBalance, loyaltyHistory, recentOrders } });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -102,7 +132,7 @@ router.get('/:id', (req: Request, res: Response) => {
 router.get('/:id/wallet', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const customerId = parseInt(req.params.id);
+    const customerId = req.params.id;
     const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId);
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found' });
@@ -121,7 +151,10 @@ router.get('/:id/wallet', (req: Request, res: Response) => {
 
 router.post('/', (req: Request, res: Response) => {
   try {
-    const { phone, name, email, address, notes } = req.body;
+    const {
+      phone, name, email, address, notes, nik, member_no, employee_id, department,
+      is_member, salary_deduction_enabled, monthly_deduction_limit, outstanding_deduction_limit
+    } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ message: 'Name is required' });
@@ -136,10 +169,21 @@ router.post('/', (req: Request, res: Response) => {
       }
     }
 
+    const cleanNik = nik ? normalizeNik(nik) : null;
+    if (cleanNik) {
+      const existingNik = db.prepare('SELECT id, name FROM customers WHERE nik = ?').get(cleanNik) as any;
+      if (existingNik) {
+        return res.status(400).json({ message: `NIK '${cleanNik}' sudah terdaftar pada anggota ${existingNik.name}` });
+      }
+    }
+
     const id = 'cust-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
     db.prepare(`
-      INSERT INTO customers (id, phone, name, email, address, notes, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO customers (
+        id, phone, name, email, address, notes, nik, member_no, employee_id, department,
+        is_member, is_active, salary_deduction_enabled, monthly_deduction_limit, outstanding_deduction_limit,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       id,
       phone ? String(phone).trim() : null,
@@ -147,12 +191,20 @@ router.post('/', (req: Request, res: Response) => {
       email ? String(email).trim() : null,
       address ? String(address).trim() : null,
       notes ? String(notes).trim() : null,
+      cleanNik,
+      member_no ? String(member_no).trim() : null,
+      employee_id ? String(employee_id).trim() : null,
+      department ? String(department).trim() : 'Umum',
+      is_member !== undefined ? (is_member ? 1 : 0) : 1,
+      salary_deduction_enabled !== undefined ? (salary_deduction_enabled ? 1 : 0) : 1,
+      Number(monthly_deduction_limit) || 0,
+      Number(outstanding_deduction_limit) || 0,
       now(),
       now()
     );
 
     const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(id);
-    res.status(201).json({ customer });
+    res.status(201).json({ customer: formatCustomerResponse(customer) });
   } catch (error: any) {
     console.error('[Customer POST error]', error);
     res.status(500).json({ message: 'Failed to create customer: ' + error.message });
@@ -162,13 +214,25 @@ router.post('/', (req: Request, res: Response) => {
 router.put('/:id', (req: Request, res: Response) => {
   try {
     const {
-      phone, name, email, address, notes, country_code
+      phone, name, email, address, notes, country_code, nik, member_no, employee_id, department,
+      is_member, salary_deduction_enabled, monthly_deduction_limit, outstanding_deduction_limit
     } = req.body;
     const db = getDatabase();
 
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
+    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id) as any;
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    let cleanNik = customer.nik;
+    if (nik !== undefined) {
+      cleanNik = nik && String(nik).trim() ? normalizeNik(nik) : null;
+      if (cleanNik && cleanNik !== customer.nik) {
+        const existingNik = db.prepare('SELECT id, name FROM customers WHERE nik = ? AND id != ?').get(cleanNik, req.params.id) as any;
+        if (existingNik) {
+          return res.status(400).json({ error: `NIK '${cleanNik}' sudah digunakan oleh anggota lain: ${existingNik.name}` });
+        }
+      }
     }
 
     db.prepare(`
@@ -179,14 +243,30 @@ router.put('/:id', (req: Request, res: Response) => {
         country_code = COALESCE(NULLIF(?, ''), country_code),
         address = COALESCE(NULLIF(?, ''), address),
         notes = COALESCE(NULLIF(?, ''), notes),
+        nik = ?,
+        member_no = COALESCE(NULLIF(?, ''), member_no),
+        employee_id = COALESCE(NULLIF(?, ''), employee_id),
+        department = COALESCE(NULLIF(?, ''), department),
+        is_member = COALESCE(?, is_member),
+        salary_deduction_enabled = COALESCE(?, salary_deduction_enabled),
+        monthly_deduction_limit = COALESCE(?, monthly_deduction_limit),
+        outstanding_deduction_limit = COALESCE(?, outstanding_deduction_limit),
         updated_at = ?
       WHERE id = ?
     `).run(
-      phone, name, email, country_code, address, notes, now(), req.params.id
+      phone, name, email, country_code, address, notes,
+      cleanNik,
+      member_no, employee_id, department,
+      is_member !== undefined ? (is_member ? 1 : 0) : undefined,
+      salary_deduction_enabled !== undefined ? (salary_deduction_enabled ? 1 : 0) : undefined,
+      monthly_deduction_limit !== undefined ? Number(monthly_deduction_limit) : undefined,
+      outstanding_deduction_limit !== undefined ? Number(outstanding_deduction_limit) : undefined,
+      now(),
+      req.params.id
     );
 
     const updated = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
-    res.json({ customer: updated });
+    res.json({ customer: formatCustomerResponse(updated) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

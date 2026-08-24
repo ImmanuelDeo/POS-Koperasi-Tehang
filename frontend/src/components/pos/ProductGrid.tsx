@@ -209,43 +209,11 @@ export default function ProductGrid({
                 )}
 
                 {/* Pricing layout */}
-                {(() => {
-                  const hasValidMemberPrice = typeof product.member_price === 'number' && Number.isSafeInteger(product.member_price) && product.member_price > 0;
-                  const hasActiveMember = !!cart.member;
-
-                  if (hasActiveMember && hasValidMemberPrice) {
-                    return (
-                      <div className="mt-1 pt-1 border-t border-gray-100">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-emerald-700 font-bold text-sm">
-                            {fmt(product.member_price!)}
-                          </span>
-                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded">
-                            Member
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-gray-400 line-through">
-                          Umum: {fmt(Number(product.price))}
-                        </p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className="mt-1 pt-1 border-t border-gray-100">
-                      <div className="flex items-center justify-between">
-                        <p className="text-brand font-bold text-sm">
-                          {fmt(Number(product.price))}
-                        </p>
-                      </div>
-                      {hasValidMemberPrice && (
-                        <p className="text-[10px] text-emerald-700 font-medium mt-0.5">
-                          Member: <span className="font-bold">{fmt(product.member_price!)}</span>
-                        </p>
-                      )}
-                    </div>
-                  );
-                })()}
+                <div className="mt-1 pt-1 border-t border-gray-100">
+                  <p className="text-brand font-bold text-sm">
+                    {fmt(Number(product.price))}
+                  </p>
+                </div>
 
               </div>
             );

@@ -20,12 +20,21 @@ import { kdsRoutes } from './kds';
 import { kdsInfoRoutes } from './kds-info';
 import { printerRoutes } from './printers';
 import { databaseRoutes } from './database';
+import { catalogCsvRoutes } from './catalog-csv';
 import { getDatabase, now, parseItemJson } from '../db';
 import { authenticateToken, requireRole, requireMethodRoles, AuthenticatedRequest } from '../middleware/auth';
 
 export function registerRoutes(app: Express): void {
   // ── Public Auth routes (with internal public/protected routing) ───────────
   app.use('/api/auth', authRoutes);
+
+  // ── POS Koperasi: Catalog CSV Import & Template ───────────────────────────
+  app.use(
+    '/api/catalog-csv',
+    authenticateToken,
+    requireRole(['owner', 'admin', 'office_inventory']),
+    catalogCsvRoutes
+  );
 
   // ── Resource routes (Strictly Authenticated & Role Protected) ─────────────
   app.use(

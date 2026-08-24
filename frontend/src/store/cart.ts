@@ -2,20 +2,10 @@ import { create } from 'zustand';
 import type { Customer, Product, Addon, CartItem, CooperativeMember } from '@/lib/types';
 
 /**
- * Calculates the effective unit price for a product based on active member presence.
- * Price rule:
- * - If member is active and product.member_price is a safe integer > 0 -> use member_price.
- * - Otherwise (non-member, or member_price is null/undefined/0/<=0/non-integer) -> fallback to product.price.
+ * Calculates the effective unit price for a product.
+ * Price rule: Koperasi policy unifies member and general pricing (identical price).
  */
-export function getEffectiveUnitPrice(product: Product, hasActiveMember: boolean): number {
-  if (
-    hasActiveMember &&
-    typeof product.member_price === 'number' &&
-    Number.isSafeInteger(product.member_price) &&
-    product.member_price > 0
-  ) {
-    return product.member_price;
-  }
+export function getEffectiveUnitPrice(product: Product, _hasActiveMember: boolean): number {
   return product.price;
 }
 

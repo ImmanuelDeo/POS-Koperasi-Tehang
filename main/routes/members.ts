@@ -52,6 +52,9 @@ router.get('/lookup', (req: AuthenticatedRequest, res: Response) => {
       `).all(searchPattern, searchPattern, searchPattern, searchPattern, nikPattern) as any[];
     }
 
+    const userRole = req.user?.role;
+    const canViewFullNik = userRole === 'owner' || userRole === 'office_hr';
+
     const sanitizedMembers = rows.map((member) => {
       const monthlyLimit = member.monthly_deduction_limit ?? 0;
       const outstandingLimit = member.outstanding_deduction_limit ?? 0;
@@ -66,7 +69,7 @@ router.get('/lookup', (req: AuthenticatedRequest, res: Response) => {
 
       return {
         id: member.id,
-        nik: masked,
+        nik: canViewFullNik ? (member.nik || masked) : masked,
         nik_masked: masked,
         has_nik: Boolean(member.nik && String(member.nik).trim().length > 0),
         member_no: member.member_no || (member.is_member ? 'MBR-' + String(member.id).slice(-4) : '-'),
@@ -143,6 +146,9 @@ router.get('/', (req: AuthenticatedRequest, res: Response) => {
     const members = db.prepare(query).all(...params) as any[];
     const periodMonth = calculatePayrollPeriod(db);
 
+    const userRole = req.user?.role;
+    const canViewFullNik = userRole === 'owner' || userRole === 'office_hr';
+
     const enrichedMembers = members.map((member) => {
       const monthlyUsage = getMemberMonthlyUsage(db, member.id, periodMonth);
       const currentOutstanding = getMemberOutstandingExposure(db, member.id);
@@ -152,7 +158,7 @@ router.get('/', (req: AuthenticatedRequest, res: Response) => {
 
       return {
         ...member,
-        nik: masked,
+        nik: canViewFullNik ? (member.nik || masked) : masked,
         nik_masked: masked,
         has_nik: Boolean(member.nik && String(member.nik).trim().length > 0),
         current_monthly_usage: monthlyUsage,
