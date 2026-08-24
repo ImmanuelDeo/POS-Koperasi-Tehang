@@ -913,19 +913,36 @@ function seedData(): void {
   console.log('[DB] Seed data loaded');
 }
 
+export function getLocalBusinessDateCompact(date: Date = new Date()): string {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Jakarta',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return formatter.format(date).replace(/-/g, ''); // '20260825'
+  } catch {
+    const d = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+    return d.toISOString().slice(0, 10).replace(/-/g, '');
+  }
+}
+
 export function generateOrderNumber(): string {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = getLocalBusinessDateCompact();
+  const prefix = `ORD-${date}-%`;
   const result = db.prepare(
-    "SELECT COUNT(*) + 1 as next FROM orders WHERE date(created_at) = date('now')"
-  ).get() as { next: number };
+    "SELECT COUNT(*) + 1 as next FROM orders WHERE order_number LIKE ?"
+  ).get(prefix) as { next: number };
   return `ORD-${date}-${String(result.next).padStart(4, '0')}`;
 }
 
 export function generateBillNumber(): string {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const date = getLocalBusinessDateCompact();
+  const prefix = `INV-${date}-%`;
   const result = db.prepare(
-    "SELECT COUNT(*) + 1 as next FROM bills WHERE date(created_at) = date('now')"
-  ).get() as { next: number };
+    "SELECT COUNT(*) + 1 as next FROM bills WHERE bill_number LIKE ?"
+  ).get(prefix) as { next: number };
   return `INV-${date}-${String(result.next).padStart(4, '0')}`;
 }
 

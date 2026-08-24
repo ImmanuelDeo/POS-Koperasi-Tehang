@@ -33,12 +33,25 @@ export function formatDateTimeWIB(value?: string | Date | null): string {
   try {
     const d = value ? new Date(value) : new Date();
     if (isNaN(d.getTime())) return new Date().toLocaleString('id-ID') + ' WIB';
-    const day = String(d.getDate()).padStart(2, '0');
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const year = d.getFullYear();
-    const hours = String(d.getHours()).padStart(2, '0');
-    const minutes = String(d.getMinutes()).padStart(2, '0');
-    return `${day}/${month}/${year} ${hours}:${minutes} WIB`;
+    const formatter = new Intl.DateTimeFormat('id-ID', {
+      timeZone: 'Asia/Jakarta',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(d);
+    let day = '', month = '', year = '', hour = '', minute = '';
+    for (const p of parts) {
+      if (p.type === 'day') day = p.value.padStart(2, '0');
+      if (p.type === 'month') month = p.value.padStart(2, '0');
+      if (p.type === 'year') year = p.value;
+      if (p.type === 'hour') hour = p.value.padStart(2, '0');
+      if (p.type === 'minute') minute = p.value.padStart(2, '0');
+    }
+    return `${day}/${month}/${year} ${hour}:${minute} WIB`;
   } catch {
     return new Date().toLocaleDateString('id-ID') + ' WIB';
   }

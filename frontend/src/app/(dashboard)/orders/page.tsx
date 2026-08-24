@@ -494,13 +494,21 @@ export default function OrdersPage() {
     }
 
     try {
+      const billWithOrder = {
+        ...order.bill,
+        order: {
+          ...order,
+          items: order.items,
+          customer: order.customer,
+        },
+      };
       shareBillViaWhatsApp(
-        order.bill,
+        billWithOrder,
         { phone: order.customer.phone, country_code: order.customer.country_code },
         {
-          business_name: currentTenant?.business_name || t('common.businessNameFallback'),
+          business_name: currentTenant?.business_name || 'POS Koperasi Tehang',
           currency,
-          country: currentTenant?.country || 'IN',
+          country: currentTenant?.country || 'ID',
         }
       );
     } catch {
@@ -519,7 +527,25 @@ export default function OrdersPage() {
     }
     setSendingWaOrderId(order.id);
     try {
-      await sendBillViaFlo(order.bill, order.customer.phone, currency, t);
+      const billWithOrder = {
+        ...order.bill,
+        order: {
+          ...order,
+          items: order.items,
+          customer: order.customer,
+        },
+      };
+      await sendBillViaFlo(
+        billWithOrder,
+        order.customer.phone,
+        currency,
+        t,
+        {
+          business_name: currentTenant?.business_name || 'POS Koperasi Tehang',
+          currency,
+          country: currentTenant?.country || 'ID',
+        }
+      );
     } finally {
       setSendingWaOrderId(null);
     }

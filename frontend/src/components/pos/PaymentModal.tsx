@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import type { Bill } from '@/lib/types';
 import TaxBreakdown from '@/components/pos/TaxBreakdown';
 import { useCartStore } from '@/store/cart';
+import { useAuthStore } from '@/store/auth';
 import { useConfirm } from '@/hooks/use-confirm';
 import { useI18n } from '@/hooks/useI18n';
 import { PAYMENT_METHODS } from '@/lib/payment-methods';
@@ -44,6 +45,8 @@ export default function PaymentModal({ bill, currency, onClose, onPaid, onBillUp
   const remaining = Math.round(Number(bill.balance || bill.total || 0));
   const cartCustomerId = useCartStore((s) => s.customerId);
   const cartCustomer = useCartStore((s) => s.customer);
+  const cartItems = useCartStore((s) => s.items);
+  const { currentTenant } = useAuthStore();
   const effectiveCustomerId = bill.customer_id || cartCustomerId || null;
   const { confirm, ConfirmDialog } = useConfirm();
   const { t } = useI18n();
@@ -250,7 +253,35 @@ export default function PaymentModal({ bill, currency, onClose, onPaid, onBillUp
     }
     setSendingWa(true);
     try {
-      await sendBillViaFlo(bill, phone, currency, t);
+      const billWithOrder: any = {
+        ...bill,
+        order: {
+          order_number: bill.order?.order_number || ('ORD-' + (bill.bill_number?.slice(4) || '')),
+          created_at: bill.created_at || new Date().toISOString(),
+          items: cartItems.map((i) => {
+            const price = i.unit_price || i.product.price || 0;
+            return {
+              product_name: i.product.name,
+              quantity: i.quantity,
+              unit: i.product.unit || 'pcs',
+              unit_price: price,
+              subtotal: price * i.quantity,
+            };
+          }),
+          customer: cartCustomer,
+        },
+      };
+      await sendBillViaFlo(
+        billWithOrder,
+        phone,
+        currency,
+        t,
+        {
+          business_name: currentTenant?.business_name || 'POS Koperasi Tehang',
+          currency,
+          country: currentTenant?.country || 'ID',
+        }
+      );
     } finally {
       setSendingWa(false);
     }
