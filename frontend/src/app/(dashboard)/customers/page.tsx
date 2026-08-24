@@ -35,7 +35,7 @@ export default function CustomersPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 
-  const [form, setForm] = useState({ name: '', phone: '', email: '', country_code: dialCode });
+  const [form, setForm] = useState({ name: '', nik: '', phone: '', email: '', country_code: dialCode });
 
   const [ledgerCustomer, setLedgerCustomer] = useState<Customer | null>(null);
   const [ledgerData, setLedgerData] = useState<{ balance: number; transactions: { id: number; type: string; amount: number; description: string; created_at: string; expires_at?: string }[] } | null>(null);
@@ -82,26 +82,41 @@ export default function CustomersPage() {
 
   const openAdd = () => {
     setEditingCustomer(null);
-
-    setForm({ name: '', phone: '', email: '', country_code: dialCode });
+    setForm({ name: '', nik: '', phone: '', email: '', country_code: dialCode });
     setShowForm(true);
   };
 
   const openEdit = (c: Customer) => {
     setEditingCustomer(c);
-
-    setForm({ name: c.name, phone: c.phone || '', email: c.email || '', country_code: c.country_code || dialCode });
+    setForm({
+      name: c.name,
+      nik: c.nik || c.nik_masked || '',
+      phone: c.phone || '',
+      email: c.email || '',
+      country_code: c.country_code || dialCode
+    });
     setShowForm(true);
   };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    const parsed = parsePhone(form.phone, defaultCountry);
-    if (!parsed) {
-      toast.error(t('pos.invalidPhone', { country: countryName(defaultCountry) }));
-      return;
+    let cleanPhone = form.phone.trim();
+    let phoneCountry = dialCode;
+
+    if (cleanPhone) {
+      const parsed = parsePhone(cleanPhone, defaultCountry);
+      if (parsed) {
+        cleanPhone = parsed.e164;
+        phoneCountry = parsed.countryCode;
+      }
     }
-    const payload = { ...form, phone: parsed.e164, country_code: parsed.countryCode };
+
+    const payload = {
+      ...form,
+      phone: cleanPhone || null,
+      country_code: phoneCountry,
+    };
+
     try {
       if (editingCustomer) {
         await api.put(`/customers/${editingCustomer.id}`, payload);
@@ -113,8 +128,8 @@ export default function CustomersPage() {
       setShowForm(false);
       fetchCustomers();
     } catch (err: unknown) {
-      const error = err as { response?: { data?: { error?: string } } };
-      toast.error(error.response?.data?.error || t('customer.saveFailed'));
+      const error = err as { response?: { data?: { error?: string; message?: string } } };
+      toast.error(error.response?.data?.error || error.response?.data?.message || t('customer.saveFailed'));
     }
   };
 
@@ -153,7 +168,7 @@ export default function CustomersPage() {
         <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
         <input
           type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-          placeholder={t('customer.search')}
+          placeholder="Cari berdasarkan NIK, Nama, atau No. Telepon..."
           className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-brand outline-none"
         />
       </div>
@@ -164,6 +179,9 @@ export default function CustomersPage() {
             <tr>
               <th className="text-left p-4 text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 group transition-colors" onClick={() => onSort('name')}>
                 {t('customers.columnCustomer')} <SortIcon field="name" />
+              </th>
+              <th className="text-left p-4 text-xs font-medium text-gray-500 uppercase">
+                NIK (Masked)
               </th>
               <th className="text-left p-4 text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 group transition-colors" onClick={() => onSort('phone')}>
                 {t('customer.phone')} <SortIcon field="phone" />
@@ -178,36 +196,35 @@ export default function CustomersPage() {
                 {t('customer.totalSpent')} <SortIcon field="spent" />
               </th>
               <th className="text-right p-4 text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100 group transition-colors" onClick={() => onSort('loyalty')}>
-                {t('customer.loyalty')} <SortIcon field="loyalty" />
+                {t('customer.loyaltyPoints')} <SortIcon field="loyalty" />
               </th>
-              <th className="text-center p-4 text-xs font-medium text-gray-500 uppercase">{t('customers.columnActions')}</th>
-              <th className="text-center p-4 text-xs font-medium text-gray-500 uppercase">{t('customers.columnLedger')}</th>
+              <th className="p-4"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {customers.map((c) => (
-              <tr key={c.id} className="hover:bg-gray-50">
+              <tr key={c.id} className="hover:bg-gray-50/50 transition-colors">
                 <td className="p-4">
-                  <p className="font-medium text-gray-900">{c.name}</p>
-                  <p className="text-xs text-gray-500">{c.email || '—'}</p>
+                  <div className="font-semibold text-gray-900">{c.name}</div>
+                  {c.email && <div className="text-xs text-gray-400">{c.email}</div>}
                 </td>
-                <td className="p-4 text-sm text-gray-600">
-                  <div className="flex items-center gap-2">
-                    <span>
-                      {c.phone ? (c.country_code && !c.phone.startsWith(c.country_code) ? `${c.country_code}${c.phone}` : c.phone) : '—'}
+                <td className="p-4">
+                  {c.nik_masked ? (
+                    <span className="font-mono text-xs text-gray-900 bg-gray-100 px-2 py-0.5 rounded border border-gray-200">
+                      {c.nik_masked}
                     </span>
-                    {c.phone && !c.phone.startsWith('+') && (
-                      <div className="text-red-500 flex items-center" title="Invalid format">
-                        <AlertCircle size={16} />
-                      </div>
-                    )}
-                  </div>
+                  ) : (
+                    <span className="text-[11px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                      NIK belum dilengkapi
+                    </span>
+                  )}
                 </td>
+                <td className="p-4 text-gray-600 font-mono text-sm">{c.phone || '—'}</td>
                 <td className="p-4 text-center text-sm text-gray-500 whitespace-nowrap">
                   {c.last_visit_at ? fmtDate(c.last_visit_at) : '—'}
                 </td>
-                <td className="p-4 text-center text-sm">{c.visits_count}</td>
-                <td className="p-4 text-right font-medium">{fmt(Number(c.total_spent))}</td>
+                <td className="p-4 text-center text-sm">{c.visits_count || 0}</td>
+                <td className="p-4 text-right font-medium">{fmt(Number(c.total_spent || 0))}</td>
                 <td className="p-4 text-right">
                   {Number(c.wallet_balance) > 0 ? (
                     <span className="inline-flex items-center gap-1 text-purple-700 font-semibold text-sm">
@@ -218,12 +235,10 @@ export default function CustomersPage() {
                     <span className="text-gray-400 text-sm">—</span>
                   )}
                 </td>
-                <td className="p-4 text-center">
-                  <Button variant="ghost" size="sm" onClick={() => openEdit(c)}>
+                <td className="p-4 text-right space-x-1 whitespace-nowrap">
+                  <Button variant="ghost" size="sm" onClick={() => openEdit(c)} title={t('customer.edit')}>
                     <Edit size={14} />
                   </Button>
-                </td>
-                <td className="p-4 text-center">
                   <Button variant="ghost" size="sm" onClick={() => openLedger(c)} title={t('customer.viewLedgerTitle')}>
                     <History size={14} />
                   </Button>
@@ -313,14 +328,61 @@ export default function CustomersPage() {
               <button onClick={() => setShowForm(false)}><X size={20} className="text-gray-400" /></button>
             </div>
             <form onSubmit={handleSave} className="space-y-4">
-              <input type="text" placeholder={t('customer.name')} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-                className="w-full px-3 py-2 border rounded-lg outline-none focus:ring-2 focus:ring-brand" required />
-              <div className="flex items-stretch gap-2">
-                <input type="tel" placeholder={dialCode ? `${dialCode} ${t('customer.phone')}` : t('customer.phone')} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                  className="flex-1 px-3 py-2 border rounded-lg outline-none focus:ring-2 focus:ring-brand" required />
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Nama Anggota / Pelanggan *</label>
+                <input
+                  type="text"
+                  placeholder={t('customer.name')}
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg outline-none focus:ring-2 focus:ring-brand text-sm"
+                  required
+                />
               </div>
-              <input type="email" placeholder={`${t('customer.email')} (${t('common.optional')})`} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
-                className="w-full px-3 py-2 border rounded-lg outline-none focus:ring-2 focus:ring-brand" />
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  NIK (Nomor Induk Kependudukan)
+                </label>
+                <input
+                  type="text"
+                  maxLength={16}
+                  placeholder="16 Digit Angka"
+                  value={form.nik}
+                  onChange={(e) => setForm({ ...form, nik: e.target.value.replace(/\D/g, '').slice(0, 16) })}
+                  className="w-full px-3 py-2 border rounded-lg outline-none focus:ring-2 focus:ring-brand font-mono text-sm"
+                />
+                <p className="text-[11px] text-gray-500 mt-1">
+                  {editingCustomer
+                    ? 'Kosongkan jika NIK belum tersedia pada data lama'
+                    : 'Format 16 digit angka (contoh: 3273010101900001)'}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">No. Telepon / WhatsApp (Opsional)</label>
+                <div className="flex items-stretch gap-2">
+                  <input
+                    type="tel"
+                    placeholder={dialCode ? `${dialCode} ${t('customer.phone')}` : t('customer.phone')}
+                    value={form.phone}
+                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    className="flex-1 px-3 py-2 border rounded-lg outline-none focus:ring-2 focus:ring-brand text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">Email (Opsional)</label>
+                <input
+                  type="email"
+                  placeholder={t('customer.email')}
+                  value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-lg outline-none focus:ring-2 focus:ring-brand text-sm"
+                />
+              </div>
+
               <Button type="submit" className="w-full">{editingCustomer ? t('customer.update') : t('customer.add')}</Button>
             </form>
           </div>

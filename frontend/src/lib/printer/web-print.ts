@@ -180,7 +180,7 @@ export function generateBillHtml(
       <tr><td>Subtotal</td><td class="text-right">${formatAmount(bill.subtotal, currency, locale)}</td></tr>
       ${Number(bill.discount_amount) > 0 ? `<tr><td>Discount</td><td class="text-right">-${formatAmount(bill.discount_amount, currency, locale)}</td></tr>` : ''}
       ${Number(bill.tax_amount) > 0 ? `<tr><td>Total Tax</td><td class="text-right">${formatAmount(bill.tax_amount, currency, locale)}</td></tr>` : ''}
-      ${Number(bill.service_charge) > 0 ? `<tr><td>Service Charge</td><td class="text-right">${formatAmount(bill.service_charge, currency, locale)}</td></tr>` : ''}
+      ${Number(bill.service_charge) > 0 ? `<tr><td>Service Charge</td><td class="text-right">${formatAmount(bill.service_charge || 0, currency, locale)}</td></tr>` : ''}
       ${Number(bill.delivery_charge) > 0 ? `<tr><td>Delivery Charge</td><td class="text-right">${formatAmount(bill.delivery_charge, currency, locale)}</td></tr>` : ''}
       <tr class="total-row"><td><strong>Grand Total</strong></td><td class="text-right"><strong>${formatAmount(bill.total, currency, locale)}</strong></td></tr>
     </table>

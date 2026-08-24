@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 let db: Database.Database;
 
@@ -313,6 +313,40 @@ function runIncrementalMigrations(fromVersion: number): void {
     console.log('[DB] Migration to v9 complete');
   }
 
+  if (fromVersion < 10) {
+    console.log('[DB] Applying migration to v10 (NIK member identifier & audit logs)...');
+    const migrationV10 = db.transaction(() => {
+      // 1. Add nik column to customers if not exists
+      if (!columnExists('customers', 'nik')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN nik TEXT`);
+      }
+
+      // 2. Add partial unique index for nik (single-tenant schema)
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_nik_unique
+        ON customers(nik) WHERE nik IS NOT NULL AND nik != ''`);
+
+      // 3. Create audit_logs table and indexes
+      db.exec(`CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_user_id TEXT,
+        actor_role TEXT,
+        action TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT,
+        details TEXT,
+        ip_address TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (actor_user_id) REFERENCES users(id)
+      )`);
+
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created ON audit_logs(action, created_at)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_user_id)`);
+    });
+
+    migrationV10();
+    console.log('[DB] Migration to v10 complete');
+  }
+
   // Update schema version
   db.prepare(`
     INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, CURRENT_TIMESTAMP)
@@ -435,13 +469,14 @@ function createSchema(): void {
 
     CREATE TABLE customers (
       id TEXT PRIMARY KEY,
+      nik TEXT NULL,
       member_no TEXT NULL,
       employee_id TEXT NULL,
       name TEXT NOT NULL,
       department TEXT NULL,
       email TEXT,
       phone TEXT,
-      country_code TEXT DEFAULT '+91',
+      country_code TEXT DEFAULT '+62',
       address TEXT,
       loyalty_points INTEGER DEFAULT 0,
       is_member INTEGER NOT NULL DEFAULT 0
@@ -665,6 +700,19 @@ function createSchema(): void {
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor_user_id TEXT,
+      actor_role TEXT,
+      action TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT,
+      details TEXT,
+      ip_address TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (actor_user_id) REFERENCES users(id)
+    );
+
     -- ── Indexes ──────────────────────────────────────────────────────────
 
     CREATE INDEX idx_products_category ON products(category_id);
@@ -680,6 +728,8 @@ function createSchema(): void {
       ON customers(member_no) WHERE member_no IS NOT NULL;
     CREATE UNIQUE INDEX idx_customers_employee_id_unique
       ON customers(employee_id) WHERE employee_id IS NOT NULL;
+    CREATE UNIQUE INDEX idx_customers_nik_unique
+      ON customers(nik) WHERE nik IS NOT NULL AND nik != '';
     CREATE INDEX idx_customers_is_member_active
       ON customers(is_member, is_active);
 
@@ -698,6 +748,12 @@ function createSchema(): void {
       ON salary_deductions(bill_id);
     CREATE INDEX idx_salary_deductions_order
       ON salary_deductions(order_id);
+
+    -- ── Schema v10 Indexes (Audit Logs) ──────────────────────────────────
+    CREATE INDEX idx_audit_logs_action_created
+      ON audit_logs(action, created_at);
+    CREATE INDEX idx_audit_logs_actor
+      ON audit_logs(actor_user_id);
   `);
 }
 
@@ -794,6 +850,27 @@ function seedData(): void {
       VALUES (?, ?, ?)
     `).run(id, number, capacity);
   }
+
+  // Sample member (Koperasi Member with dummy test NIK)
+  db.prepare(`
+    INSERT OR IGNORE INTO customers (
+      id, nik, member_no, employee_id, name, department, phone, country_code, is_member, salary_deduction_enabled, monthly_deduction_limit, outstanding_deduction_limit, is_active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'cust-1',
+    '3273010101900001',
+    'MBR-0001',
+    'EMP-001',
+    'Budi Santoso',
+    'Divisi Operasional',
+    '081234567890',
+    '+62',
+    1,
+    1,
+    2500000,
+    5000000,
+    1
+  );
 
   console.log('[DB] Seed data loaded');
 }

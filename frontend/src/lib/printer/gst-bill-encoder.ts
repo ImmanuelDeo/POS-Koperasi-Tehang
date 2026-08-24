@@ -164,7 +164,7 @@ export function buildGstBillBytes(
   }
 
   if (Number(bill.service_charge) > 0) {
-    totals.push(['Service Chg', formatAmount(bill.service_charge, currency, locale)]);
+    totals.push(['Service Chg', formatAmount(bill.service_charge || 0, currency, locale)]);
   }
 
   if (Number(bill.delivery_charge) > 0) {

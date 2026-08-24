@@ -129,7 +129,7 @@ export default function MemberSelector({
               type="text"
               value={query}
               onChange={handleQueryChange}
-              placeholder="Ketik nama karyawan, NIK, atau nomor HP..."
+              placeholder="Cari NIK, Nama Anggota, No. Anggota, atau No. HP..."
               className="w-full pl-10 pr-10 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium text-gray-900 placeholder:text-gray-400 focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all"
             />
             {query && (
@@ -193,12 +193,24 @@ export default function MemberSelector({
                   <div className="space-y-1.5 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-bold text-gray-900 truncate">{m.name}</span>
+
+                      {/* NIK Masked Display */}
+                      {m.nik_masked ? (
+                        <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 font-semibold border border-emerald-200">
+                          NIK: {m.nik_masked}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] px-2 py-0.5 rounded bg-amber-50 text-amber-700 font-medium border border-amber-200">
+                          NIK belum dilengkapi
+                        </span>
+                      )}
+
                       <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-gray-100 text-gray-700 font-semibold border border-gray-200">
                         {m.member_no || 'No MBR'}
                       </span>
                       {m.employee_id && (
                         <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-medium border border-blue-200">
-                          NIK: {m.employee_id}
+                          ID: {m.employee_id}
                         </span>
                       )}
                       {!isActive && (

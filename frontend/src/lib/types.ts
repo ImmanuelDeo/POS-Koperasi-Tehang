@@ -120,6 +120,9 @@ export interface Table {
 
 export interface Customer {
   id: string | number;
+  nik?: string | null;
+  nik_masked?: string | null;
+  has_nik?: boolean;
   phone: string;
   phone_digits?: string | null;
   country_code: string;
@@ -140,41 +143,65 @@ export interface Order {
   id: number;
   order_number: string;
   table_id: string | null;
-  customer_id: number | string | null;
-  type: 'dine_in' | 'takeaway' | 'delivery' | 'online';
+  table_name?: string | null;
+  customer_id?: number | string | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  user_id?: string | null;
+  waiter_name?: string | null;
+  type: 'dine_in' | 'takeaway' | 'delivery' | 'counter' | 'online';
   status: 'pending' | 'preparing' | 'ready' | 'served' | 'completed' | 'cancelled';
   subtotal: number;
   tax_amount: number;
+  tax_breakdown?: { title: string; rate: number; amount: number }[] | any;
   discount_amount: number;
   delivery_charge: number;
   packaging_charge?: number;
   round_off?: number;
-  tax_breakdown?: { title: string; rate: number; amount: number }[] | null;
   total: number;
   guest_count: number | null;
   special_instructions: string | null;
-  created_by: number;
+  created_by?: number | string | null;
   created_at: string;
   items?: OrderItem[];
+  bills?: Bill[];
+  bill?: Bill;
   table?: Table;
   customer?: Customer;
-  bill?: Bill;
 }
 
 export interface OrderItem {
   id: number;
   order_id: number;
-  product_id: number;
+  product_id: string | number;
   product_name: string;
   product_sku: string | null;
   unit_price: number;
   quantity: number;
   subtotal: number;
   tax_amount: number;
+  discount_amount?: number;
   total: number;
-  addons: { id?: number | string | null; name: string; price?: number; quantity?: number }[] | null;
+  variant_selection?: VariantSelection | null;
+  modifier_selection?: ModifierSelection | null;
+  addons?: AddonSelection[] | any[] | null;
   special_instructions: string | null;
   status: 'pending' | 'preparing' | 'ready' | 'served' | 'cancelled';
+}
+
+export interface VariantSelection {
+  [key: string]: string;
+}
+
+export interface ModifierSelection {
+  [key: string]: string[];
+}
+
+export interface AddonSelection {
+  id: string;
+  name: string;
+  price: number;
+  quantity: number;
 }
 
 export interface Bill {
@@ -188,17 +215,27 @@ export interface Bill {
   discount_type?: string | null;
   discount_value?: number | null;
   discount_reason?: string | null;
-  service_charge: number;
+  service_charge?: number;
   delivery_charge: number;
   packaging_charge?: number;
   round_off?: number;
   total: number;
   paid_amount: number;
   balance: number;
-  payment_status: 'unpaid' | 'partial' | 'paid';
-  payment_details: { method: string; amount: number; timestamp: string }[] | null;
+  payment_status: 'unpaid' | 'partial' | 'paid' | 'refunded';
+  payment_details: PaymentDetail[] | null;
   tax_breakdown?: { title: string; rate: number; amount: number }[] | null;
   order?: Order;
+  created_at?: string;
+}
+
+export interface PaymentDetail {
+  method: 'cash' | 'card' | 'upi' | 'wallet' | 'salary_deduction' | 'other';
+  amount: number;
+  reference?: string;
+  salary_deduction_id?: number | string;
+  period_month?: string;
+  timestamp?: string;
 }
 
 export interface Staff {
@@ -215,8 +252,6 @@ export interface Staff {
 export interface KitchenStation {
   id: number;
   name: string;
-  description: string | null;
-  category_ids: number[] | null;
   is_active: boolean;
   printer_ip: string | null;
   sort_order: number;
@@ -225,12 +260,16 @@ export interface KitchenStation {
 // Cooperative Member for POS Koperasi
 export interface CooperativeMember {
   id: string;
+  nik?: string | null;
+  nik_masked?: string | null;
+  has_nik?: boolean;
   member_no: string;
   employee_id: string;
   name: string;
   department: string | null;
   phone: string | null;
   is_active: number;
+  is_member?: number;
   salary_deduction_enabled: number;
   monthly_deduction_limit: number;
   outstanding_deduction_limit: number;

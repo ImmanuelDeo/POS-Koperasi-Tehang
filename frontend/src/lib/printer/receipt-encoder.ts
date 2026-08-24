@@ -208,7 +208,7 @@ export function buildClassicReceiptBytes(
     enc.text(padRow('Tax', formatAmount(bill.tax_amount, currency, locale), cols)).newline();
   }
   if (Number(bill.service_charge) > 0) {
-    enc.text(padRow('Service Charge', formatAmount(bill.service_charge, currency, locale), cols)).newline();
+    enc.text(padRow('Service Charge', formatAmount(bill.service_charge || 0, currency, locale), cols)).newline();
   }
   if (Number(bill.delivery_charge) > 0) {
     enc.text(padRow('Delivery', formatAmount(bill.delivery_charge, currency, locale), cols)).newline();

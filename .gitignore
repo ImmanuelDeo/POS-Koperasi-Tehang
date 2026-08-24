@@ -8,3 +8,10 @@ release/
 .env.local
 .DS_Store
 .claude/
+
+# Local, untracked source artwork for Koperasi Tehang branding
+/assets/favicon-simple.jpg
+/assets/horizontal-icon-darked.jpg
+/assets/horizontal-icon.jpg
+/assets/master_icon.jpg
+/assets/prompt-2_flat-icon.jpg
