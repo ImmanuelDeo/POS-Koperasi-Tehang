@@ -3,6 +3,7 @@ import { getDatabase, generateBillNumber, now } from '../db';
 import { notifyKdsUpdate } from '../services/kds';
 import {
   parseIntegerRupiah,
+  parseRupiahNumber,
   calculatePayrollPeriod,
   validateMemberSalaryDeductionLimits,
   generateDeductionNumber,
@@ -323,7 +324,10 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
       return res.status(400).json({ error: 'Bill is already paid' });
     }
 
-    let paidAmount = parseFloat(amount) || bill.total;
+    const parsedPaymentAmount = parseRupiahNumber(amount);
+    let paidAmount = parsedPaymentAmount !== null && parsedPaymentAmount > 0
+      ? parsedPaymentAmount
+      : (bill.balance > 0 ? Math.round(bill.balance) : Math.round(bill.total));
     let walletDebited = false;
 
     if (method === 'wallet') {

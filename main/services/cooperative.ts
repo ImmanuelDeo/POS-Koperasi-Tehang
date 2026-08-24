@@ -2,6 +2,78 @@ import Database from 'better-sqlite3';
 import { now } from '../db';
 
 /**
+ * Flexible Rupiah number parser supporting:
+ * - Pure numbers: 10000, 10000.00
+ * - Indonesian thousand-dot strings: "10.000", "1.000.000", "25.500"
+ * - Comma strings: "10,000", "1,000,000"
+ * - Currency prefixes: "Rp 10.000", "Rp. 10.000", "IDR 10.000"
+ * - Mixed dot-comma decimals: "10.000,00" or "10,000.00"
+ */
+export function parseRupiahNumber(value: any): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null;
+    return Math.round(value);
+  }
+  if (typeof value !== 'string') return null;
+
+  let str = value.trim().replace(/^(Rp|IDR|rp|idr)\.?\s*/i, '').trim();
+  if (!str) return null;
+
+  // Remove spaces
+  str = str.replace(/\s+/g, '');
+
+  if (str.includes('.') && str.includes(',')) {
+    const lastDot = str.lastIndexOf('.');
+    const lastComma = str.lastIndexOf(',');
+    if (lastDot > lastComma) {
+      // US style: 10,000.00
+      str = str.replace(/,/g, '');
+    } else {
+      // Indo style: 10.000,00
+      str = str.replace(/\./g, '').replace(',', '.');
+    }
+  } else if (str.includes('.')) {
+    const dotCount = (str.match(/\./g) || []).length;
+    if (dotCount > 1) {
+      str = str.replace(/\./g, '');
+    } else {
+      const parts = str.split('.');
+      if (parts[1].length === 3) {
+        // e.g. "10.000" or "5.500" -> thousand separator
+        str = str.replace(/\./g, '');
+      } else if (parts[1].length === 2 && parts[1] === '00') {
+        // e.g. "10000.00"
+        str = parts[0];
+      } else {
+        const num = parseFloat(str);
+        return isNaN(num) ? null : Math.round(num);
+      }
+    }
+  } else if (str.includes(',')) {
+    const commaCount = (str.match(/,/g) || []).length;
+    if (commaCount > 1) {
+      str = str.replace(/,/g, '');
+    } else {
+      const parts = str.split(',');
+      if (parts[1].length === 3) {
+        // e.g. "10,000" -> thousand separator
+        str = str.replace(/,/g, '');
+      } else if (parts[1].length <= 2) {
+        // e.g. "10000,00" or "10,50"
+        str = parts[0] + '.' + parts[1];
+      } else {
+        str = str.replace(/,/g, '');
+      }
+    }
+  }
+
+  const num = Number(str);
+  if (isNaN(num) || !Number.isFinite(num)) return null;
+  return Math.round(num);
+}
+
+/**
  * Validate and parse integer Rupiah amount.
  * Must be a finite, safe integer > 0 (or >= 0 if allowZero is true).
  */
@@ -14,40 +86,24 @@ export function parseIntegerRupiah(
     return { valid: false, error: `${fieldName} is required` };
   }
 
-  // Handle number type
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || !Number.isSafeInteger(value)) {
-      return { valid: false, error: `${fieldName} must be a valid integer Rupiah (no decimal fractions)` };
-    }
-    if (!allowZero && value <= 0) {
-      return { valid: false, error: `${fieldName} must be greater than 0` };
-    }
-    if (allowZero && value < 0) {
-      return { valid: false, error: `${fieldName} cannot be negative` };
-    }
-    return { valid: true, value };
+  const parsed = parseRupiahNumber(value);
+  if (parsed === null) {
+    return { valid: false, error: `${fieldName} must be a valid integer Rupiah amount` };
   }
 
-  // Handle string type (strict numeric check)
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!/^-?\d+$/.test(trimmed)) {
-      return { valid: false, error: `${fieldName} must be a valid integer Rupiah string without decimals` };
-    }
-    const parsed = Number(trimmed);
-    if (!Number.isSafeInteger(parsed)) {
-      return { valid: false, error: `${fieldName} exceeds maximum safe integer range` };
-    }
-    if (!allowZero && parsed <= 0) {
-      return { valid: false, error: `${fieldName} must be greater than 0` };
-    }
-    if (allowZero && parsed < 0) {
-      return { valid: false, error: `${fieldName} cannot be negative` };
-    }
-    return { valid: true, value: parsed };
+  if (!Number.isSafeInteger(parsed)) {
+    return { valid: false, error: `${fieldName} exceeds maximum safe integer range` };
   }
 
-  return { valid: false, error: `${fieldName} must be an integer number` };
+  if (!allowZero && parsed <= 0) {
+    return { valid: false, error: `${fieldName} must be greater than 0` };
+  }
+
+  if (allowZero && parsed < 0) {
+    return { valid: false, error: `${fieldName} cannot be negative` };
+  }
+
+  return { valid: true, value: parsed };
 }
 
 /**

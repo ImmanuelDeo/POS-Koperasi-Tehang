@@ -120,9 +120,16 @@ export interface Table {
 
 export interface Customer {
   id: string | number;
+  member_no?: string | null;
+  employee_id?: string | null;
   nik?: string | null;
   nik_masked?: string | null;
   has_nik?: boolean;
+  department?: string | null;
+  is_member?: boolean | number;
+  salary_deduction_enabled?: boolean | number;
+  monthly_deduction_limit?: number;
+  outstanding_deduction_limit?: number;
   phone: string;
   phone_digits?: string | null;
   country_code: string;

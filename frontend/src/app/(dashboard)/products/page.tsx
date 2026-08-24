@@ -52,6 +52,28 @@ const CATEGORY_COLORS = [
   { key: 'rose', labelKey: 'products.colorRose', bg: 'bg-rose-100', text: 'text-rose-700' },
 ];
 
+function parseRupiahInput(val: any): number {
+  if (val === undefined || val === null || val === '') return 0;
+  if (typeof val === 'number') return Math.round(val);
+  const clean = String(val).replace(/^(Rp|IDR|rp|idr)\.?\s*/i, '').replace(/\./g, '').replace(/,/g, '').trim();
+  const n = Number(clean);
+  return isNaN(n) ? 0 : Math.round(n);
+}
+
+function parseTagsArray(tags: any): string[] {
+  if (!tags) return [];
+  if (Array.isArray(tags)) return tags;
+  if (typeof tags === 'string') {
+    try {
+      const parsed = JSON.parse(tags);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 type TabType = 'products' | 'categories' | 'addons';
 
 export default function ProductsPage() {
@@ -75,7 +97,7 @@ export default function ProductsPage() {
   const [addonList, setAddonList] = useState<{ id?: number | string; name: string; price: number; is_active?: boolean }[]>([]);
   const [form, setForm] = useState({
     name: '', category_id: '', price: '', cost_price: '', cb_percent: '0', sku: '', barcode: '',
-    tax_type: 'inclusive', tax_rate: '5', description: '',
+    tax_type: 'none', tax_rate: '0', description: '',
     track_inventory: false, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
     tags: [] as string[],
     customTag: '',
@@ -159,7 +181,7 @@ export default function ProductsPage() {
   const resetForm = () => {
     setForm({
       name: '', category_id: '', price: '', cost_price: '', cb_percent: '0', sku: '', barcode: '',
-      tax_type: 'inclusive', tax_rate: '5', description: '',
+      tax_type: 'none', tax_rate: '0', description: '',
       track_inventory: false, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
       tags: [], customTag: '', addon_group_ids: [], image_url: null,
     });
@@ -170,22 +192,23 @@ export default function ProductsPage() {
 
   const openEdit = (product: Product) => {
     setEditingProduct(product);
+    const safeTags = parseTagsArray(product.tags);
     setForm({
-      name: product.name,
+      name: product.name || '',
       category_id: product.category_id != null ? String(product.category_id) : '',
-      price: String(product.price),
-      cost_price: String(product.cost_price || ''),
+      price: String(product.price ?? ''),
+      cost_price: String(product.cost_price ?? ''),
       cb_percent: String(product.cb_percent ?? 0),
       sku: product.sku || '',
       barcode: product.barcode || '',
-      tax_type: product.tax_type || 'inclusive',
-      tax_rate: String(product.tax_rate || '5'),
+      tax_type: 'none',
+      tax_rate: '0',
       description: product.description || '',
       track_inventory: Boolean(product.track_inventory),
-      stock_quantity: String(product.stock_quantity || '0'),
+      stock_quantity: String(product.stock_quantity ?? '0'),
       low_stock_threshold: String(product.low_stock_threshold ?? '5'),
       is_active: Boolean(product.is_active),
-      tags: product.tags || [],
+      tags: safeTags,
       customTag: '',
       addon_group_ids: product.addon_groups?.map((g) => g.id) || [],
       image_url: product.has_image ? 'EXISTING' : null,
@@ -196,23 +219,25 @@ export default function ProductsPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const parsedPrice = parseRupiahInput(form.price);
+      const parsedCost = form.cost_price ? parseRupiahInput(form.cost_price) : null;
       const payload: Record<string, unknown> = {
-        name: form.name,
+        name: form.name.trim(),
         category_id: form.category_id || null,
-        price: Number(form.price),
-        cost_price: form.cost_price ? Number(form.cost_price) : null,
+        price: parsedPrice,
+        cost_price: parsedCost,
         cb_percent: Number(form.cb_percent) || 0,
-        sku: form.sku || null,
-        barcode: form.barcode || null,
-        tax_type: form.tax_type,
-        tax_rate: Number(form.tax_rate),
-        description: form.description || null,
+        sku: form.sku.trim() || null,
+        barcode: form.barcode.trim() || null,
+        tax_type: 'none',
+        tax_rate: 0,
+        description: form.description?.trim() || null,
         track_inventory: form.track_inventory,
-        stock_quantity: Number(form.stock_quantity),
-        low_stock_threshold: Number(form.low_stock_threshold),
+        stock_quantity: Number(form.stock_quantity) || 0,
+        low_stock_threshold: Number(form.low_stock_threshold) || 0,
         is_active: form.is_active,
-        tags: form.tags.length > 0 ? form.tags : null,
-        addon_group_ids: form.addon_group_ids,
+        tags: form.tags && form.tags.length > 0 ? form.tags : null,
+        addon_group_ids: form.addon_group_ids || [],
       };
 
       // Only include image_url when the user actually touched the image field
@@ -433,7 +458,6 @@ export default function ProductsPage() {
               <th className="text-left p-4 text-xs font-medium text-gray-500 uppercase">{t('products.columnCategory')}</th>
               <th className="text-center p-4 text-xs font-medium text-gray-500 uppercase">Add-ons</th>
               <th className="text-right p-4 text-xs font-medium text-gray-500 uppercase">{t('products.columnPrice')}</th>
-              <th className="text-left p-4 text-xs font-medium text-gray-500 uppercase">{t('products.columnTax')}</th>
               <th className="text-center p-4 text-xs font-medium text-gray-500 uppercase">{t('products.columnStock')}</th>
               <th className="text-center p-4 text-xs font-medium text-gray-500 uppercase">{t('products.columnStatus')}</th>
               <th className="text-right p-4 text-xs font-medium text-gray-500 uppercase">{t('products.columnActions')}</th>
@@ -445,7 +469,7 @@ export default function ProductsPage() {
                 if (!searchQuery.trim()) return true;
                 const q = searchQuery.toLowerCase().trim();
                 return (
-                  product.name.toLowerCase().includes(q) ||
+                  (product.name && product.name.toLowerCase().includes(q)) ||
                   (product.sku && product.sku.toLowerCase().includes(q)) ||
                   (product.barcode && product.barcode.toLowerCase().includes(q))
                 );
@@ -453,9 +477,7 @@ export default function ProductsPage() {
               .map((product) => {
               const parentCat = categories.find((c) => String(c.id) === String(product.category_id || product.category?.id));
               const isCategoryInactive = Boolean(parentCat && !parentCat.is_active);
-              const taxLabel = product.tax_type === 'none' || !product.tax_type
-                ? '—'
-                : `${product.tax_type === 'inclusive' ? t('products.taxInclusiveShort') : t('products.taxExclusiveShort')} ${product.tax_rate}%`;
+              const safeTags = parseTagsArray(product.tags);
               return (
               <tr key={product.id} className="hover:bg-gray-50">
                 <td className="p-4 max-w-[220px]">
@@ -463,10 +485,10 @@ export default function ProductsPage() {
                     <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0 relative flex items-center justify-center">
                       <div
                         className="absolute inset-0 flex items-center justify-center"
-                        style={{ backgroundColor: nameToColor(product.name) }}
+                        style={{ backgroundColor: nameToColor(product.name || 'P') }}
                       >
                         <span className="text-sm font-bold text-white/80">
-                          {product.name.substring(0, 2).toUpperCase()}
+                          {(product.name || 'P').substring(0, 2).toUpperCase()}
                         </span>
                       </div>
                       {product.has_image && (
@@ -482,9 +504,9 @@ export default function ProductsPage() {
                       <p className="font-medium text-gray-900">{product.name}</p>
                       {product.sku && <p className="text-xs text-gray-400 mt-0.5">{t('products.skuLabel', { sku: product.sku })}</p>}
                       {product.barcode && <p className="text-xs text-gray-400 mt-0.5 font-mono">{t('products.barcodeLabel', { barcode: product.barcode })}</p>}
-                      {product.tags && product.tags.length > 0 && (
+                      {safeTags.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1.5">
-                          {product.tags.map((tag: string) => <TagBadge key={tag} tag={tag} />)}
+                          {safeTags.map((tag: string) => <TagBadge key={tag} tag={tag} />)}
                         </div>
                       )}
                     </div>
@@ -492,7 +514,7 @@ export default function ProductsPage() {
                 </td>
                 <td className="p-4 text-sm text-gray-600">
                   <div className="flex flex-col gap-0.5">
-                    <span>{product.category?.name || '—'}</span>
+                    <span>{product.category?.name || parentCat?.name || '—'}</span>
                     {isCategoryInactive && (
                       <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 w-fit" title="Parent category is inactive; product is hidden on POS">
                         <AlertTriangle size={11} className="shrink-0" /> Category Inactive
@@ -510,14 +532,13 @@ export default function ProductsPage() {
                   )}
                 </td>
                 <td className="p-4 text-right">
-                  <p className="font-medium">{fmt(Number(product.price))}</p>
+                  <p className="font-medium">{fmt(Number(product.price || 0))}</p>
                   {product.cost_price != null && product.cost_price > 0 && <p className="text-xs text-gray-400">Cost: {fmt(Number(product.cost_price))}</p>}
                 </td>
-                <td className="p-4 text-sm text-gray-600">{taxLabel}</td>
                 <td className="p-4 text-center">
                   {product.track_inventory ? (
-                    <span className={`text-sm font-medium ${product.stock_quantity <= (product.low_stock_threshold || 0) ? 'text-red-600' : 'text-gray-900'}`}>
-                      {product.stock_quantity <= 0 ? t('pos.outOfStock') : product.stock_quantity}
+                    <span className={`text-sm font-medium ${(product.stock_quantity ?? 0) <= (product.low_stock_threshold || 0) ? 'text-red-600' : 'text-gray-900'}`}>
+                      {(product.stock_quantity ?? 0) <= 0 ? t('pos.outOfStock') : product.stock_quantity}
                     </span>
                   ) : (
                     <span className="text-gray-400 text-sm">—</span>
@@ -608,12 +629,14 @@ export default function ProductsPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.priceLabel', { currency })}<span className="text-red-500 ml-1">*</span></label>
-                  <input type="number" step="0.01" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })}
+                  <input type="text" inputMode="numeric" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })}
+                    placeholder="10000"
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none" required />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.fieldCostPrice')}</label>
-                  <input type="number" step="0.01" value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: e.target.value })}
+                  <input type="text" inputMode="numeric" value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: e.target.value })}
+                    placeholder="8000"
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none" />
                 </div>
               </div>
@@ -622,22 +645,6 @@ export default function ProductsPage() {
                 <input type="number" step="0.1" min="0" max="100" value={form.cb_percent} onChange={(e) => setForm({ ...form, cb_percent: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none" />
                 <p className="text-xs text-gray-400 mt-1">{t('products.cashbackHint')}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.fieldTaxType')}</label>
-                  <select value={form.tax_type} onChange={(e) => setForm({ ...form, tax_type: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none">
-                    <option value="none">{t('products.taxNone')}</option>
-                    <option value="inclusive">{t('products.taxInclusive')}</option>
-                    <option value="exclusive">{t('products.taxExclusive')}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">{t('products.taxRateLabel')}</label>
-                  <input type="number" step="0.01" value={form.tax_rate} onChange={(e) => setForm({ ...form, tax_rate: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand outline-none" />
-                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">{t('products.fieldTags')}</label>

@@ -182,7 +182,7 @@ export default function ProductGrid({
                       />
                     )}
 
-                    {product.tags && product.tags.length > 0 && (
+                    {Array.isArray(product.tags) && product.tags.length > 0 && (
                       <span className="absolute bottom-1.5 right-1.5 z-10">
                         <TagBadge tag={product.tags[0]} />
                       </span>

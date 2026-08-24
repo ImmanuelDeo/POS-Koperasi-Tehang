@@ -1,8 +1,53 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, now } from '../db';
+import { parseRupiahNumber } from '../services/cooperative';
 
 const router = Router();
+
+/**
+ * Normalizes product record for API responses, ensuring:
+ * 1. tags is always parsed into an array (never returning raw JSON string)
+ * 2. prices are clean integer/numbers
+ * 3. category and addon groups relations are populated safely
+ */
+export function formatProductResponse(product: any, db: any) {
+  if (!product) return null;
+  let parsedTags: string[] = [];
+  if (product.tags) {
+    if (Array.isArray(product.tags)) {
+      parsedTags = product.tags;
+    } else if (typeof product.tags === 'string') {
+      try {
+        const parsed = JSON.parse(product.tags);
+        parsedTags = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        parsedTags = [];
+      }
+    }
+  }
+
+  const category = product.category_id ? db.prepare('SELECT * FROM categories WHERE id = ?').get(product.category_id) : null;
+  const addonGroupIds = db.prepare('SELECT addon_group_id FROM addon_group_product WHERE product_id = ?').all(product.id).map((r: any) => r.addon_group_id);
+  const addonGroups = addonGroupIds.length > 0
+    ? db.prepare(`SELECT * FROM addon_groups WHERE id IN (${addonGroupIds.map(() => '?').join(',')})`).all(...addonGroupIds)
+    : [];
+
+  const addonGroupsWithAddons = addonGroups.map((group: any) => {
+    const addons = db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(group.id);
+    return { ...group, addons };
+  });
+
+  return {
+    ...product,
+    cost_price: product.cost !== undefined ? product.cost : product.cost_price,
+    price: Math.round(Number(product.price) || 0),
+    member_price: product.member_price != null ? Math.round(Number(product.member_price)) : null,
+    tags: parsedTags,
+    category,
+    addon_groups: addonGroupsWithAddons,
+  };
+}
 
 router.get('/', (req: Request, res: Response) => {
   try {
@@ -29,23 +74,7 @@ router.get('/', (req: Request, res: Response) => {
     query += ' ORDER BY sort_order, name';
 
     const products = db.prepare(query).all(...params);
-
-    // Load category and addon groups for each product
-    const productsWithRelations = products.map((product: any) => {
-      const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(product.category_id);
-      const addonGroupIds = db.prepare('SELECT addon_group_id FROM addon_group_product WHERE product_id = ?').all(product.id).map((r: any) => r.addon_group_id);
-      const addonGroups = addonGroupIds.length > 0
-        ? db.prepare(`SELECT * FROM addon_groups WHERE id IN (${addonGroupIds.map(() => '?').join(',')})`).all(...addonGroupIds)
-        : [];
-      
-      // Load addons for each group
-      const addonGroupsWithAddons = addonGroups.map((group: any) => {
-        const addons = db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(group.id);
-        return { ...group, addons };
-      });
-
-      return { ...product, category, addon_groups: addonGroupsWithAddons };
-    });
+    const productsWithRelations = products.map((product: any) => formatProductResponse(product, db));
 
     res.json({ products: productsWithRelations });
   } catch (error: any) {
@@ -99,22 +128,10 @@ router.get('/lookup-barcode', (req: Request, res: Response) => {
     const product = matchingProducts[0];
 
     if (product.is_active === 0) {
-      return res.status(422).json({ error: 'Produk tidak aktif', product });
+      return res.status(422).json({ error: 'Produk tidak aktif', product: formatProductResponse(product, db) });
     }
 
-    // Load category and addons
-    const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(product.category_id);
-    const addonGroupIds = db.prepare('SELECT addon_group_id FROM addon_group_product WHERE product_id = ?').all(product.id).map((r: any) => r.addon_group_id);
-    const addonGroups = addonGroupIds.length > 0
-      ? db.prepare(`SELECT * FROM addon_groups WHERE id IN (${addonGroupIds.map(() => '?').join(',')})`).all(...addonGroupIds)
-      : [];
-
-    const addonGroupsWithAddons = addonGroups.map((group: any) => {
-      const addons = db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(group.id);
-      return { ...group, addons };
-    });
-
-    res.json({ product: { ...product, category, addon_groups: addonGroupsWithAddons } });
+    res.json({ product: formatProductResponse(product, db) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -128,18 +145,7 @@ router.get('/:id', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    const category = db.prepare('SELECT * FROM categories WHERE id = ?').get((product as any).category_id);
-    const addonGroupIds = db.prepare('SELECT addon_group_id FROM addon_group_product WHERE product_id = ?').all(req.params.id).map((r: any) => r.addon_group_id);
-    const addonGroups = addonGroupIds.length > 0
-      ? db.prepare(`SELECT * FROM addon_groups WHERE id IN (${addonGroupIds.map(() => '?').join(',')})`).all(...addonGroupIds)
-      : [];
-
-    const addonGroupsWithAddons = addonGroups.map((group: any) => {
-      const addons = db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(group.id);
-      return { ...group, addons };
-    });
-
-    res.json({ product: { ...product, category, addonGroups: addonGroupsWithAddons } });
+    res.json({ product: formatProductResponse(product, db) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -160,6 +166,13 @@ router.post('/', (req: Request, res: Response) => {
 
     const db = getDatabase();
 
+    const parsedPrice = parseRupiahNumber(price);
+    if (parsedPrice === null) {
+      return res.status(400).json({ error: 'Harga produk harus berupa nominal yang valid' });
+    }
+
+    const parsedCostPrice = parseRupiahNumber(cost_price) || 0;
+
     let cleanBarcode: string | null = null;
     if (barcode !== undefined && barcode !== null) {
       const str = String(barcode).trim();
@@ -179,13 +192,14 @@ router.post('/', (req: Request, res: Response) => {
 
     let parsedMemberPrice: number | null = null;
     if (member_price !== undefined && member_price !== null && member_price !== '') {
-      const parsed = Math.max(0, Math.round(Number(member_price)));
-      if (!isNaN(parsed)) parsedMemberPrice = parsed;
+      parsedMemberPrice = parseRupiahNumber(member_price);
     }
 
     const parsedMinReorderQty = min_reorder_qty !== undefined && !isNaN(Number(min_reorder_qty))
       ? Math.max(0, Number(min_reorder_qty))
       : 0;
+
+    const parsedTags = Array.isArray(tags) ? tags : typeof tags === 'string' ? [tags] : [];
 
     const result = db.prepare(`
       INSERT INTO products (id, category_id, name, sku, barcode, description, price, cost,
@@ -195,11 +209,11 @@ router.post('/', (req: Request, res: Response) => {
         created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      id, category_id || null, name, sku || null, cleanBarcode, description || null, price, cost_price || 0,
-      tax_type || 'none', tax_rate || 0,
+      id, category_id || null, name, sku || null, cleanBarcode, description || null, parsedPrice, parsedCostPrice,
+      'none', 0,
       track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
       is_active !== false ? 1 : 0, image_url || null,
-      sort_order || 0, cb_percent || 0, JSON.stringify(tags || []),
+      sort_order || 0, cb_percent || 0, JSON.stringify(parsedTags),
       unit ? String(unit).trim() : 'pcs',
       allow_decimal ? 1 : 0,
       parsedMemberPrice,
@@ -215,7 +229,7 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
-    res.status(201).json({ product });
+    res.status(201).json({ product: formatProductResponse(product, db) });
   } catch (error: any) {
     if (error.message?.includes('UNIQUE constraint failed')) {
       return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
@@ -258,13 +272,23 @@ router.put('/:id', (req: Request, res: Response) => {
       }
     }
 
+    let parsedPrice = product.price;
+    if (price !== undefined) {
+      const p = parseRupiahNumber(price);
+      if (p !== null) parsedPrice = p;
+    }
+
+    let parsedCostPrice = product.cost;
+    if (cost_price !== undefined) {
+      parsedCostPrice = parseRupiahNumber(cost_price);
+    }
+
     let parsedMemberPrice = product.member_price;
     if (member_price !== undefined) {
       if (member_price === null || member_price === '') {
         parsedMemberPrice = null;
       } else {
-        const parsed = Math.max(0, Math.round(Number(member_price)));
-        if (!isNaN(parsed)) parsedMemberPrice = parsed;
+        parsedMemberPrice = parseRupiahNumber(member_price);
       }
     }
 
@@ -274,11 +298,17 @@ router.put('/:id', (req: Request, res: Response) => {
       if (!isNaN(parsed) && parsed >= 0) parsedMinReorderQty = parsed;
     }
 
+    let parsedTagsJson = undefined;
+    if (tags !== undefined) {
+      const tagArr = Array.isArray(tags) ? tags : typeof tags === 'string' ? [tags] : [];
+      parsedTagsJson = JSON.stringify(tagArr);
+    }
+
     db.prepare(`
       UPDATE products SET category_id = COALESCE(?, category_id), name = COALESCE(?, name),
         sku = COALESCE(?, sku), barcode = ?, description = COALESCE(?, description), price = COALESCE(?, price),
         cost = COALESCE(?, cost),
-        tax_type = COALESCE(?, tax_type), tax_rate = COALESCE(?, tax_rate),
+        tax_type = 'none', tax_rate = 0,
         track_inventory = COALESCE(?, track_inventory),
         stock_quantity = COALESCE(?, stock_quantity), low_stock_threshold = COALESCE(?, low_stock_threshold),
         is_active = COALESCE(?, is_active),
@@ -293,34 +323,29 @@ router.put('/:id', (req: Request, res: Response) => {
         updated_at = ?
       WHERE id = ?
     `).run(
-      category_id, name, sku, cleanBarcode, description, price, cost_price,
-      tax_type, tax_rate,
+      category_id, name, sku, cleanBarcode, description, parsedPrice, parsedCostPrice,
       track_inventory !== undefined ? (track_inventory ? 1 : 0) : null,
       stock_quantity, low_stock_threshold,
       is_active !== undefined ? (is_active ? 1 : 0) : null,
-      image_url,
-      sort_order, cb_percent,
-      tags ? JSON.stringify(tags) : null,
-      unit !== undefined ? String(unit).trim() : null,
-      allow_decimal !== undefined ? (allow_decimal ? 1 : 0) : null,
+      image_url, sort_order, cb_percent,
+      parsedTagsJson !== undefined ? parsedTagsJson : null,
+      unit, allow_decimal !== undefined ? (allow_decimal ? 1 : 0) : null,
       parsedMemberPrice,
       parsedMinReorderQty,
-      now(), req.params.id
+      now(),
+      req.params.id
     );
 
-    // Update addon group links
-    if (addon_group_ids !== undefined) {
+    if (addon_group_ids && Array.isArray(addon_group_ids)) {
       db.prepare('DELETE FROM addon_group_product WHERE product_id = ?').run(req.params.id);
-      if (addon_group_ids && addon_group_ids.length > 0) {
-        const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
-        for (const agId of addon_group_ids) {
-          insertAgp.run(agId, req.params.id);
-        }
+      const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
+      for (const agId of addon_group_ids) {
+        insertAgp.run(agId, req.params.id);
       }
     }
 
-    const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-    res.json({ product: updated });
+    const updatedProduct = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    res.json({ product: formatProductResponse(updatedProduct, db) });
   } catch (error: any) {
     if (error.message?.includes('UNIQUE constraint failed')) {
       return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });

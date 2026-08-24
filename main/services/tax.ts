@@ -43,11 +43,11 @@ export function calculateItemTax(
   taxableAmount: number,
   customer: Customer | null
 ): TaxResult {
-  if (product.tax_type === 'none') {
+  if (!product || product.tax_type === 'none' || !product.tax_type || (product.tax_rate || 0) <= 0 || tenant.country === 'ID') {
     return { tax_amount: 0, tax_breakdown: [], tax_type: 'none' };
   }
 
-  const isRegistered = true; // In self-hosted, we assume tax settings are configured
+  const isRegistered = true;
 
   if (!isRegistered) {
     return { tax_amount: 0, tax_breakdown: [], tax_type: product.tax_type };

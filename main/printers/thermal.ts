@@ -525,11 +525,11 @@ function formatDetailedReceipt(order: any, bill: any, biz: any, cols: number = 4
   lines.push('{INIT}');
   lines.push('{CENTER}{BOLD}' + (biz.name || 'Store').toUpperCase() + '{/BOLD}{/CENTER}');
   lines.push(bar);
-  lines.push('{CENTER}TAX INVOICE{/CENTER}');
+  lines.push('{CENTER}STRUK PEMBELIAN{/CENTER}');
   lines.push(bar);
-  lines.push('Invoice #: ' + (bill.bill_number || order.order_number));
-  lines.push('Date: ' + date.toLocaleDateString());
-  lines.push('Time: ' + date.toLocaleTimeString());
+  lines.push('No. Struk: ' + (bill.bill_number || order.order_number));
+  lines.push('Tanggal: ' + date.toLocaleDateString('id-ID'));
+  lines.push('Waktu: ' + date.toLocaleTimeString('id-ID'));
   lines.push(dash);
   lines.push('Item' + ' '.repeat(itemNameLen) + 'Qty    Amount');
   lines.push(dash);
@@ -561,21 +561,23 @@ function formatDetailedReceipt(order: any, bill: any, biz: any, cols: number = 4
     lines.push('Discount' + rightAlign('-' + formatCurrency(bill.discount_amount), cols - 8));
   }
 
-  if (bill.tax_breakdown) {
-    try {
-      const taxBreakdown = typeof bill.tax_breakdown === 'string' ? JSON.parse(bill.tax_breakdown) : bill.tax_breakdown;
-      if (Array.isArray(taxBreakdown) && taxBreakdown.length > 0) {
-        for (const tax of taxBreakdown) {
-          if (tax.amount > 0) {
-            lines.push((tax.name || 'Tax') + ' @' + tax.rate + '%' + rightAlign(formatCurrency(tax.amount), cols - 16));
+  if (bill.tax_amount > 0) {
+    if (bill.tax_breakdown) {
+      try {
+        const taxBreakdown = typeof bill.tax_breakdown === 'string' ? JSON.parse(bill.tax_breakdown) : bill.tax_breakdown;
+        if (Array.isArray(taxBreakdown) && taxBreakdown.length > 0) {
+          for (const tax of taxBreakdown) {
+            if (tax.amount > 0) {
+              lines.push((tax.name || 'Tax') + ' @' + tax.rate + '%' + rightAlign(formatCurrency(tax.amount), cols - 16));
+            }
           }
         }
+      } catch {
+        lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount), cols - 3));
       }
-    } catch {
+    } else {
       lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount), cols - 3));
     }
-  } else {
-    lines.push('Tax' + rightAlign(formatCurrency(bill.tax_amount), cols - 3));
   }
 
   lines.push(bar);

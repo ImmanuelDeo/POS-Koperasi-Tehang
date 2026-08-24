@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 
 
 import toast from 'react-hot-toast';
-import { Plus, Search, X, Edit, Wallet, History, TrendingUp, TrendingDown, AlertCircle } from 'lucide-react';
+import { Plus, Search, X, Edit, Wallet, History, TrendingUp, TrendingDown, AlertCircle, FileText, FileDown, Download } from 'lucide-react';
 import { useSearchParams, useRouter } from 'next/navigation';
 
 import type { Customer } from '@/lib/types';
@@ -36,6 +36,12 @@ export default function CustomersPage() {
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
 
   const [form, setForm] = useState({ name: '', nik: '', phone: '', email: '', country_code: dialCode });
+
+  // PDF Report Modal State
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportPeriodMonth, setReportPeriodMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
+  const [reportStatus, setReportStatus] = useState('all');
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const [ledgerCustomer, setLedgerCustomer] = useState<Customer | null>(null);
   const [ledgerData, setLedgerData] = useState<{ balance: number; transactions: { id: number; type: string; amount: number; description: string; created_at: string; expires_at?: string }[] } | null>(null);
@@ -98,6 +104,59 @@ export default function CustomersPage() {
     setShowForm(true);
   };
 
+  const handleDownloadRekapPdf = async () => {
+    setDownloadingPdf(true);
+    try {
+      const res = await api.get('/reports/salary-deductions/pdf', {
+        params: {
+          period_month: reportPeriodMonth,
+          status: reportStatus,
+        },
+        responseType: 'blob',
+      });
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = `laporan-rekap-potong-gaji-${reportPeriodMonth}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+      toast.success('Laporan PDF rekap berhasil diunduh');
+      setShowReportModal(false);
+    } catch (err: any) {
+      toast.error('Gagal mengunduh laporan PDF potong gaji');
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
+
+  const handleDownloadMemberPdf = async (c: Customer) => {
+    try {
+      const todayMonth = new Date().toISOString().slice(0, 7);
+      const res = await api.get(`/reports/salary-deductions/members/${c.id}/pdf`, {
+        params: {
+          period_month: todayMonth,
+        },
+        responseType: 'blob',
+      });
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      const safeId = (c.member_no || c.employee_id || String(c.id)).replace(/[^a-zA-Z0-9_-]/g, '_');
+      link.download = `bon-potong-gaji-${safeId}-${todayMonth}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+      toast.success(`Bon PDF untuk ${c.name} berhasil diunduh`);
+    } catch (err: any) {
+      toast.error('Gagal mengunduh bon potong gaji anggota');
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     let cleanPhone = form.phone.trim();
@@ -149,7 +208,7 @@ export default function CustomersPage() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <div className="flex items-center gap-4">
           <h1 className="text-2xl font-bold text-gray-900">{t('nav.customers')}</h1>
           {filter === 'invalid_phones' && (
@@ -161,7 +220,16 @@ export default function CustomersPage() {
             </span>
           )}
         </div>
-        <Button onClick={openAdd}><Plus size={16} className="mr-1" /> {t('customer.add')}</Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => setShowReportModal(true)}
+            className="border-teal-600 text-teal-700 hover:bg-teal-50"
+          >
+            <FileText size={16} className="mr-1.5" /> Laporan Potong Gaji (PDF)
+          </Button>
+          <Button onClick={openAdd}><Plus size={16} className="mr-1" /> {t('customer.add')}</Button>
+        </div>
       </div>
 
       <div className="relative mb-4">
@@ -236,6 +304,9 @@ export default function CustomersPage() {
                   )}
                 </td>
                 <td className="p-4 text-right space-x-1 whitespace-nowrap">
+                  <Button variant="ghost" size="sm" onClick={() => handleDownloadMemberPdf(c)} title="Unduh Bon Potong Gaji Anggota (PDF)">
+                    <FileDown size={14} className="text-teal-700" />
+                  </Button>
                   <Button variant="ghost" size="sm" onClick={() => openEdit(c)} title={t('customer.edit')}>
                     <Edit size={14} />
                   </Button>
@@ -249,6 +320,90 @@ export default function CustomersPage() {
         </table>
         {customers.length === 0 && <p className="text-center text-gray-500 py-12">{t('customers.empty')}</p>}
       </div>
+
+      {/* PDF Report Generation Modal */}
+      {showReportModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-gray-100">
+            <div className="flex justify-between items-center mb-5 pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center font-bold">
+                  <FileText size={18} />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-gray-900">Laporan Potong Gaji (PDF)</h2>
+                  <p className="text-xs text-gray-500">Ekspor rekapitulasi transaksi koperasi</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowReportModal(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                  Periode Bulan Laporan
+                </label>
+                <input
+                  type="month"
+                  value={reportPeriodMonth}
+                  onChange={(e) => setReportPeriodMonth(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-teal-600 focus:bg-white text-sm font-medium transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                  Filter Status Transaksi
+                </label>
+                <select
+                  value={reportStatus}
+                  onChange={(e) => setReportStatus(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-teal-600 focus:bg-white text-sm font-medium transition-all"
+                >
+                  <option value="all">Semua Status Transaksi</option>
+                  <option value="confirmed">Disetujui HR (Confirmed)</option>
+                  <option value="pending">Menunggu HR (Pending)</option>
+                  <option value="rejected">Ditolak HR (Rejected)</option>
+                  <option value="cancelled">Dibatalkan Kasir (Cancelled)</option>
+                </select>
+              </div>
+
+              <div className="p-3 bg-teal-50/60 rounded-xl border border-teal-100 text-[11px] text-teal-800 space-y-1">
+                <p className="font-semibold flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-teal-600 inline-block" /> Keamanan & Privasi Data:
+                </p>
+                <p className="text-teal-700">
+                  Nomor Induk Kependudukan (NIK) anggota akan otomatis disensor (masked) pada dokumen PDF untuk mematuhi regulasi privasi.
+                </p>
+              </div>
+
+              <div className="pt-2 flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowReportModal(false)}
+                  className="flex-1 rounded-xl"
+                  disabled={downloadingPdf}
+                >
+                  Batal
+                </Button>
+                <Button
+                  onClick={handleDownloadRekapPdf}
+                  disabled={downloadingPdf}
+                  className="flex-1 bg-teal-700 hover:bg-teal-800 text-white rounded-xl shadow-md flex items-center justify-center gap-2"
+                >
+                  <Download size={15} />
+                  {downloadingPdf ? 'Membuat PDF...' : 'Unduh Laporan PDF'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Loyalty Ledger Modal */}
       {ledgerCustomer && (

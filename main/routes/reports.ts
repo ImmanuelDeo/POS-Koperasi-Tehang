@@ -1,5 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
+import { authenticateToken, requireRole, AuthenticatedRequest } from '../middleware/auth';
+import { createAuditLog } from '../services/audit';
+import { maskNik } from '../services/privacy';
+import {
+  generateSalaryDeductionsRekapPdf,
+  generateMemberSalaryDeductionPdf,
+  SalaryDeductionReportItem,
+} from '../services/reports-pdf';
 
 const router = Router();
 
@@ -350,4 +358,269 @@ router.get('/tables', (req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/reports/salary-deductions/pdf ──────────────────────────────────
+// Rekapitulasi transaksi potong gaji periode (PDF format)
+// RBAC: Restricted to owner, admin, and office_hr
+
+router.get(
+  '/salary-deductions/pdf',
+  authenticateToken,
+  requireRole(['owner', 'admin', 'office_hr']),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const db = getDatabase();
+      const { from_date, to_date, period_month, status, member_id } = req.query;
+
+      const businessNameRow = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
+      const businessName = businessNameRow?.value || 'POS Koperasi Tehang';
+
+      let query = `
+        SELECT
+          sd.id, sd.deduction_number, sd.period_month, sd.amount, sd.status, sd.created_at,
+          sd.confirmed_at, sd.rejection_reason,
+          c.name as member_name, c.member_no, c.employee_id, c.nik, c.department,
+          u_created.name as created_by_name,
+          u_confirmed.name as confirmed_by_name
+        FROM salary_deductions sd
+        JOIN customers c ON sd.member_id = c.id
+        LEFT JOIN users u_created ON sd.created_by = u_created.id
+        LEFT JOIN users u_confirmed ON sd.confirmed_by = u_confirmed.id
+        WHERE 1=1
+      `;
+      const params: any[] = [];
+
+      if (from_date && typeof from_date === 'string') {
+        query += ' AND date(sd.created_at) >= date(?)';
+        params.push(from_date.slice(0, 10));
+      }
+      if (to_date && typeof to_date === 'string') {
+        query += ' AND date(sd.created_at) <= date(?)';
+        params.push(to_date.slice(0, 10));
+      }
+      if (period_month && typeof period_month === 'string') {
+        query += ' AND sd.period_month = ?';
+        params.push(period_month);
+      }
+      if (status && typeof status === 'string' && status !== 'all') {
+        query += ' AND sd.status = ?';
+        params.push(status);
+      }
+      if (member_id && typeof member_id === 'string') {
+        query += ' AND sd.member_id = ?';
+        params.push(member_id);
+      }
+
+      query += ' ORDER BY sd.created_at DESC';
+
+      const rows = db.prepare(query).all(...params) as any[];
+
+      // Mask NIK on every row for safe export
+      const items: SalaryDeductionReportItem[] = rows.map((r) => ({
+        id: r.id,
+        deduction_number: r.deduction_number,
+        period_month: r.period_month,
+        created_at: r.created_at,
+        amount: r.amount,
+        status: r.status,
+        member_name: r.member_name,
+        member_no: r.member_no,
+        employee_id: r.employee_id,
+        nik_masked: maskNik(r.nik),
+        department: r.department,
+        created_by_name: r.created_by_name,
+        confirmed_by_name: r.confirmed_by_name,
+        confirmed_at: r.confirmed_at,
+        rejection_reason: r.rejection_reason,
+      }));
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const startDate = (from_date as string) || (period_month ? `${period_month}-01` : todayStr);
+      const endDate = (to_date as string) || (period_month ? `${period_month}-31` : todayStr);
+
+      const printedAt = new Date().toLocaleString('id-ID', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+
+      const pdfBuffer = await generateSalaryDeductionsRekapPdf({
+        businessName,
+        startDate,
+        endDate,
+        statusFilter: (status as string) || 'all',
+        printedAt,
+        printedByName: req.user?.name || 'Petugas',
+        printedByRole: req.user?.role || 'Staff',
+        items,
+      });
+
+      // Audit Log recording for PDF export
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'salary_deduction.report.downloaded',
+        target_type: 'report',
+        details: {
+          start_date: startDate,
+          end_date: endDate,
+          status_filter: status || 'all',
+          total_records: items.length,
+          total_amount: items.reduce((s, i) => s + i.amount, 0),
+        },
+        ip_address: req.ip,
+      });
+
+      const filename = `laporan-rekap-potong-gaji-${startDate}_${endDate}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+      res.send(pdfBuffer);
+    } catch (error: any) {
+      console.error('[Reports] Error generating salary deductions PDF:', error);
+      res.status(500).json({ error: error.message || 'Gagal membuat dokumen PDF laporan potong gaji' });
+    }
+  }
+);
+
+// ── GET /api/reports/salary-deductions/members/:memberId/pdf ────────────────
+// Laporan bon transaksi potong gaji per anggota (PDF format)
+// RBAC: Restricted to owner, admin, and office_hr
+
+router.get(
+  '/salary-deductions/members/:memberId/pdf',
+  authenticateToken,
+  requireRole(['owner', 'admin', 'office_hr']),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const db = getDatabase();
+      const { memberId } = req.params;
+      const { from_date, to_date, period_month } = req.query;
+
+      const member = db.prepare('SELECT * FROM customers WHERE id = ?').get(memberId) as any;
+      if (!member) {
+        return res.status(404).json({ error: 'Anggota koperasi tidak ditemukan' });
+      }
+
+      const businessNameRow = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
+      const businessName = businessNameRow?.value || 'POS Koperasi Tehang';
+
+      let query = `
+        SELECT
+          sd.id, sd.deduction_number, sd.period_month, sd.amount, sd.status, sd.created_at,
+          sd.confirmed_at, sd.rejection_reason,
+          c.name as member_name, c.member_no, c.employee_id, c.nik, c.department,
+          u_created.name as created_by_name,
+          u_confirmed.name as confirmed_by_name
+        FROM salary_deductions sd
+        JOIN customers c ON sd.member_id = c.id
+        LEFT JOIN users u_created ON sd.created_by = u_created.id
+        LEFT JOIN users u_confirmed ON sd.confirmed_by = u_confirmed.id
+        WHERE sd.member_id = ?
+      `;
+      const params: any[] = [memberId];
+
+      if (from_date && typeof from_date === 'string') {
+        query += ' AND date(sd.created_at) >= date(?)';
+        params.push(from_date.slice(0, 10));
+      }
+      if (to_date && typeof to_date === 'string') {
+        query += ' AND date(sd.created_at) <= date(?)';
+        params.push(to_date.slice(0, 10));
+      }
+      if (period_month && typeof period_month === 'string') {
+        query += ' AND sd.period_month = ?';
+        params.push(period_month);
+      }
+
+      query += ' ORDER BY sd.created_at DESC';
+
+      const rows = db.prepare(query).all(...params) as any[];
+
+      const items: SalaryDeductionReportItem[] = rows.map((r) => ({
+        id: r.id,
+        deduction_number: r.deduction_number,
+        period_month: r.period_month,
+        created_at: r.created_at,
+        amount: r.amount,
+        status: r.status,
+        member_name: r.member_name,
+        member_no: r.member_no,
+        employee_id: r.employee_id,
+        nik_masked: maskNik(r.nik),
+        department: r.department,
+        created_by_name: r.created_by_name,
+        confirmed_by_name: r.confirmed_by_name,
+        confirmed_at: r.confirmed_at,
+        rejection_reason: r.rejection_reason,
+      }));
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const startDate = (from_date as string) || (period_month ? `${period_month}-01` : todayStr);
+      const endDate = (to_date as string) || (period_month ? `${period_month}-31` : todayStr);
+
+      const printedAt = new Date().toLocaleString('id-ID', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+
+      const pdfBuffer = await generateMemberSalaryDeductionPdf({
+        businessName,
+        member: {
+          id: member.id,
+          name: member.name,
+          member_no: member.member_no,
+          employee_id: member.employee_id,
+          nik_masked: maskNik(member.nik),
+          department: member.department,
+          monthly_deduction_limit: member.monthly_deduction_limit || 0,
+          outstanding_deduction_limit: member.outstanding_deduction_limit || 0,
+          is_active: Boolean(member.is_active),
+        },
+        startDate,
+        endDate,
+        printedAt,
+        printedByName: req.user?.name || 'Petugas',
+        printedByRole: req.user?.role || 'Staff',
+        items,
+      });
+
+      // Audit Log recording
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'salary_deduction.member_report.downloaded',
+        target_type: 'member',
+        target_id: member.id,
+        details: {
+          member_id: member.id,
+          member_no: member.member_no || member.employee_id,
+          start_date: startDate,
+          end_date: endDate,
+          total_records: items.length,
+          total_amount: items.reduce((s, i) => s + i.amount, 0),
+        },
+        ip_address: req.ip,
+      });
+
+      const safeMemberNo = (member.member_no || member.employee_id || member.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = `bon-potong-gaji-${safeMemberNo}_${startDate}_${endDate}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+      res.send(pdfBuffer);
+    } catch (error: any) {
+      console.error('[Reports] Error generating member salary deduction PDF:', error);
+      res.status(500).json({ error: error.message || 'Gagal membuat dokumen PDF bon anggota' });
+    }
+  }
+);
+
 export const reportRoutes = router;
+

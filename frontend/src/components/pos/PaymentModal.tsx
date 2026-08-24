@@ -32,8 +32,16 @@ interface Payment {
 // Must match LOYALTY_REDEMPTION_RATE in main/routes/bills.ts.
 const LOYALTY_REDEMPTION_RATE = 100;
 
+function parseRupiahInput(val: any): number {
+  if (val === undefined || val === null || val === '') return 0;
+  if (typeof val === 'number') return Math.round(val);
+  const clean = String(val).replace(/^(Rp|IDR|rp|idr)\.?\s*/i, '').replace(/\./g, '').replace(/,/g, '').trim();
+  const n = Number(clean);
+  return isNaN(n) ? 0 : Math.round(n);
+}
+
 export default function PaymentModal({ bill, currency, onClose, onPaid, onBillUpdate }: Props) {
-  const remaining = Number(bill.balance);
+  const remaining = Math.round(Number(bill.balance || bill.total || 0));
   const cartCustomerId = useCartStore((s) => s.customerId);
   const cartCustomer = useCartStore((s) => s.customer);
   const effectiveCustomerId = bill.customer_id || cartCustomerId || null;
@@ -86,15 +94,15 @@ export default function PaymentModal({ bill, currency, onClose, onPaid, onBillUp
     if (payments.length === 1) {
       setPayments([{ ...payments[0], amount: remaining.toString() }]);
     } else {
-      const totalAllocated = payments.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+      const totalAllocated = payments.reduce((sum, p) => sum + (parseRupiahInput(p.amount) || 0), 0);
       if (totalAllocated > 0) {
         setPayments(payments.map(p => {
-          const ratio = (parseFloat(p.amount) || 0) / totalAllocated;
-          return { ...p, amount: (remaining * ratio).toFixed(2) };
+          const ratio = (parseRupiahInput(p.amount) || 0) / totalAllocated;
+          return { ...p, amount: Math.round(remaining * ratio).toString() };
         }));
       } else {
-        const perSplit = remaining / payments.length;
-        setPayments(payments.map(p => ({ ...p, amount: perSplit.toFixed(2) })));
+        const perSplit = Math.round(remaining / payments.length);
+        setPayments(payments.map(p => ({ ...p, amount: perSplit.toString() })));
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only recompute splits when the remaining balance changes
@@ -125,8 +133,8 @@ export default function PaymentModal({ bill, currency, onClose, onPaid, onBillUp
   const addSplit = () => {
     const newPayments = [...payments, { method: 'card' as const, amount: '0' }];
     // Split amount equally among all splits
-    const perSplit = remaining / newPayments.length;
-    setPayments(newPayments.map(p => ({ ...p, amount: perSplit.toFixed(2) })));
+    const perSplit = Math.round(remaining / newPayments.length);
+    setPayments(newPayments.map(p => ({ ...p, amount: perSplit.toString() })));
   };
 
   const removeSplit = (idx: number) => {
@@ -134,13 +142,13 @@ export default function PaymentModal({ bill, currency, onClose, onPaid, onBillUp
     setPayments(payments.filter((_, i) => i !== idx));
   };
 
-  const walletAmt = parseFloat(walletAmount) || 0;
-  const totalPayment = payments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0) + walletAmt;
+  const walletAmt = parseRupiahInput(walletAmount);
+  const totalPayment = payments.reduce((s, p) => s + parseRupiahInput(p.amount), 0) + walletAmt;
 
   const hasCash = payments.some((p) => p.method === 'cash');
 
-  const change = hasCash && totalPayment > remaining + 0.009
-    ? parseFloat((totalPayment - remaining).toFixed(2))
+  const change = hasCash && totalPayment > remaining
+    ? Math.max(0, totalPayment - remaining)
     : 0;
 
   const currencyFmt = useFormatCurrency();
@@ -208,8 +216,11 @@ export default function PaymentModal({ bill, currency, onClose, onPaid, onBillUp
     try {
       let pointsEarned = 0;
       for (const p of payments) {
-        const amt = parseFloat(p.amount);
-        if (!amt || amt <= 0 || isNaN(amt)) continue;
+        let amt = parseRupiahInput(p.amount);
+        if (p.method === 'salary_deduction' && (!amt || amt <= 0)) {
+          amt = Math.round(remaining);
+        }
+        if (!amt || amt <= 0) continue;
         const res = await api.post(`/bills/${bill.id}/payment`, { amount: amt, method: p.method, customer_id: effectiveCustomerId });
         if (res.data?.loyaltyPointsEarned > 0) pointsEarned = res.data.loyaltyPointsEarned;
       }
