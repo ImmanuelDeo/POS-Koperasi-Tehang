@@ -231,31 +231,23 @@ export function getMemberOutstandingExposure(db: Database.Database, memberId: st
  * Returns error message if invalid, or null if valid.
  */
 export function validateMemberSalaryDeductionLimits(
-  db: Database.Database,
+  _db: Database.Database,
   member: {
     id: string;
-    is_member: number;
-    is_active: number;
-    salary_deduction_enabled: number;
+    is_member?: number | boolean;
+    is_active?: number | boolean;
+    salary_deduction_enabled?: number | boolean;
     monthly_deduction_limit?: number;
     outstanding_deduction_limit?: number;
   },
-  requestedAmount: number,
-  periodMonth: string
+  _requestedAmount: number,
+  _periodMonth: string
 ): { allowed: boolean; error?: string; remainingMonthly?: number; remainingOutstanding?: number } {
-  if (member.is_member !== 1) {
-    return { allowed: false, error: 'Customer is not a cooperative member' };
+  if (member.is_active === 0 || (member.is_active as any) === false) {
+    return { allowed: false, error: 'Akun member ini berstatus non-aktif' };
   }
 
-  if (member.is_active !== 1) {
-    return { allowed: false, error: 'Member account is inactive' };
-  }
-
-  if (member.salary_deduction_enabled !== 1) {
-    return { allowed: false, error: 'Salary deduction is disabled for this member' };
-  }
-
-  // Koperasi policy: Limit checking is disabled/unlimited for registered active members
+  // Koperasi Policy: Potong gaji is a universal privilege for ALL members with NO limit
   return { allowed: true, remainingMonthly: 999999999, remainingOutstanding: 999999999 };
 }
 

@@ -176,8 +176,8 @@ export default function MemberSelector({
           {!loading &&
             members.map((m) => {
               const isSelected = selectedMember?.id === m.id;
-              const isActive = m.is_active === 1;
-              const deductionEnabled = m.salary_deduction_enabled === 1;
+              const isActive = m.is_active !== 0 && (m.is_active as any) !== false;
+              const deductionEnabled = isActive;
 
               return (
                 <div

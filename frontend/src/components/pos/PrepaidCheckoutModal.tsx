@@ -57,29 +57,25 @@ export default function PrepaidCheckoutModal({
   const [deductionNotes, setDeductionNotes] = useState('');
   const [processing, setProcessing] = useState(false);
 
-  // ── Salary Deduction Eligibility (Unlimited with Accumulated Usage Info) ──
+  // ── Salary Deduction Eligibility (Universal privilege for all active members, no limit) ──
   const isMemberSelected = !!member;
-  const isMemberActive = member?.is_active === 1;
-  const isDeductionEnabled = member?.salary_deduction_enabled === 1;
+  const isMemberActive = member ? member.is_active !== 0 && (member.is_active as any) !== false : false;
   const totalMonthlyAccumulation = member?.current_monthly_usage ?? 0;
   const newEstimatedAccumulation = totalMonthlyAccumulation + totalAmount;
 
   const isDeductionEligible =
     isMemberSelected &&
     isMemberActive &&
-    isDeductionEnabled &&
     totalAmount > 0;
 
   const deductionIneligibilityReason = useMemo(() => {
     if (!isMemberSelected) return 'Pilih member koperasi terlebih dahulu';
     if (!isMemberActive) return 'Akun member ini berstatus non-aktif';
-    if (!isDeductionEnabled) return 'Fasilitas potong gaji dinonaktifkan untuk member ini';
     if (totalAmount <= 0) return 'Total belanja harus lebih dari 0';
     return null;
   }, [
     isMemberSelected,
     isMemberActive,
-    isDeductionEnabled,
     totalAmount,
   ]);
 

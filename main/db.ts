@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 let db: Database.Database;
 
@@ -366,6 +366,17 @@ function runIncrementalMigrations(fromVersion: number): void {
 
     migrationV11();
     console.log('[DB] Migration to v11 complete');
+  }
+
+  // Migration to version 12 (Universal Salary Deduction Privilege for All Koperasi Members)
+  if (fromVersion < 12) {
+    console.log('[DB] Applying migration to v12 (Universal Salary Deduction Privilege for All Koperasi Members)...');
+    const migrationV12 = db.transaction(() => {
+      db.exec(`UPDATE customers SET is_member = 1, salary_deduction_enabled = 1 WHERE is_active IS NULL OR is_active = 1`);
+    });
+
+    migrationV12();
+    console.log('[DB] Migration to v12 complete');
   }
 
   // Update schema version
