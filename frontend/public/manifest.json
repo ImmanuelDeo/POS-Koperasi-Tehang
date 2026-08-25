@@ -1,7 +1,7 @@
 {
-  "name": "POS Koperasi Tehang",
-  "short_name": "Koperasi Tehang",
-  "description": "Sistem kasir, stok, transaksi, dan manajemen anggota untuk Koperasi Tehang.",
+  "name": "POS Koperasi",
+  "short_name": "Koperasi",
+  "description": "Sistem kasir, stok, transaksi, dan manajemen anggota untuk Koperasi.",
   "start_url": "/dashboard",
   "display": "standalone",
   "background_color": "#ffffff",

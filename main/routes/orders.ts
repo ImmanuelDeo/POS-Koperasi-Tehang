@@ -2,38 +2,97 @@ import { Router, Request, Response } from 'express';
 import { getDatabase, generateOrderNumber, now, parseItemJson } from '../db';
 import { calculateItemTax } from '../services/tax';
 import { notifyKdsUpdate } from '../services/kds';
+import { calculatePeriodRange, getWibDateString } from '../services/analytics';
+import {
+  generateOrdersTransactionReportPdf,
+  generateOrdersTransactionReportCsv,
+  TransactionReportOrderItem,
+} from '../services/reports-pdf';
+import { maskNik } from '../services/privacy';
+import { AuthenticatedRequest } from '../middleware/auth';
+import { createAuditLog } from '../services/audit';
 
 const router = Router();
 
 router.get('/', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    let query = 'SELECT * FROM orders WHERE 1=1';
+    const {
+      period,
+      date,
+      startDate,
+      endDate,
+      status,
+      type,
+      search,
+      today,
+      table_id,
+    } = req.query as Record<string, string>;
+
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt((req.query.pageSize || req.query.per_page) as string) || 25));
+    const offset = (page - 1) * pageSize;
+
+    let whereClause = ' WHERE 1=1';
     const params: any[] = [];
 
-    if (req.query.status) {
-      query += ' AND status = ?';
-      params.push(req.query.status);
-    }
-    if (req.query.type) {
-      query += ' AND type = ?';
-      params.push(req.query.type);
-    }
-    if (req.query.today && req.query.today !== '0' && req.query.today !== 'false') {
-      query += " AND date(created_at) = date('now')";
-    }
-    if (req.query.table_id) {
-      query += ' AND table_id = ?';
-      params.push(req.query.table_id);
+    // Date range filtering
+    let activeRange = null;
+    if (period || today !== undefined || startDate || date) {
+      const selectedPeriod = period || (today && today !== '0' && today !== 'false' ? 'daily' : 'daily');
+      activeRange = calculatePeriodRange(selectedPeriod, date, startDate, endDate);
+      if (selectedPeriod !== 'all') {
+        whereClause += ' AND (o.created_at >= ? AND o.created_at <= ?)';
+        params.push(activeRange.startUtcIso, activeRange.endUtcIso);
+      }
     }
 
-    query += ' ORDER BY created_at DESC';
-
-    if (req.query.per_page) {
-      query += ` LIMIT ${parseInt(req.query.per_page as string)}`;
+    if (status) {
+      if (status === 'active') {
+        whereClause += " AND o.status IN ('pending', 'preparing', 'ready', 'served')";
+      } else {
+        whereClause += ' AND o.status = ?';
+        params.push(status);
+      }
     }
 
-    const orders = db.prepare(query).all(...params);
+    if (type) {
+      whereClause += ' AND o.type = ?';
+      params.push(type);
+    }
+
+    if (table_id) {
+      whereClause += ' AND o.table_id = ?';
+      params.push(table_id);
+    }
+
+    if (search && search.trim()) {
+      const searchTerm = `%${search.trim()}%`;
+      whereClause += ' AND (o.order_number LIKE ? OR c.name LIKE ? OR c.nik LIKE ? OR c.member_no LIKE ?)';
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+    }
+
+    // Count total matching orders
+    const countSql = `
+      SELECT COUNT(*) as total
+      FROM orders o
+      LEFT JOIN customers c ON o.customer_id = c.id
+      ${whereClause}
+    `;
+    const countResult = db.prepare(countSql).get(...params) as { total: number };
+    const totalCount = countResult ? Number(countResult.total) : 0;
+    const totalPages = Math.ceil(totalCount / pageSize) || 1;
+
+    // Fetch paginated orders
+    const selectSql = `
+      SELECT o.*
+      FROM orders o
+      LEFT JOIN customers c ON o.customer_id = c.id
+      ${whereClause}
+      ORDER BY o.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    const orders = db.prepare(selectSql).all(...params, pageSize, offset) as any[];
 
     // Load related data
     const ordersWithRelations = orders.map((order: any) => {
@@ -45,9 +104,245 @@ router.get('/', (req: Request, res: Response) => {
       return { ...order, items, table, customer, bill };
     });
 
-    res.json({ orders: ordersWithRelations });
+    res.json({
+      orders: ordersWithRelations,
+      pagination: {
+        page,
+        pageSize,
+        totalCount,
+        totalPages,
+      },
+      activeRange,
+    });
   } catch (error: any) {
+    console.error('[Orders GET Error]', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+function buildFilteredOrdersForExport(req: AuthenticatedRequest) {
+  const db = getDatabase();
+  const {
+    period,
+    date,
+    startDate,
+    endDate,
+    status,
+    type,
+    search,
+  } = req.query as Record<string, string>;
+
+  const activeRange = calculatePeriodRange(period || 'daily', date, startDate, endDate);
+  let whereClause = ' WHERE 1=1';
+  const params: any[] = [];
+
+  if (activeRange.period !== 'all') {
+    whereClause += ' AND (o.created_at >= ? AND o.created_at <= ?)';
+    params.push(activeRange.startUtcIso, activeRange.endUtcIso);
+  }
+
+  if (status) {
+    if (status === 'active') {
+      whereClause += " AND o.status IN ('pending', 'preparing', 'ready', 'served')";
+    } else {
+      whereClause += ' AND o.status = ?';
+      params.push(status);
+    }
+  }
+
+  if (type) {
+    whereClause += ' AND o.type = ?';
+    params.push(type);
+  }
+
+  if (search && search.trim()) {
+    const searchTerm = `%${search.trim()}%`;
+    whereClause += ' AND (o.order_number LIKE ? OR c.name LIKE ? OR c.nik LIKE ? OR c.member_no LIKE ?)';
+    params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+  }
+
+  const selectSql = `
+    SELECT
+      o.*,
+      b.id as bill_id,
+      b.bill_number,
+      b.paid_amount,
+      b.payment_status,
+      b.payment_details,
+      c.name as customer_name,
+      c.nik as customer_nik,
+      c.member_no as customer_member_no
+    FROM orders o
+    LEFT JOIN bills b ON b.order_id = o.id
+    LEFT JOIN customers c ON o.customer_id = c.id
+    ${whereClause}
+    ORDER BY o.created_at DESC
+  `;
+
+  const rawOrders = db.prepare(selectSql).all(...params) as any[];
+
+  let totalOrders = 0;
+  let grossSales = 0;
+  let totalDiscounts = 0;
+  let netSales = 0;
+  let cashSales = 0;
+  let salaryDeductionSales = 0;
+
+  const isHrOrAdminOrOwner = ['owner', 'admin', 'office_hr'].includes(req.user?.role || '');
+
+  const exportOrders: TransactionReportOrderItem[] = rawOrders.map((ord: any) => {
+    const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(ord.id) as any[];
+    const itemsSummary = items
+      .filter((i) => i.status !== 'cancelled')
+      .map((i) => `${i.quantity}x ${i.product_name}`)
+      .join(', ');
+
+    let paymentMethod = 'cash';
+    if (ord.payment_details) {
+      try {
+        const parsed = JSON.parse(ord.payment_details);
+        paymentMethod = parsed.method || 'cash';
+      } catch {
+        if (ord.payment_details.includes('salary_deduction')) {
+          paymentMethod = 'salary_deduction';
+        }
+      }
+    }
+
+    const isPaid = ord.payment_status === 'paid';
+    const isCancelled = ord.status === 'cancelled';
+
+    if (isPaid && !isCancelled) {
+      totalOrders += 1;
+      grossSales += Number(ord.subtotal || 0);
+      totalDiscounts += Number(ord.discount_amount || 0);
+      netSales += Number(ord.total || 0);
+      if (paymentMethod === 'salary_deduction') {
+        salaryDeductionSales += Number(ord.paid_amount || ord.total || 0);
+      } else {
+        cashSales += Number(ord.paid_amount || ord.total || 0);
+      }
+    }
+
+    const maskedNik = ord.customer_nik
+      ? isHrOrAdminOrOwner
+        ? ord.customer_nik
+        : maskNik(ord.customer_nik)
+      : undefined;
+
+    return {
+      id: ord.id,
+      order_number: ord.order_number,
+      bill_number: ord.bill_number || undefined,
+      created_at: ord.created_at,
+      customer_name: ord.customer_name || undefined,
+      customer_nik: maskedNik,
+      customer_member_no: ord.customer_member_no || undefined,
+      payment_method: paymentMethod,
+      payment_status: ord.payment_status || 'unpaid',
+      order_status: ord.status,
+      items_summary: itemsSummary || '—',
+      subtotal: Number(ord.subtotal || 0),
+      discount_amount: Number(ord.discount_amount || 0),
+      total: Number(ord.total || 0),
+    };
+  });
+
+  const bizNameRow = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as { value?: string };
+  const businessName = bizNameRow?.value || 'POS Koperasi';
+
+  const printedAtStr = new Intl.DateTimeFormat('id-ID', {
+    timeZone: 'Asia/Jakarta',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date()) + ' WIB';
+
+  return {
+    activeRange,
+    businessName,
+    printedAt: printedAtStr,
+    summary: {
+      totalOrders,
+      grossSales,
+      totalDiscounts,
+      netSales,
+      cashSales,
+      salaryDeductionSales,
+    },
+    orders: exportOrders,
+  };
+}
+
+/**
+ * GET /api/orders/export-pdf
+ * Download formatted PDF report of filtered transactions.
+ */
+router.get('/export-pdf', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const data = buildFilteredOrdersForExport(req);
+    const pdfBuffer = await generateOrdersTransactionReportPdf({
+      businessName: data.businessName,
+      periodLabel: data.activeRange.label,
+      startDate: data.activeRange.startDate,
+      endDate: data.activeRange.endDate,
+      printedAt: data.printedAt,
+      printedByName: req.user?.name || 'Petugas Kasir',
+      printedByRole: req.user?.role || 'cashier',
+      summary: data.summary,
+      orders: data.orders,
+    });
+
+    const filename = `Laporan_Transaksi_Koperasi_${data.activeRange.startDate}_sd_${data.activeRange.endDate}.pdf`;
+
+    const db = getDatabase();
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'EXPORT_ORDERS_REPORT_PDF',
+      target_type: 'orders',
+      details: { period: data.activeRange.period, totalCount: data.orders.length, netSales: data.summary.netSales },
+      ip_address: req.ip,
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.end(pdfBuffer);
+  } catch (error: any) {
+    console.error('[Orders Export PDF Error]', error);
+    res.status(500).json({ error: error.message || 'Gagal membuat laporan PDF' });
+  }
+});
+
+/**
+ * GET /api/orders/export-csv
+ * Download CSV report of filtered transactions.
+ */
+router.get('/export-csv', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const data = buildFilteredOrdersForExport(req);
+    const csvContent = generateOrdersTransactionReportCsv(data.orders);
+    const filename = `Laporan_Transaksi_Koperasi_${data.activeRange.startDate}_sd_${data.activeRange.endDate}.csv`;
+
+    const db = getDatabase();
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'EXPORT_ORDERS_REPORT_CSV',
+      target_type: 'orders',
+      details: { period: data.activeRange.period, totalCount: data.orders.length, netSales: data.summary.netSales },
+      ip_address: req.ip,
+    });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send('\uFEFF' + csvContent); // Add UTF-8 BOM for Excel compatibility
+  } catch (error: any) {
+    console.error('[Orders Export CSV Error]', error);
+    res.status(500).json({ error: error.message || 'Gagal membuat laporan CSV' });
   }
 });
 

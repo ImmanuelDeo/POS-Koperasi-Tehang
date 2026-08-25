@@ -221,7 +221,7 @@ export async function generateSalaryDeductionsRekapPdf(data: SalaryDeductionReka
       margin: [30, 10, 30, 0],
       columns: [
         {
-          text: `POS Koperasi Tehang — Laporan Rekapitulasi Potong Gaji (Dokumen Internal)`,
+          text: `POS Koperasi — Laporan Rekapitulasi Potong Gaji (Dokumen Internal)`,
           fontSize: 8,
           color: '#9CA3AF',
         },
@@ -240,7 +240,7 @@ export async function generateSalaryDeductionsRekapPdf(data: SalaryDeductionReka
           {
             width: '*',
             stack: [
-              { text: data.businessName || 'POS KOPERASI TEHANG', fontSize: 14, bold: true, color: '#0F766E' },
+              { text: data.businessName || 'POS KOPERASI', fontSize: 14, bold: true, color: '#0F766E' },
               { text: 'Sistem Manajemen Koperasi & Kasir Sembako', fontSize: 9, color: '#4B5563', margin: [0, 2, 0, 0] },
             ],
           },
@@ -438,7 +438,7 @@ export async function generateMemberSalaryDeductionPdf(data: MemberSalaryDeducti
       margin: [35, 10, 35, 0],
       columns: [
         {
-          text: `POS Koperasi Tehang — Rincian Bon Potong Gaji Anggota (Dokumen Sah)`,
+          text: `POS Koperasi — Rincian Bon Potong Gaji Anggota (Dokumen Sah)`,
           fontSize: 8,
           color: '#9CA3AF',
         },
@@ -457,7 +457,7 @@ export async function generateMemberSalaryDeductionPdf(data: MemberSalaryDeducti
           {
             width: '*',
             stack: [
-              { text: data.businessName || 'POS KOPERASI TEHANG', fontSize: 13, bold: true, color: '#0F766E' },
+              { text: data.businessName || 'POS KOPERASI', fontSize: 13, bold: true, color: '#0F766E' },
               { text: 'Laporan Bon Belanja Potong Gaji Karyawan', fontSize: 9, color: '#4B5563', margin: [0, 2, 0, 0] },
             ],
           },
@@ -585,3 +585,325 @@ export async function generateMemberSalaryDeductionPdf(data: MemberSalaryDeducti
 
   return createPdfBuffer(docDefinition);
 }
+
+// ── Transaction Report (Orders Section) ─────────────────────────────────────
+
+export interface TransactionReportOrderItem {
+  id: number;
+  order_number: string;
+  bill_number?: string;
+  created_at: string;
+  customer_name?: string;
+  customer_nik?: string;
+  customer_member_no?: string;
+  payment_method: string;
+  payment_status: string;
+  order_status: string;
+  items_summary: string;
+  subtotal: number;
+  discount_amount: number;
+  total: number;
+}
+
+export interface OrdersTransactionReportData {
+  businessName: string;
+  periodLabel: string;
+  startDate: string;
+  endDate: string;
+  printedAt: string;
+  printedByName: string;
+  printedByRole: string;
+  summary: {
+    totalOrders: number;
+    grossSales: number;
+    totalDiscounts: number;
+    netSales: number;
+    cashSales: number;
+    salaryDeductionSales: number;
+  };
+  orders: TransactionReportOrderItem[];
+}
+
+/**
+ * Generate a formal PDF for Orders Transaction Report.
+ */
+export async function generateOrdersTransactionReportPdf(data: OrdersTransactionReportData): Promise<Buffer> {
+  const tableBody: TableCell[][] = [
+    [
+      { text: 'No', style: 'tableHeader', alignment: 'center' },
+      { text: 'Waktu (WIB)', style: 'tableHeader', alignment: 'center' },
+      { text: 'No. Struk / Order', style: 'tableHeader' },
+      { text: 'Anggota / Pelanggan', style: 'tableHeader' },
+      { text: 'Rincian Barang', style: 'tableHeader' },
+      { text: 'Metode', style: 'tableHeader', alignment: 'center' },
+      { text: 'Status', style: 'tableHeader', alignment: 'center' },
+      { text: 'Total (Rp)', style: 'tableHeader', alignment: 'right' },
+    ],
+  ];
+
+  if (data.orders.length === 0) {
+    tableBody.push([
+      { text: 'Tidak ada transaksi pada periode ini.', colSpan: 8, alignment: 'center', italics: true, color: '#6B7280', fontSize: 8, margin: [0, 8, 0, 8] },
+      {}, {}, {}, {}, {}, {}, {}
+    ]);
+  } else {
+    data.orders.forEach((ord, index) => {
+      let timeStr = '—';
+      try {
+        const d = new Date(ord.created_at);
+        timeStr = new Intl.DateTimeFormat('id-ID', {
+          timeZone: 'Asia/Jakarta',
+          day: '2-digit',
+          month: '2-digit',
+          year: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        }).format(d);
+      } catch {
+        timeStr = ord.created_at;
+      }
+
+      const methodLabel =
+        ord.payment_method === 'salary_deduction'
+          ? 'Potong Gaji'
+          : ord.payment_method === 'cash'
+          ? 'Tunai'
+          : ord.payment_method || '—';
+
+      const customerLabel = ord.customer_name
+        ? `${ord.customer_name}${ord.customer_nik ? `\nNIK: ${ord.customer_nik}` : ''}`
+        : 'Pelanggan Umum';
+
+      const statusBadge = ord.order_status === 'cancelled' ? 'BATAL' : ord.payment_status === 'paid' ? 'LUNAS' : ord.payment_status.toUpperCase();
+
+      tableBody.push([
+        { text: String(index + 1), fontSize: 7.5, alignment: 'center' },
+        { text: timeStr, fontSize: 7.5, alignment: 'center' },
+        {
+          stack: [
+            { text: ord.bill_number || '—', bold: true, fontSize: 7.5 },
+            { text: ord.order_number, fontSize: 7, color: '#6B7280' },
+          ],
+        },
+        { text: customerLabel, fontSize: 7.5 },
+        { text: ord.items_summary || '—', fontSize: 7, color: '#374151' },
+        { text: methodLabel, fontSize: 7.5, alignment: 'center' },
+        { text: statusBadge, fontSize: 7, alignment: 'center', bold: true, color: ord.order_status === 'cancelled' ? '#DC2626' : ord.payment_status === 'paid' ? '#059669' : '#D97706' },
+        { text: formatRupiah(ord.total), fontSize: 7.5, alignment: 'right', bold: true },
+      ]);
+    });
+
+    // Grand total row
+    tableBody.push([
+      { text: 'TOTAL PENJUALAN BERSIH', colSpan: 7, bold: true, fontSize: 8, alignment: 'right', color: '#0F766E' },
+      {}, {}, {}, {}, {}, {},
+      { text: formatRupiah(data.summary.netSales), bold: true, fontSize: 8.5, alignment: 'right', color: '#0F766E' },
+    ]);
+  }
+
+  const docDefinition: TDocumentDefinitions = {
+    pageSize: 'A4',
+    pageOrientation: 'landscape',
+    pageMargins: [25, 25, 25, 25],
+    defaultStyle: {
+      font: 'Helvetica',
+      fontSize: 8,
+      color: '#1F2937',
+    },
+    content: [
+      // Header Banner
+      {
+        columns: [
+          {
+            width: '*',
+            stack: [
+              { text: data.businessName || 'POS KOPERASI', fontSize: 13, bold: true, color: '#0F766E' },
+              { text: 'Laporan Rekapitulasi Transaksi Penjualan', fontSize: 10, bold: true, margin: [0, 2, 0, 0] },
+            ],
+          },
+          {
+            width: 'auto',
+            alignment: 'right',
+            stack: [
+              { text: `Periode: ${data.periodLabel}`, fontSize: 9, bold: true, color: '#111827' },
+              { text: `Dicetak: ${data.printedAt}`, fontSize: 8, color: '#6B7280', margin: [0, 2, 0, 0] },
+            ],
+          },
+        ],
+      },
+      { canvas: [{ type: 'line', x1: 0, y1: 8, x2: 792, y2: 8, lineWidth: 1.5, lineColor: '#0F766E' }] },
+      { text: '', margin: [0, 5] },
+
+      // Summary KPIs Box
+      {
+        table: {
+          widths: ['16.6%', '16.6%', '16.6%', '16.6%', '16.6%', '17%'],
+          body: [
+            [
+              { text: 'Total Transaksi', style: 'cardLabel', alignment: 'center' },
+              { text: 'Penjualan Kotor', style: 'cardLabel', alignment: 'center' },
+              { text: 'Total Diskon', style: 'cardLabel', alignment: 'center' },
+              { text: 'Penjualan Bersih', style: 'cardLabel', alignment: 'center' },
+              { text: 'Bayar Tunai', style: 'cardLabel', alignment: 'center' },
+              { text: 'Potong Gaji (Bon)', style: 'cardLabel', alignment: 'center' },
+            ],
+            [
+              { text: `${data.summary.totalOrders} Order`, bold: true, fontSize: 9, alignment: 'center' },
+              { text: formatRupiah(data.summary.grossSales), bold: true, fontSize: 9, alignment: 'center' },
+              { text: formatRupiah(data.summary.totalDiscounts), bold: true, fontSize: 9, alignment: 'center', color: '#D97706' },
+              { text: formatRupiah(data.summary.netSales), bold: true, fontSize: 9.5, alignment: 'center', color: '#0F766E' },
+              { text: formatRupiah(data.summary.cashSales), bold: true, fontSize: 9, alignment: 'center', color: '#2563EB' },
+              { text: formatRupiah(data.summary.salaryDeductionSales), bold: true, fontSize: 9, alignment: 'center', color: '#059669' },
+            ],
+          ],
+        },
+        layout: {
+          fillColor: () => '#F9FAFB',
+          hLineWidth: () => 0.5,
+          vLineWidth: () => 0.5,
+          hLineColor: () => '#E5E7EB',
+          vLineColor: () => '#E5E7EB',
+          paddingLeft: () => 4,
+          paddingRight: () => 4,
+          paddingTop: () => 3,
+          paddingBottom: () => 3,
+        },
+      },
+      { text: '', margin: [0, 6] },
+
+      // Detailed Orders Table
+      {
+        table: {
+          headerRows: 1,
+          widths: [18, 55, 95, 110, 215, 65, 45, 75],
+          body: tableBody,
+        },
+        layout: {
+          fillColor: (rowIndex: number) => {
+            if (rowIndex === 0) return '#0F766E';
+            if (rowIndex === tableBody.length - 1 && data.orders.length > 0) return '#E6FFFA';
+            return rowIndex % 2 === 0 ? '#F9FAFB' : '#FFFFFF';
+          },
+          hLineWidth: () => 0.5,
+          vLineWidth: () => 0.5,
+          hLineColor: () => '#E5E7EB',
+          vLineColor: () => '#E5E7EB',
+          paddingLeft: () => 4,
+          paddingRight: () => 4,
+          paddingTop: () => 3.5,
+          paddingBottom: () => 3.5,
+        },
+      },
+      { text: '', margin: [0, 10] },
+
+      // Signatures Block
+      {
+        columns: [
+          {
+            width: '*',
+            alignment: 'center',
+            stack: [
+              { text: 'Kasir / Petugas,', fontSize: 8.5 },
+              { text: '', margin: [0, 20] },
+              { text: `( ${data.printedByName} )`, bold: true, fontSize: 8.5 },
+              { text: `Jabatan: ${data.printedByRole}`, fontSize: 7.5, color: '#6B7280' },
+            ],
+          },
+          {
+            width: '*',
+            alignment: 'center',
+            stack: [
+              { text: 'Pengurus / Pengawas Koperasi,', fontSize: 8.5 },
+              { text: '', margin: [0, 20] },
+              { text: '( ___________________________ )', bold: true, fontSize: 8.5 },
+              { text: 'Ketua / Bendahara Koperasi', fontSize: 7.5, color: '#6B7280' },
+            ],
+          },
+        ],
+      },
+    ],
+    styles: {
+      tableHeader: {
+        fontSize: 7.5,
+        bold: true,
+        color: '#FFFFFF',
+      },
+      cardLabel: {
+        fontSize: 7.5,
+        color: '#6B7280',
+      },
+    },
+  };
+
+  return createPdfBuffer(docDefinition);
+}
+
+/**
+ * Generate CSV text for Orders Transaction Report.
+ */
+export function generateOrdersTransactionReportCsv(orders: TransactionReportOrderItem[]): string {
+  const headers = [
+    'No',
+    'Waktu (WIB)',
+    'No Struk',
+    'No Order',
+    'Pelanggan',
+    'NIK',
+    'No Anggota',
+    'Metode Bayar',
+    'Status Bayar',
+    'Status Order',
+    'Rincian Barang',
+    'Subtotal',
+    'Diskon',
+    'Total',
+  ];
+
+  const escapeCsv = (val: string | number | undefined | null): string => {
+    if (val === undefined || val === null) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  const rows = orders.map((ord, idx) => {
+    let timeStr = ord.created_at;
+    try {
+      const d = new Date(ord.created_at);
+      timeStr = new Intl.DateTimeFormat('id-ID', {
+        timeZone: 'Asia/Jakarta',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(d);
+    } catch {}
+
+    const method =
+      ord.payment_method === 'salary_deduction'
+        ? 'Potong Gaji'
+        : ord.payment_method === 'cash'
+        ? 'Tunai'
+        : ord.payment_method || '—';
+
+    return [
+      idx + 1,
+      escapeCsv(timeStr),
+      escapeCsv(ord.bill_number || ''),
+      escapeCsv(ord.order_number),
+      escapeCsv(ord.customer_name || 'Pelanggan Umum'),
+      escapeCsv(ord.customer_nik || ''),
+      escapeCsv(ord.customer_member_no || ''),
+      escapeCsv(method),
+      escapeCsv(ord.payment_status),
+      escapeCsv(ord.order_status),
+      escapeCsv(ord.items_summary),
+      ord.subtotal,
+      ord.discount_amount,
+      ord.total,
+    ].join(',');
+  });
+
+  return [headers.join(','), ...rows].join('\r\n');
+}
+

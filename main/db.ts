@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 let db: Database.Database;
 
@@ -377,6 +377,17 @@ function runIncrementalMigrations(fromVersion: number): void {
 
     migrationV12();
     console.log('[DB] Migration to v12 complete');
+  }
+
+  // Migration to version 13 (Update business_name to 'Koperasi')
+  if (fromVersion < 13) {
+    console.log('[DB] Applying migration to v13 (Update business_name to Koperasi)...');
+    const migrationV13 = db.transaction(() => {
+      db.exec(`UPDATE settings SET value = 'Koperasi', updated_at = CURRENT_TIMESTAMP WHERE key = 'business_name'`);
+    });
+
+    migrationV13();
+    console.log('[DB] Migration to v13 complete');
   }
 
   // Update schema version
@@ -800,7 +811,7 @@ function seedData(): void {
     db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(key, value);
 
   insert('schema_version',      String(SCHEMA_VERSION));
-  insert('business_name',       'POS Koperasi Tehang');
+  insert('business_name',       'Koperasi');
   insert('country',             'ID');
   insert('currency',            'IDR');
   insert('currency_symbol',     'Rp');

@@ -107,9 +107,8 @@ export default function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
               <Link href={homeHref}>
-                <div className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-md bg-sidebar overflow-hidden">
-                  { }
-                  <img src="/logo.png" alt={t('common.logoAlt')} className="w-6 h-6 object-contain" />
+                <div className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-md bg-white/90 p-0.5 overflow-hidden shadow-xs border border-gray-200/60">
+                  <img src="/logo.png" alt={t('common.logoAlt')} className="w-full h-full object-contain" />
                 </div>
                 <div className="flex flex-col gap-0.5 min-w-0 leading-none">
                   <span className="font-semibold truncate">{currentTenant?.business_name || t('common.brandName')}</span>

@@ -1,6 +1,6 @@
 /**
  * Privacy and NIK Normalization, Validation, and Masking Utilities
- * POS Koperasi Tehang
+ * POS Koperasi
  */
 
 /**

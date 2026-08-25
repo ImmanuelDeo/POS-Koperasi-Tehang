@@ -2,7 +2,7 @@
  * whatsapp-share.ts
  *
  * Generate WhatsApp share links and messages for bills.
- * Formats full itemized order details, date/time in WIB, and payment method for POS Koperasi Tehang.
+ * Formats full itemized order details, date/time in WIB, and payment method for POS Koperasi.
  */
 
 import type { Bill, Tenant, Customer } from '@/lib/types';
@@ -60,7 +60,7 @@ export function getWhatsAppMessage(
   tenant: Pick<Tenant, 'business_name' | 'currency' | 'country'>,
   opts: WhatsAppShareOptions = {}
 ): string {
-  const bizName = tenant.business_name || 'POS Koperasi Tehang';
+  const bizName = tenant.business_name || 'POS Koperasi';
   const orderCreatedAt = bill.order?.created_at || bill.created_at || new Date().toISOString();
   const dateTimeStr = formatWhatsAppDateTimeWIB(orderCreatedAt);
   const items = bill.order?.items || (bill as any).items || [];
@@ -181,7 +181,7 @@ export async function sendBillViaFlo(
 ): Promise<void> {
   const message = getWhatsAppMessage(
     bill,
-    tenant || { business_name: 'POS Koperasi Tehang', currency: 'Rp', country: 'ID' }
+    tenant || { business_name: 'POS Koperasi', currency: 'Rp', country: 'ID' }
   );
   let phone = customerPhone.replace(/\D/g, '');
   if (phone.startsWith('0')) {

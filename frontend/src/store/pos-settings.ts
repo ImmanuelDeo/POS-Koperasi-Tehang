@@ -40,6 +40,8 @@ export interface PosSettingsState {
   billShowPhone: boolean;
   billShowGstn: boolean;
   showMaskedNikOnReceipt: boolean;
+  receiptLogoEnabled: boolean;
+  receiptLogoSize: 'small' | 'standard' | 'large';
   // Thermal printer unicode support
   printerUseUnicode: boolean;
   // Kitchen workflow toggles (issue #133) — business-level settings, synced
@@ -74,6 +76,8 @@ export interface PosSettingsState {
   setBillShowPhone: (v: boolean) => void;
   setBillShowGstn: (v: boolean) => void;
   setShowMaskedNikOnReceipt: (v: boolean) => void;
+  setReceiptLogoEnabled: (v: boolean) => void;
+  setReceiptLogoSize: (s: 'small' | 'standard' | 'large') => void;
   setBillingType: (v: 'postpaid' | 'prepaid') => void;
   setTablesRequired: (v: boolean) => void;
   setPrinterUseUnicode: (v: boolean) => void;
@@ -113,19 +117,17 @@ export const usePosSettingsStore = create<PosSettingsState>()(
       billShowPhone: true,
       billShowGstn: false,
       showMaskedNikOnReceipt: false,
+      receiptLogoEnabled: true,
+      receiptLogoSize: 'standard',
       printerUseUnicode: false,
       kdsEnabled: false,
       kotPrintingEnabled: false,
-      // Default false so the sidebar hides the WhatsApp nav entry until the
-      // tenant actually enables the integration. Synced from /api/whatsapp/status
-      // on auth load (see Sidebar.tsx) and updated by the WhatsApp page after
-      // a successful enable/disable toggle.
       whatsappEnabled: false,
       // Actions
       setShowProductImages: (show) => set({ showProductImages: show }),
       setCustomerMandatory: (mandatory) => set({ customerMandatory: mandatory }),
       setEnforcePhoneLength: (enabled) => set({ enforcePhoneLength: enabled }),
-      setLanguage: (language) => set({ language }),
+      setLanguage: (lang) => set({ language: lang }),
       setPrinterPaperSize: (size) => set({ printerPaperSize: size }),
       setPrinterEnabled: (enabled) => set({ printerEnabled: enabled }),
       setPrinterPrintMode: (mode) => set({ printerPrintMode: mode }),
@@ -145,6 +147,8 @@ export const usePosSettingsStore = create<PosSettingsState>()(
       setBillShowPhone: (v) => set({ billShowPhone: v }),
       setBillShowGstn: (v) => set({ billShowGstn: v }),
       setShowMaskedNikOnReceipt: (v) => set({ showMaskedNikOnReceipt: v }),
+      setReceiptLogoEnabled: (v) => set({ receiptLogoEnabled: v }),
+      setReceiptLogoSize: (s) => set({ receiptLogoSize: s }),
       setBillingType: (v) => set({ billingType: v }),
       setTablesRequired: (v) => set({ tablesRequired: v }),
       setPrinterUseUnicode: (v) => set({ printerUseUnicode: v }),

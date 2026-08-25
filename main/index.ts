@@ -57,7 +57,7 @@ function setupAutoUpdater(): void {
     dialog.showMessageBox({
       type: 'info',
       title: 'Update Available',
-      message: `Pembaruan POS Koperasi Tehang versi ${info.version} tersedia!`,
+      message: `Pembaruan POS Koperasi versi ${info.version} tersedia!`,
       detail: `Release date: ${info.releaseDate}\n\nWould you like to download it now?`,
       buttons: ['Download', 'Later'],
       defaultId: 0,
@@ -326,12 +326,12 @@ function createTray(): void {
     tray = new Tray(icon.resize({ width: 16, height: 16 }));
 
     const contextMenu = Menu.buildFromTemplate([
-      { label: 'Buka POS Koperasi Tehang', click: () => mainWindow?.show() },
+      { label: 'Buka POS Koperasi', click: () => mainWindow?.show() },
       { type: 'separator' },
       { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
     ]);
 
-    tray.setToolTip('POS Koperasi Tehang');
+    tray.setToolTip('POS Koperasi');
     tray.setContextMenu(contextMenu);
     tray.on('double-click', () => mainWindow?.show());
   } catch {
@@ -411,7 +411,7 @@ function createMenu(): void {
     {
       label: 'Help',
       submenu: [
-        { label: 'Tentang POS Koperasi Tehang', click: () => showAbout() },
+        { label: 'Tentang POS Koperasi', click: () => showAbout() },
         { label: 'Check for Updates', click: () => checkForUpdates() },
       ],
     },
@@ -436,8 +436,8 @@ function showAbout(): void {
   const kdsPort = getKdsPort();
   dialog.showMessageBox({
     type: 'info',
-    title: 'Tentang POS Koperasi Tehang',
-    message: 'POS Koperasi Tehang',
+    title: 'Tentang POS Koperasi',
+    message: 'POS Koperasi',
     detail: [
       `Version: ${app.getVersion()}`,
       `Electron: ${process.versions.electron}`,

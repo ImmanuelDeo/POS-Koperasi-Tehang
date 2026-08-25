@@ -16,13 +16,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "POS Koperasi Tehang",
-  description: "Sistem kasir, stok, transaksi, dan manajemen anggota untuk Koperasi Tehang.",
+  title: "POS Koperasi",
+  description: "Sistem kasir, stok, transaksi, dan manajemen anggota untuk Koperasi.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "POS Koperasi Tehang",
+    title: "POS Koperasi",
   },
   icons: {
     icon: [

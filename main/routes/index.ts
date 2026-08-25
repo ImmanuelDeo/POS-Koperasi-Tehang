@@ -16,6 +16,7 @@ import { salaryDeductionRoutes } from './salary-deductions';
 import { staffRoutes } from './staff';
 import { settingsRoutes } from './settings';
 import { reportRoutes } from './reports';
+import { dashboardRoutes } from './dashboard';
 import { kdsRoutes } from './kds';
 import { kdsInfoRoutes } from './kds-info';
 import { printerRoutes } from './printers';
@@ -230,6 +231,12 @@ export function registerRoutes(app: Express): void {
   );
 
   app.use('/api/reports', authenticateToken, requireRole(['owner', 'admin', 'cashier']), reportRoutes);
+  app.use(
+    '/api/dashboard',
+    authenticateToken,
+    requireRole(['owner', 'admin', 'office_hr', 'manager', 'cashier']),
+    dashboardRoutes
+  );
   app.use('/api/kds', authenticateToken, requireRole(['owner', 'admin', 'chef']), kdsRoutes);
   app.use('/api/kds-info', authenticateToken, requireRole(['owner', 'admin', 'chef']), kdsInfoRoutes);
 

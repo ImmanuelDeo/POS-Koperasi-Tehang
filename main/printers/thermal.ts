@@ -344,9 +344,164 @@ function detectLinuxPrinters(): PrinterInfo[] {
   return printers;
 }
 
+// ── Koperasi Logo Raster Bit Image Generator (B&W 1-Bit ESC/POS) ─────────────
+
+const logoRasterCache = new Map<string, Buffer | null>();
+
+/**
+ * Clear cached logo rasters (useful after settings/asset updates).
+ */
+export function clearLogoRasterCache(): void {
+  logoRasterCache.clear();
+}
+
+/**
+ * Generates an ESC/POS GS v 0 1-bit monochrome raster buffer centered on 384 dots width.
+ * Fallback-safe: returns null if file not found, decode error, or logo disabled.
+ */
+export function getReceiptLogoRasterBuffer(settings: Record<string, string> = {}): Buffer | null {
+  try {
+    // 1. Check toggle (default: true)
+    if (settings.receipt_logo_enabled === 'false') {
+      return null;
+    }
+
+    const sizeProfile = (settings.receipt_logo_size || 'standard').toLowerCase();
+    if (logoRasterCache.has(sizeProfile)) {
+      return logoRasterCache.get(sizeProfile) || null;
+    }
+
+    // 2. Locate official logo from internal whitelist paths
+    const candidatePaths = [
+      path.join(__dirname, '..', '..', 'assets', 'logo_makin-group.png'),
+      path.join(__dirname, '..', 'assets', 'logo_makin-group.png'),
+      path.join(__dirname, '..', '..', 'frontend', 'public', 'logo.png'),
+      path.join(process.cwd(), 'assets', 'logo_makin-group.png'),
+      path.join(process.cwd(), 'frontend', 'public', 'logo.png'),
+    ];
+
+    let logoPath = '';
+    for (const p of candidatePaths) {
+      if (fs.existsSync(p)) {
+        logoPath = p;
+        break;
+      }
+    }
+
+    if (!logoPath) {
+      console.warn('[ThermalPrinter] Logo asset not found, falling back to text-only header.');
+      logoRasterCache.set(sizeProfile, null);
+      return null;
+    }
+
+    const { PNG } = require('pngjs');
+    const fileData = fs.readFileSync(logoPath);
+    const srcPng = PNG.sync.read(fileData);
+
+    // 3. Profile configuration for 58mm printer (384 dots / 48 bytes printable width)
+    let targetWidth = 288; // Standard (Default, fills 75% width, bold & clear)
+
+    if (sizeProfile === 'small') {
+      targetWidth = 216; // Small (fills 56% width)
+    } else if (sizeProfile === 'large') {
+      targetWidth = 352; // Large (fills 92% width)
+    }
+
+    // Align targetWidth to multiple of 8
+    targetWidth = Math.max(8, Math.round(targetWidth / 8) * 8);
+
+    // Calculate proportional height maintaining exact aspect ratio
+    const targetHeight = Math.round((targetWidth * srcPng.height) / srcPng.width);
+
+    // Bilinear resize
+    const dstPng = new PNG({ width: targetWidth, height: targetHeight });
+    const xRatio = srcPng.width / targetWidth;
+    const yRatio = srcPng.height / targetHeight;
+
+    for (let y = 0; y < targetHeight; y++) {
+      for (let x = 0; x < targetWidth; x++) {
+        const px = Math.floor(x * xRatio);
+        const py = Math.floor(y * yRatio);
+        const srcIdx = (py * srcPng.width + px) << 2;
+        const dstIdx = (y * targetWidth + x) << 2;
+
+        dstPng.data[dstIdx] = srcPng.data[srcIdx];
+        dstPng.data[dstIdx + 1] = srcPng.data[srcIdx + 1];
+        dstPng.data[dstIdx + 2] = srcPng.data[srcIdx + 2];
+        dstPng.data[dstIdx + 3] = srcPng.data[srcIdx + 3];
+      }
+    }
+
+    // Horizontal centering on full 384 dots (48 bytes) print line
+    const totalPaperBytes = 48; // 384 dots / 8
+    const imageBytesPerLine = targetWidth / 8;
+    const leftPadBytes = Math.max(0, Math.floor((totalPaperBytes - imageBytesPerLine) / 2));
+    const rightPadBytes = Math.max(0, totalPaperBytes - imageBytesPerLine - leftPadBytes);
+    const lineBytes = totalPaperBytes; // Always full 48 bytes
+
+    const rasterData: number[] = [];
+
+    for (let y = 0; y < targetHeight; y++) {
+      // 1. Left padding bytes (white = 0x00)
+      for (let p = 0; p < leftPadBytes; p++) {
+        rasterData.push(0x00);
+      }
+
+      // 2. Thresholded 1-bit image pixels
+      for (let byteIdx = 0; byteIdx < imageBytesPerLine; byteIdx++) {
+        let byteVal = 0;
+        for (let bit = 0; bit < 8; bit++) {
+          const x = byteIdx * 8 + bit;
+          const idx = (y * targetWidth + x) << 2;
+          const r = dstPng.data[idx];
+          const g = dstPng.data[idx + 1];
+          const b = dstPng.data[idx + 2];
+          const a = dstPng.data[idx + 3];
+
+          let isBlack = false;
+          // Transparent pixels flattened to white background
+          if (a > 64) {
+            const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+            // 1-bit threshold
+            if (luminance < 160) {
+              isBlack = true;
+            }
+          }
+
+          if (isBlack) {
+            byteVal |= 1 << (7 - bit);
+          }
+        }
+        rasterData.push(byteVal);
+      }
+
+      // 3. Right padding bytes (white = 0x00)
+      for (let p = 0; p < rightPadBytes; p++) {
+        rasterData.push(0x00);
+      }
+    }
+
+    // ESC/POS GS v 0 0 xL xH yL yH d1...dk (xL=48, xH=0 for 384 dots full span)
+    const xL = lineBytes & 0xff;
+    const xH = (lineBytes >> 8) & 0xff;
+    const yL = targetHeight & 0xff;
+    const yH = (targetHeight >> 8) & 0xff;
+
+    const header = Buffer.from([0x1d, 0x76, 0x30, 0x00, xL, xH, yL, yH]);
+    const body = Buffer.from(rasterData);
+    const result = Buffer.concat([header, body, Buffer.from([0x0a])]);
+
+    logoRasterCache.set(sizeProfile, result);
+    return result;
+  } catch (err: any) {
+    console.warn('[ThermalPrinter] Failed to generate raster logo:', err?.message || err);
+    return null;
+  }
+}
+
 // ── ESC/POS Low-Level Byte Builder (Blueprint ECO-58D Compatible) ────────────
 
-export function buildEscPosKoperasi(lines: string[]): Buffer {
+export function buildEscPosKoperasi(lines: string[], settings?: Record<string, string>): Buffer {
   const buf: number[] = [];
 
   const resetAllStyles = () => {
@@ -359,6 +514,16 @@ export function buildEscPosKoperasi(lines: string[]): Buffer {
     if (line.includes('{INIT}')) {
       buf.push(0x1B, 0x40);
       resetAllStyles();
+      continue;
+    }
+
+    if (line.includes('{LOGO_HEADER}')) {
+      const logoBuf = getReceiptLogoRasterBuffer(settings);
+      if (logoBuf && logoBuf.length > 0) {
+        buf.push(0x1B, 0x61, 0x00);
+        buf.push(...logoBuf);
+        resetAllStyles();
+      }
       continue;
     }
 
@@ -433,10 +598,9 @@ export function generateKoperasiReceipt(
   const sepBar = '='.repeat(cols);
   const dashBar = '-'.repeat(cols);
 
-  const bizName = settings.business_name || 'POS KOPERASI TEHANG';
+  const bizName = settings.business_name || 'Koperasi';
   const bizAddress = settings.business_address || settings.address || '';
   const bizPhone = settings.business_phone || settings.phone || '';
-  const showMaskedNik = settings.show_masked_nik_on_receipt === 'true';
 
   const billNumber = bill?.bill_number || order?.order_number || 'BILL-' + Date.now();
   const createdAt = bill?.created_at || order?.created_at || new Date();
@@ -449,6 +613,9 @@ export function generateKoperasiReceipt(
     lines.push('{CENTER}{BOLD}*** SALINAN / REPRINT ***{/BOLD}{/CENTER}');
     lines.push('{CENTER}Cetak Ulang: ' + formatDateTimeWIB(new Date()) + '{/CENTER}');
     lines.push(sepBar);
+    lines.push('{LOGO_HEADER}');
+  } else {
+    lines.push('{LOGO_HEADER}');
   }
 
   lines.push('{CENTER}{BOLD}' + bizName.toUpperCase() + '{/BOLD}{/CENTER}');
@@ -490,18 +657,6 @@ export function generateKoperasiReceipt(
   if (isMember) {
     lines.push(dashBar);
     lines.push(leftRight('Anggota   :', customer.name, cols));
-    if (customer.member_no) {
-      lines.push(leftRight('No. MBR   :', customer.member_no, cols));
-    }
-    if (showMaskedNik && customer.nik) {
-      const masked = maskNikEightPrefix(customer.nik);
-      if (masked) {
-        lines.push(leftRight('NIK       :', masked, cols));
-      }
-    }
-    if (customer.department) {
-      lines.push(leftRight('Dept      :', customer.department, cols));
-    }
   } else {
     lines.push(leftRight('Pelanggan :', customer?.name || 'Pembeli Umum', cols));
   }
@@ -561,20 +716,25 @@ export function generateKoperasiReceipt(
 
   lines.push('{FEED_5}');
 
-  return buildEscPosKoperasi(lines);
+  return buildEscPosKoperasi(lines, settings);
 }
 
 // ── Test Print Page Builder ──────────────────────────────────────────────────
 
-export function buildTestPage(paperWidth: string = '58mm', printerName: string = 'Blueprint ECO-58D'): Buffer {
+export function buildTestPage(
+  paperWidth: string = '58mm',
+  printerName: string = 'Blueprint ECO-58D',
+  settings: Record<string, string> = {}
+): Buffer {
   const cols = paperWidth === '80mm' ? 48 : 32;
   const sep = '='.repeat(cols);
   const dash = '-'.repeat(cols);
 
   const lines = [
     '{INIT}',
+    '{LOGO_HEADER}',
     '{CENTER}{BOLD}TEST PRINT STRUK KOPERASI{/BOLD}{/CENTER}',
-    '{CENTER}POS KOPERASI TEHANG{/CENTER}',
+    '{CENTER}KOPERASI{/CENTER}',
     sep,
     leftRight('Hardware :', 'Blueprint ECO-58D', cols),
     leftRight('Printer  :', truncateText(printerName, cols - 12), cols),
@@ -595,7 +755,7 @@ export function buildTestPage(paperWidth: string = '58mm', printerName: string =
     '{FEED_5}',
   ];
 
-  return buildEscPosKoperasi(lines);
+  return buildEscPosKoperasi(lines, settings);
 }
 
 function truncateText(text: string, maxLen: number): string {

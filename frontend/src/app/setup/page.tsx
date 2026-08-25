@@ -193,7 +193,7 @@ export default function SetupPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background to-muted px-4 py-12">
       <div className="w-full max-w-2xl">
         <div className="text-center mb-8">
-          <img src="/logo.png" alt="Logo POS Koperasi Tehang" width={220} height={55} className="h-12 w-auto mx-auto mb-4 object-contain" />
+          <img src="/logo.png" alt="Logo POS Koperasi" width={220} height={55} className="h-14 w-auto mx-auto mb-4 object-contain" />
           <h1 className="text-3xl font-bold">{t('setup.welcome')}</h1>
           <p className="text-muted-foreground mt-2">{t('setup.tagline')}</p>
         </div>

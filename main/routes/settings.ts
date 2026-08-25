@@ -1,5 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
+import { createAuditLog } from '../services/audit';
+import { clearLogoRasterCache } from '../printers/thermal';
+import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -24,7 +27,7 @@ function upsertSettings(db: ReturnType<typeof getDatabase>, entries: Record<stri
 
 function businessShape(s: Record<string, string>) {
   return {
-    business_name:   s.business_name   || 'POS Koperasi Tehang',
+    business_name:   s.business_name   || 'Koperasi',
     timezone:        s.timezone        || 'Asia/Jakarta',
     currency:        s.currency        || 'IDR',
     country:         s.country         || 'ID',
@@ -38,6 +41,8 @@ function businessShape(s: Record<string, string>) {
     bill_show_phone:   s.bill_show_phone   !== 'false',
     bill_show_gstn:    s.bill_show_gstn    === 'true',
     show_masked_nik_on_receipt: s.show_masked_nik_on_receipt === 'true',
+    receipt_logo_enabled: s.receipt_logo_enabled !== 'false',
+    receipt_logo_size: s.receipt_logo_size || 'standard',
   };
 }
 
@@ -66,20 +71,45 @@ router.get('/business', (req: Request, res: Response) => {
   }
 });
 
-router.put('/business', (req: Request, res: Response) => {
+router.put('/business', (req: AuthenticatedRequest, res: Response) => {
   try {
     const { business_name, timezone, currency, country, gstin, state_code,
       business_address, business_phone, billing_type,
       bill_show_name, bill_show_address, bill_show_phone, bill_show_gstn,
-      show_masked_nik_on_receipt } = req.body;
+      show_masked_nik_on_receipt, receipt_logo_enabled, receipt_logo_size } = req.body;
 
     const db = getDatabase();
+    const prevSettings = getAllSettings(db);
+
     upsertSettings(db, {
       business_name, timezone, currency, country, gstin, state_code,
       business_address, business_phone, billing_type,
       bill_show_name, bill_show_address, bill_show_phone, bill_show_gstn,
       show_masked_nik_on_receipt: show_masked_nik_on_receipt !== undefined ? (show_masked_nik_on_receipt ? 'true' : 'false') : undefined,
+      receipt_logo_enabled: receipt_logo_enabled !== undefined ? (receipt_logo_enabled ? 'true' : 'false') : undefined,
+      receipt_logo_size: receipt_logo_size !== undefined ? String(receipt_logo_size) : undefined,
     });
+
+    if (receipt_logo_enabled !== undefined || receipt_logo_size !== undefined) {
+      clearLogoRasterCache();
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'printer.receipt_logo.updated',
+        target_type: 'settings',
+        details: {
+          previous: {
+            receipt_logo_enabled: prevSettings.receipt_logo_enabled !== 'false',
+            receipt_logo_size: prevSettings.receipt_logo_size || 'standard',
+          },
+          updated: {
+            receipt_logo_enabled: receipt_logo_enabled !== undefined ? Boolean(receipt_logo_enabled) : prevSettings.receipt_logo_enabled !== 'false',
+            receipt_logo_size: receipt_logo_size || prevSettings.receipt_logo_size || 'standard',
+          },
+        },
+        ip_address: req.ip,
+      });
+    }
 
     res.json(businessShape(getAllSettings(db)));
   } catch (error: any) {

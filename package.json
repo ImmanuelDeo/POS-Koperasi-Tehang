@@ -1,7 +1,7 @@
 {
   "name": "flo-desktop",
   "version": "1.5.5",
-  "description": "POS Koperasi Tehang - Sistem Kasir dan Manajemen Koperasi",
+  "description": "POS Koperasi - Sistem Kasir dan Manajemen Koperasi",
   "main": "dist/index.js",
   "scripts": {
     "dev": "npm run build:frontend && npm run build && electron .",
@@ -18,7 +18,7 @@
     "rebuild": "electron-rebuild -f -w better-sqlite3"
   },
   "author": {
-    "name": "POS Koperasi Tehang",
+    "name": "POS Koperasi",
     "email": "support@koperasi.local"
   },
   "homepage": "https://koperasi.local",
@@ -58,7 +58,7 @@
   },
   "build": {
     "appId": "com.flo.desktop",
-    "productName": "POS Koperasi Tehang",
+    "productName": "POS Koperasi",
     "asar": true,
     "asarUnpack": "**/node_modules/better-sqlite3/**/*",
     "directories": {

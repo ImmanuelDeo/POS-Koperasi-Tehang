@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { Button } from '@/components/ui/button';
-import { CreditCard, Trash2, RotateCcw, Clock, MessageCircle, Printer, XCircle, Lock, Percent, Banknote, Search, Plus, ChevronDown, ChevronRight, UserPlus, User, ShoppingBag, Send, Loader2 } from 'lucide-react';
+import { CreditCard, Trash2, RotateCcw, Clock, MessageCircle, Printer, XCircle, Lock, Percent, Banknote, Search, Plus, ChevronDown, ChevronRight, ChevronLeft, UserPlus, User, ShoppingBag, Send, Loader2, RefreshCw, FileText, FileSpreadsheet, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import PaymentModal from '@/components/pos/PaymentModal';
 import { shareBillViaWhatsApp, sendBillViaFlo } from '@/lib/whatsapp-share';
@@ -22,6 +22,7 @@ import { useI18n } from '@/hooks/useI18n';
 import { useFormatDate } from '@/hooks/useFormatDate';
 import { useWhatsAppReady } from '@/hooks/useWhatsAppReady';
 import { ORDER_TYPE_LABEL_KEYS } from '@/lib/order-types';
+import PeriodSelector, { PeriodFilterState } from '@/components/ui/PeriodSelector';
 
 const itemStatusConfig: Record<string, { dot: string; color: string; labelKey: string }> = {
   pending: { dot: 'bg-yellow-400', color: 'text-yellow-700', labelKey: 'orders.itemStatusWaiting' },
@@ -139,13 +140,96 @@ export default function OrdersPage() {
   const fmt = useFormatCurrency();
   const isOwnerOrManager = currentTenant?.role === 'owner' || currentTenant?.role === 'manager';
 
-  const fetchOrders = async () => {
+  const [periodFilter, setPeriodFilter] = useState<PeriodFilterState>(() => {
+    let today = new Date().toISOString().slice(0, 10);
     try {
-      const { data } = await api.get('/orders', { params: { per_page: 50 } });
-      const orders = data.orders || [];
-      setOrders(orders);
+      today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jakarta',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+    } catch {}
+    return { period: 'daily', date: today };
+  });
+  const [activeRangeLabel, setActiveRangeLabel] = useState<string>('');
+  const [pagination, setPagination] = useState({
+    page: 1,
+    pageSize: 25,
+    totalCount: 0,
+    totalPages: 1,
+  });
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [downloadingFormat, setDownloadingFormat] = useState<'pdf' | 'csv' | null>(null);
+
+  const handleDownloadReport = async (format: 'pdf' | 'csv') => {
+    setDownloadingFormat(format);
+    try {
+      const endpoint = format === 'pdf' ? '/orders/export-pdf' : '/orders/export-csv';
+      const response = await api.get(endpoint, {
+        params: {
+          period: periodFilter.period,
+          date: periodFilter.date,
+          startDate: periodFilter.startDate,
+          endDate: periodFilter.endDate,
+          status: filters.status || undefined,
+          type: filters.type || undefined,
+          table_id: filters.table || undefined,
+          search: filters.search || undefined,
+        },
+        responseType: 'blob',
+      });
+
+      const contentType = format === 'pdf' ? 'application/pdf' : 'text/csv;charset=utf-8';
+      const blob = new Blob([response.data], { type: contentType });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const dateSuffix = periodFilter.date || new Date().toISOString().slice(0, 10);
+      a.download = `Laporan_Transaksi_Koperasi_${periodFilter.period}_${dateSuffix}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      toast.success(`Laporan transaksi (${format.toUpperCase()}) berhasil diunduh`);
+    } catch (error: any) {
+      console.error('[Download error]', error);
+      toast.error('Gagal mengunduh laporan transaksi');
+    } finally {
+      setDownloadingFormat(null);
+    }
+  };
+
+  const fetchOrders = useCallback(async (targetPage = pagination.page, showSpinner = false) => {
+    if (showSpinner) setLoading(true);
+    else setIsRefreshing(true);
+
+    try {
+      const { data } = await api.get('/orders', {
+        params: {
+          period: periodFilter.period,
+          date: periodFilter.date,
+          startDate: periodFilter.startDate,
+          endDate: periodFilter.endDate,
+          page: targetPage,
+          pageSize: 25,
+          search: filters.search || undefined,
+          table_id: filters.table || undefined,
+          type: filters.type || undefined,
+          status: filters.status || undefined,
+        },
+      });
+      const orderList = data.orders || [];
+      setOrders(orderList);
+      if (data.pagination) {
+        setPagination(data.pagination);
+      }
+      if (data.activeRange?.label) {
+        setActiveRangeLabel(data.activeRange.label);
+      }
       // Fetch print history only for bills we haven't fetched yet
-      orders.forEach((order: Order) => {
+      orderList.forEach((order: Order) => {
         if (order.bill?.id && !fetchedBillIdsRef.current.has(order.bill.id)) {
           fetchedBillIdsRef.current.add(order.bill.id);
           fetchPrintHistory(order.bill.id);
@@ -155,8 +239,9 @@ export default function OrdersPage() {
       toast.error(t('orders.loadOrdersFailed'));
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
-  };
+  }, [periodFilter, filters, pagination.page, t]);
 
   useEffect(() => {
     api.get('/settings/kds_enabled')
@@ -506,7 +591,7 @@ export default function OrdersPage() {
         billWithOrder,
         { phone: order.customer.phone, country_code: order.customer.country_code },
         {
-          business_name: currentTenant?.business_name || 'POS Koperasi Tehang',
+          business_name: currentTenant?.business_name || 'POS Koperasi',
           currency,
           country: currentTenant?.country || 'ID',
         }
@@ -541,7 +626,7 @@ export default function OrdersPage() {
         currency,
         t,
         {
-          business_name: currentTenant?.business_name || 'POS Koperasi Tehang',
+          business_name: currentTenant?.business_name || 'POS Koperasi',
           currency,
           country: currentTenant?.country || 'ID',
         }
@@ -698,22 +783,96 @@ export default function OrdersPage() {
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)]">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold text-gray-900">{t('nav.orders')}</h1>
-        <div className="flex gap-2">
-          {(['all', 'active', 'unpaid', 'held'] as FilterType[]).map((f) => (
-            <button
-              key={f}
-              onClick={() => setTabFilter(f)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium ${
-                tabFilter === f
-                  ? 'bg-brand text-white'
-                  : 'bg-white text-gray-600 border border-gray-200 hover:border-gray-400'
-              }`}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-gray-900">{t('nav.orders')}</h1>
+            {activeRangeLabel && (
+              <span className="hidden sm:inline-block px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+                {activeRangeLabel}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Menampilkan {orders.length} dari {pagination.totalCount} transaksi
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <PeriodSelector
+            period={periodFilter.period}
+            date={periodFilter.date}
+            startDate={periodFilter.startDate}
+            endDate={periodFilter.endDate}
+            activeLabel={activeRangeLabel}
+            allowAll={true}
+            onChange={(newFilter) => {
+              setPeriodFilter(newFilter);
+              setPagination((prev) => ({ ...prev, page: 1 }));
+            }}
+          />
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fetchOrders(pagination.page, false)}
+            disabled={isRefreshing || loading}
+            className="flex items-center gap-1 text-gray-700 hover:text-gray-900 border-gray-200 h-9 rounded-xl shadow-xs"
+            title="Segarkan Data Order"
+          >
+            <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-emerald-600' : ''} />
+            <span className="hidden sm:inline text-xs font-semibold">Segarkan</span>
+          </Button>
+
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleDownloadReport('pdf')}
+              disabled={downloadingFormat !== null}
+              className="flex items-center gap-1.5 bg-emerald-50/70 hover:bg-emerald-100 text-emerald-800 border-emerald-200 h-9 rounded-xl shadow-xs text-xs font-semibold px-3"
+              title="Unduh Laporan Transaksi PDF"
             >
-              {t(tabLabelKey[f])}
-            </button>
-          ))}
+              {downloadingFormat === 'pdf' ? (
+                <Loader2 size={13} className="animate-spin text-emerald-700" />
+              ) : (
+                <FileText size={14} className="text-emerald-700" />
+              )}
+              <span>Unduh PDF</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleDownloadReport('csv')}
+              disabled={downloadingFormat !== null}
+              className="flex items-center gap-1 text-gray-700 hover:text-gray-900 border-gray-200 h-9 rounded-xl shadow-xs text-xs font-semibold px-2.5"
+              title="Unduh Laporan Transaksi CSV"
+            >
+              {downloadingFormat === 'csv' ? (
+                <Loader2 size={13} className="animate-spin text-gray-600" />
+              ) : (
+                <FileSpreadsheet size={14} className="text-gray-600" />
+              )}
+              <span className="hidden sm:inline">CSV</span>
+            </Button>
+          </div>
+
+          <div className="flex gap-1.5 border-l border-gray-200 pl-2">
+            {(['all', 'active', 'unpaid', 'held'] as FilterType[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => setTabFilter(f)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  tabFilter === f
+                    ? 'bg-brand text-white shadow-xs'
+                    : 'bg-white text-gray-600 border border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {t(tabLabelKey[f])}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -1175,6 +1334,37 @@ export default function OrdersPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Pagination Footer */}
+      {pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between py-3 px-4 bg-white border border-gray-200 rounded-xl mt-4 shrink-0 shadow-xs">
+          <div className="text-xs text-gray-500 font-medium">
+            Halaman <strong className="text-gray-900">{pagination.page}</strong> dari{' '}
+            <strong className="text-gray-900">{pagination.totalPages}</strong> ({pagination.totalCount} Total)
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pagination.page <= 1 || loading}
+              onClick={() => fetchOrders(pagination.page - 1)}
+              className="h-8 text-xs font-semibold px-3"
+            >
+              <ChevronLeft size={14} className="mr-1" /> Sebelumnya
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pagination.page >= pagination.totalPages || loading}
+              onClick={() => fetchOrders(pagination.page + 1)}
+              className="h-8 text-xs font-semibold px-3"
+            >
+              Selanjutnya <ChevronRight size={14} className="ml-1" />
+            </Button>
+          </div>
         </div>
       )}
 

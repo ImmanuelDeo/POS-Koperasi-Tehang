@@ -372,7 +372,7 @@ router.get(
       const { from_date, to_date, period_month, status, member_id } = req.query;
 
       const businessNameRow = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
-      const businessName = businessNameRow?.value || 'POS Koperasi Tehang';
+      const businessName = businessNameRow?.value || 'POS Koperasi';
 
       let query = `
         SELECT
@@ -505,7 +505,7 @@ router.get(
       }
 
       const businessNameRow = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
-      const businessName = businessNameRow?.value || 'POS Koperasi Tehang';
+      const businessName = businessNameRow?.value || 'POS Koperasi';
 
       let query = `
         SELECT

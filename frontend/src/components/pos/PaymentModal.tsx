@@ -277,7 +277,7 @@ export default function PaymentModal({ bill, currency, onClose, onPaid, onBillUp
         currency,
         t,
         {
-          business_name: currentTenant?.business_name || 'POS Koperasi Tehang',
+          business_name: currentTenant?.business_name || 'POS Koperasi',
           currency,
           country: currentTenant?.country || 'ID',
         }

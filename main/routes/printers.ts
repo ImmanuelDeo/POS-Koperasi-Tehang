@@ -249,7 +249,11 @@ router.post('/:id/test', async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
-    const testData = buildTestPage(printer.paper_width || '58mm', printer.name);
+    const settingsRows = db.prepare('SELECT key, value FROM settings').all() as any[];
+    const settingsMap: Record<string, string> = {};
+    for (const r of settingsRows) settingsMap[r.key] = r.value;
+
+    const testData = buildTestPage(printer.paper_width || '58mm', printer.name, settingsMap);
     const printRes = await dispatchPrint(printer, testData);
 
     if (printRes.success) {

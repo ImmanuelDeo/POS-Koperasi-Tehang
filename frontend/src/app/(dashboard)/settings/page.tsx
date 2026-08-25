@@ -927,6 +927,8 @@ export default function SettingsPage() {
     webPrintSize: PaperSize; whatsappShareEnabled: boolean;
     printerUseUnicode: boolean;
     showMaskedNikOnReceipt: boolean;
+    receiptLogoEnabled: boolean;
+    receiptLogoSize: 'small' | 'standard' | 'large';
   };
   const initPrinting = (): PrintingForm => ({
     printerEnabled: posSettings.printerEnabled,
@@ -938,6 +940,8 @@ export default function SettingsPage() {
     whatsappShareEnabled: posSettings.whatsappShareEnabled,
     printerUseUnicode: posSettings.printerUseUnicode,
     showMaskedNikOnReceipt: posSettings.showMaskedNikOnReceipt,
+    receiptLogoEnabled: posSettings.receiptLogoEnabled ?? true,
+    receiptLogoSize: posSettings.receiptLogoSize ?? 'standard',
   });
   const [printingForm, setPrintingForm] = useState<PrintingForm>(initPrinting);
   const [savedPrinting, setSavedPrinting] = useState<PrintingForm>(initPrinting);
@@ -951,10 +955,14 @@ export default function SettingsPage() {
     posSettings.setWhatsappShareEnabled(printingForm.whatsappShareEnabled);
     posSettings.setPrinterUseUnicode(printingForm.printerUseUnicode);
     posSettings.setShowMaskedNikOnReceipt(printingForm.showMaskedNikOnReceipt);
+    posSettings.setReceiptLogoEnabled(printingForm.receiptLogoEnabled);
+    posSettings.setReceiptLogoSize(printingForm.receiptLogoSize);
 
     try {
       await api.put('/settings/business', {
         show_masked_nik_on_receipt: printingForm.showMaskedNikOnReceipt,
+        receipt_logo_enabled: printingForm.receiptLogoEnabled,
+        receipt_logo_size: printingForm.receiptLogoSize,
       });
     } catch {}
 
@@ -2692,6 +2700,46 @@ export default function SettingsPage() {
                     onChange={(v) => setPrintingForm((p) => ({ ...p, showMaskedNikOnReceipt: v }))}
                   />
                 </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-900">Tampilkan Logo pada Struk Thermal</p>
+                    <p className="text-sm text-gray-500">
+                      Cetak logo resmi Koperasi (Makin Group) hitam-putih (1-bit raster) pada bagian header struk 58mm.
+                    </p>
+                  </div>
+                  <Toggle
+                    value={printingForm.receiptLogoEnabled}
+                    onChange={(v) => setPrintingForm((p) => ({ ...p, receiptLogoEnabled: v }))}
+                  />
+                </div>
+
+                {printingForm.receiptLogoEnabled && (
+                  <div className="bg-gray-50/80 border border-gray-200/80 rounded-xl p-3.5 space-y-2">
+                    <p className="text-xs font-semibold text-gray-900">Ukuran Logo pada Struk Thermal</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {[
+                        { id: 'small', label: 'Kecil (192 dots)', desc: 'Hemat kertas' },
+                        { id: 'standard', label: 'Standar (256 dots)', desc: 'Rekomendasi default' },
+                        { id: 'large', label: 'Besar (320 dots)', desc: 'Lebar maksimal' },
+                      ].map((sz) => (
+                        <button
+                          key={sz.id}
+                          type="button"
+                          onClick={() => setPrintingForm((p) => ({ ...p, receiptLogoSize: sz.id as 'small' | 'standard' | 'large' }))}
+                          className={`p-2.5 rounded-xl border text-left transition ${
+                            printingForm.receiptLogoSize === sz.id
+                              ? 'border-brand bg-brand/5 ring-1 ring-brand font-medium'
+                              : 'border-gray-200 hover:border-gray-300 bg-white'
+                          }`}
+                        >
+                          <div className="text-xs font-semibold text-gray-900">{sz.label}</div>
+                          <div className="text-[11px] text-gray-500">{sz.desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-gray-900">{t('settings.printerUnicode')}</p>
