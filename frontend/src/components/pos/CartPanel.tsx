@@ -190,22 +190,55 @@ export default function CartPanel({
                     )}
                   </div>
 
-                  {/* Quantity Controls (Strict Positive Integer) */}
+                  {/* Quantity Controls (Editable Input with Stock Clamping & Decimal Support) */}
                   <div className="flex items-center gap-1 shrink-0 bg-gray-50 p-0.5 rounded-lg border border-gray-200">
                     <button
                       type="button"
-                      onClick={() => cart.updateQuantity(item.id, item.quantity - 1)}
+                      onClick={() => {
+                        const step = 1;
+                        cart.updateQuantity(item.id, item.quantity - step);
+                      }}
                       className="w-6 h-6 rounded-md bg-white text-gray-700 hover:bg-gray-200 flex items-center justify-center transition-colors shadow-xs"
-                      title="Kurangi 1"
+                      title="Kurangi"
                     >
                       <Minus size={12} />
                     </button>
-                    <span className="text-xs font-bold w-6 text-center text-gray-900">{item.quantity}</span>
+                    <input
+                      type="number"
+                      min={item.product.allow_decimal ? "0.01" : "1"}
+                      max={item.product.track_inventory ? item.product.stock_quantity : undefined}
+                      step={item.product.allow_decimal ? "0.01" : "1"}
+                      value={item.quantity}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val)) {
+                          cart.updateQuantity(item.id, val);
+                        }
+                      }}
+                      onBlur={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (isNaN(val) || val <= 0) {
+                          cart.removeItem(item.id);
+                        } else {
+                          cart.updateQuantity(item.id, val);
+                        }
+                      }}
+                      className="w-12 h-6 text-xs font-bold text-center text-gray-900 bg-white border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      title={`Jumlah (Maks: ${item.product.track_inventory ? item.product.stock_quantity : 'Tak terbatas'})`}
+                    />
                     <button
                       type="button"
-                      onClick={() => cart.updateQuantity(item.id, item.quantity + 1)}
-                      className="w-6 h-6 rounded-md bg-white text-gray-700 hover:bg-gray-200 flex items-center justify-center transition-colors shadow-xs"
-                      title="Tambah 1"
+                      disabled={!cart.canIncreaseQuantity(item.id)}
+                      onClick={() => {
+                        const step = 1;
+                        cart.updateQuantity(item.id, item.quantity + step);
+                      }}
+                      className={`w-6 h-6 rounded-md flex items-center justify-center transition-colors shadow-xs ${
+                        !cart.canIncreaseQuantity(item.id)
+                          ? 'bg-gray-100 text-gray-300 cursor-not-allowed'
+                          : 'bg-white text-gray-700 hover:bg-gray-200'
+                      }`}
+                      title={!cart.canIncreaseQuantity(item.id) ? 'Stok mencapai batas maksimum' : 'Tambah'}
                     >
                       <Plus size={12} />
                     </button>

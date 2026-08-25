@@ -7,7 +7,6 @@ import {
   calculatePayrollPeriod,
   validateMemberSalaryDeductionLimits,
   generateDeductionNumber,
-  executeStockMovement,
 } from '../services/cooperative';
 import { AuthenticatedRequest } from '../middleware/auth';
 
@@ -209,34 +208,7 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
           return { error: limitValidation.error, status: 422 };
         }
 
-        // Validate stock availability for tracked items in order
-        const orderItems = db.prepare(`
-          SELECT oi.product_id, oi.quantity, p.name as product_name, p.track_inventory, p.stock_quantity
-          FROM order_items oi
-          JOIN products p ON oi.product_id = p.id
-          WHERE oi.order_id = ? AND oi.status != 'cancelled'
-        `).all(bill.order_id) as any[];
-
         const deductionNumber = generateDeductionNumber(bill.bill_number);
-
-        // Deduct inventory per tracked item
-        for (const item of orderItems) {
-          if (item.track_inventory === 1) {
-            const stockResult = executeStockMovement(db, {
-              productId: item.product_id,
-              movementType: 'sale',
-              quantityChange: -item.quantity,
-              referenceType: 'salary_deduction',
-              referenceId: deductionNumber,
-              notes: `Sale via salary deduction ${deductionNumber}`,
-              createdBy: userId,
-            });
-
-            if (!stockResult.success) {
-              return { error: stockResult.error, status: 422 };
-            }
-          }
-        }
 
         // Insert salary deduction record
         const insertDeduction = db.prepare(`

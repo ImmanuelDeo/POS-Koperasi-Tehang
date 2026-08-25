@@ -9,6 +9,25 @@ export function getEffectiveUnitPrice(product: Product, _hasActiveMember: boolea
   return product.price;
 }
 
+export function sanitizeProductQuantity(quantity: number, allowDecimal?: boolean | number): number {
+  if (isNaN(quantity) || !Number.isFinite(quantity) || quantity <= 0) {
+    return 0;
+  }
+  if (allowDecimal === true || allowDecimal === 1) {
+    // Round to max 2 decimal places
+    return Math.round(quantity * 100) / 100;
+  }
+  return Math.floor(quantity);
+}
+
+export interface AddItemResult {
+  success: boolean;
+  addedQty: number;
+  maxStockReached: boolean;
+  currentQty: number;
+  message?: string;
+}
+
 interface CartState {
   items: CartItem[];
   orderType: 'dine_in' | 'takeaway' | 'delivery';
@@ -20,10 +39,11 @@ interface CartState {
   deliveryAddress: string;
   orderNotes: string;
 
-  addItem: (product: Product, quantity?: number, addons?: Addon[], specialInstructions?: string) => void;
+  addItem: (product: Product, quantity?: number, addons?: Addon[], specialInstructions?: string) => AddItemResult;
   updateItemDetails: (cartItemId: string, quantity: number, addons: Addon[], specialInstructions: string) => void;
   removeItem: (cartItemId: string) => void;
   updateQuantity: (cartItemId: string, quantity: number) => void;
+  canIncreaseQuantity: (cartItemId: string) => boolean;
   clearCart: () => void;
   loadItems: (items: CartItem[], tableId: string | null, customerId: number | string | null, guestCount: number, orderNotes?: string) => void;
   setOrderType: (type: CartState['orderType']) => void;
@@ -75,14 +95,46 @@ export const useCartStore = create<CartState>((set, get) => ({
     const itemId = generateCartItemId(product.id, addons, specialInstructions);
     const existing = items.find((i) => i.id === itemId);
 
-    // Enforce positive integer quantity
-    const safeQty = Math.max(1, Math.floor(quantity) || 1);
+    const isDecimal = Boolean(product.allow_decimal);
+    const requestedQty = sanitizeProductQuantity(quantity, isDecimal) || 1;
+    const currentItemQty = existing ? existing.quantity : 0;
+    const isTracked = product.track_inventory === 1 || (product.track_inventory as any) === true;
+    const maxStock = isTracked ? Math.max(0, Number(product.stock_quantity || 0)) : Infinity;
+
+    if (isTracked && maxStock <= 0) {
+      return {
+        success: false,
+        addedQty: 0,
+        maxStockReached: true,
+        currentQty: currentItemQty,
+        message: `Stok '${product.name}' habis.`,
+      };
+    }
+
+    // Calculate target quantity clamped to maxStock
+    const newTotalQty = isTracked
+      ? Math.min(maxStock, currentItemQty + requestedQty)
+      : currentItemQty + requestedQty;
+
+    const actualAdded = newTotalQty - currentItemQty;
+
+    if (actualAdded <= 0) {
+      return {
+        success: false,
+        addedQty: 0,
+        maxStockReached: true,
+        currentQty: currentItemQty,
+        message: `Stok '${product.name}' sudah mencapai batas maksimal di keranjang (${maxStock} ${product.unit || 'pcs'}).`,
+      };
+    }
+
+    const safeNewTotal = sanitizeProductQuantity(newTotalQty, isDecimal);
 
     if (existing) {
       set({
         items: items.map((i) =>
           i.id === itemId
-            ? { ...i, quantity: i.quantity + safeQty, unit_price: unitPrice }
+            ? { ...i, quantity: safeNewTotal, unit_price: unitPrice }
             : i
         ),
       });
@@ -93,7 +145,7 @@ export const useCartStore = create<CartState>((set, get) => ({
           {
             id: itemId,
             product,
-            quantity: safeQty,
+            quantity: safeNewTotal,
             unit_price: unitPrice,
             addons,
             special_instructions: specialInstructions,
@@ -101,6 +153,13 @@ export const useCartStore = create<CartState>((set, get) => ({
         ],
       });
     }
+
+    return {
+      success: true,
+      addedQty: actualAdded,
+      maxStockReached: isTracked && safeNewTotal >= maxStock,
+      currentQty: safeNewTotal,
+    };
   },
 
   updateItemDetails: (cartItemId, quantity, addons, specialInstructions) => {
@@ -110,14 +169,20 @@ export const useCartStore = create<CartState>((set, get) => ({
 
     const hasMember = !!get().member;
     const unitPrice = getEffectiveUnitPrice(target.product, hasMember);
-    const safeQty = Math.max(1, Math.floor(quantity) || 1);
+    const isDecimal = Boolean(target.product.allow_decimal);
+    const safeQty = sanitizeProductQuantity(quantity, isDecimal) || 1;
+    const isTracked = target.product.track_inventory === 1 || (target.product.track_inventory as any) === true;
+    const maxStock = isTracked ? Math.max(0, Number(target.product.stock_quantity || 0)) : Infinity;
+    const clampedQty = isTracked ? Math.min(maxStock, safeQty) : safeQty;
+    const finalQty = sanitizeProductQuantity(clampedQty, isDecimal) || 1;
+
     const newId = generateCartItemId(target.product.id, addons, specialInstructions);
 
     if (newId === cartItemId) {
       set({
         items: items.map((i) =>
           i.id === cartItemId
-            ? { ...i, quantity: safeQty, unit_price: unitPrice, addons, special_instructions: specialInstructions }
+            ? { ...i, quantity: finalQty, unit_price: unitPrice, addons, special_instructions: specialInstructions }
             : i
         ),
       });
@@ -127,16 +192,17 @@ export const useCartStore = create<CartState>((set, get) => ({
     // The edit produced a config that matches another existing line — merge into it.
     const collision = items.find((i) => i.id === newId && i.id !== cartItemId);
     if (collision) {
+      const mergedQty = isTracked ? Math.min(maxStock, collision.quantity + finalQty) : collision.quantity + finalQty;
       set({
         items: items
           .filter((i) => i.id !== cartItemId)
-          .map((i) => (i.id === newId ? { ...i, quantity: i.quantity + safeQty, unit_price: unitPrice } : i)),
+          .map((i) => (i.id === newId ? { ...i, quantity: sanitizeProductQuantity(mergedQty, isDecimal), unit_price: unitPrice } : i)),
       });
     } else {
       set({
         items: items.map((i) =>
           i.id === cartItemId
-            ? { ...i, id: newId, quantity: safeQty, unit_price: unitPrice, addons, special_instructions: specialInstructions }
+            ? { ...i, id: newId, quantity: finalQty, unit_price: unitPrice, addons, special_instructions: specialInstructions }
             : i
         ),
       });
@@ -148,16 +214,41 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   updateQuantity: (cartItemId, quantity) => {
-    const safeQty = Math.floor(quantity);
-    if (safeQty <= 0) {
+    const items = get().items;
+    const item = items.find((i) => i.id === cartItemId);
+    if (!item) return;
+
+    const isDecimal = Boolean(item.product.allow_decimal);
+    const parsedQty = sanitizeProductQuantity(quantity, isDecimal);
+
+    if (parsedQty <= 0) {
       get().removeItem(cartItemId);
       return;
     }
+
+    const isTracked = item.product.track_inventory === 1 || (item.product.track_inventory as any) === true;
+    const maxStock = isTracked ? Math.max(0, Number(item.product.stock_quantity || 0)) : Infinity;
+    const clampedQty = isTracked ? Math.min(maxStock, parsedQty) : parsedQty;
+    const finalQty = sanitizeProductQuantity(clampedQty, isDecimal);
+
+    if (finalQty <= 0) {
+      get().removeItem(cartItemId);
+      return;
+    }
+
     set({
-      items: get().items.map((i) =>
-        i.id === cartItemId ? { ...i, quantity: safeQty } : i
+      items: items.map((i) =>
+        i.id === cartItemId ? { ...i, quantity: finalQty } : i
       ),
     });
+  },
+
+  canIncreaseQuantity: (cartItemId) => {
+    const item = get().items.find((i) => i.id === cartItemId);
+    if (!item) return false;
+    const isTracked = item.product.track_inventory === 1 || (item.product.track_inventory as any) === true;
+    if (!isTracked) return true;
+    return item.quantity < Number(item.product.stock_quantity || 0);
   },
 
   repriceCartForMember: (member) => {
@@ -207,11 +298,14 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   loadItems: (items, tableId, customerId, guestCount, orderNotes) => {
     const hasMember = !!get().member;
-    const itemsWithPrices = items.map((item) => ({
-      ...item,
-      quantity: Math.max(1, Math.floor(item.quantity) || 1),
-      unit_price: item.unit_price ?? getEffectiveUnitPrice(item.product, hasMember),
-    }));
+    const itemsWithPrices = items.map((item) => {
+      const isDecimal = Boolean(item.product?.allow_decimal);
+      return {
+        ...item,
+        quantity: sanitizeProductQuantity(item.quantity, isDecimal) || 1,
+        unit_price: item.unit_price ?? getEffectiveUnitPrice(item.product, hasMember),
+      };
+    });
     set({ items: itemsWithPrices, tableId, customerId, guestCount, orderNotes: orderNotes || '' });
   },
 

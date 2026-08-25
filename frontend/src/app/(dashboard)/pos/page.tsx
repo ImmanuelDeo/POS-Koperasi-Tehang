@@ -67,27 +67,31 @@ export default function POSPage() {
     }
   };
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [catRes, prodRes] = await Promise.all([
-          api.get('/categories?active=1'),
-          api.get('/products?active=1'),
-        ]);
+  const refreshCatalog = useCallback(async () => {
+    try {
+      const [catRes, prodRes] = await Promise.all([
+        api.get('/categories?active=1'),
+        api.get('/products?active=1'),
+      ]);
 
-        setCategories((catRes.data.categories as Category[]) || []);
-        setProducts((prodRes.data.products as Product[]) || []);
-      } catch {
-        toast.error('Gagal memuat katalog produk');
-      }
-    };
-    fetchData();
+      setCategories((catRes.data.categories as Category[]) || []);
+      setProducts((prodRes.data.products as Product[]) || []);
+    } catch {
+      toast.error('Gagal memuat katalog produk');
+    }
   }, []);
 
-  // Direct scan or click adds product to cart (+1 qty) without opening addon modal
+  useEffect(() => {
+    refreshCatalog();
+  }, [refreshCatalog]);
+
+  // Direct scan or click adds product to cart (+1 qty) with stock limits
   const handleProductClick = useCallback(
     (product: Product) => {
-      cart.addItem(product, 1);
+      const res = cart.addItem(product, 1);
+      if (!res.success) {
+        toast.error(res.message || `Stok '${product.name}' sudah mencapai batas maksimal.`);
+      }
     },
     [cart]
   );
@@ -130,8 +134,12 @@ export default function POSPage() {
         toast.error('Produk tidak aktif.');
         return;
       }
-      handleProductClick(product);
-      toast.success(`+1 ${product.name}`, { duration: 1000 });
+      const res = cart.addItem(product, 1);
+      if (!res.success) {
+        toast.error(res.message || `Stok '${product.name}' sudah mencapai batas maksimal.`);
+      } else {
+        toast.success(`+1 ${product.name}`, { duration: 1000 });
+      }
     } else {
       toast.error('Produk belum terdaftar.');
     }
@@ -253,6 +261,7 @@ export default function POSPage() {
       toast.error(errorMsg, { duration: 5000 });
     } finally {
       setSubmitting(false);
+      refreshCatalog();
     }
   };
 

@@ -4,12 +4,11 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { Button } from '@/components/ui/button';
-import { CreditCard, Trash2, RotateCcw, Clock, MessageCircle, Printer, XCircle, Lock, Percent, Banknote, Search, Plus, ChevronDown, ChevronRight, ChevronLeft, UserPlus, User, ShoppingBag, Send, Loader2, RefreshCw, FileText, FileSpreadsheet, Download } from 'lucide-react';
+import { CreditCard, Trash2, RotateCcw, Clock, MessageCircle, Printer, XCircle, Lock, Percent, Banknote, Search, Plus, ChevronDown, ChevronRight, ChevronLeft, UserPlus, User, ShoppingBag, Send, Loader2, RefreshCw, FileText, FileSpreadsheet, Download, Building2, UserCheck, AlertTriangle, Coins, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import PaymentModal from '@/components/pos/PaymentModal';
 import { shareBillViaWhatsApp, sendBillViaFlo } from '@/lib/whatsapp-share';
 import { useConfirm } from '@/hooks/use-confirm';
-import type { OrderItem, Table, Product, Customer } from '@/lib/types';
+import type { OrderItem, Table, Product, Customer, CooperativeMember } from '@/lib/types';
 import type { Order, Bill } from '@/lib/types';
 import { getCurrencySymbol, getCountryByCode } from '@/lib/countries';
 import { usePrinterStore } from '@/hooks/usePrinter';
@@ -135,6 +134,18 @@ export default function OrdersPage() {
   const [linkCustomerResults, setLinkCustomerResults] = useState<Customer[]>([]);
   const [linkingCustomer, setLinkingCustomer] = useState(false);
   const linkSearchRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // Order Payment Modal states (Unified Koperasi Payment & Print)
+  const [orderToPay, setOrderToPay] = useState<Order | null>(null);
+  const [orderPaymentTab, setOrderPaymentTab] = useState<'cash' | 'salary_deduction'>('cash');
+  const [orderCashTendered, setOrderCashTendered] = useState<string>('');
+  const [orderPaymentNotes, setOrderPaymentNotes] = useState<string>('');
+  const [orderSelectedMember, setOrderSelectedMember] = useState<CooperativeMember | null>(null);
+  const [orderMemberSearch, setOrderMemberSearch] = useState<string>('');
+  const [orderMemberResults, setOrderMemberResults] = useState<CooperativeMember[]>([]);
+  const [orderMemberSearching, setOrderMemberSearching] = useState<boolean>(false);
+  const [payingOrder, setPayingOrder] = useState<boolean>(false);
+  const orderMemberSearchRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const currency = getCurrencySymbol(currentTenant?.currency || 'IDR', getCountryByCode(currentTenant?.country ?? 'ID')?.locale);
   const fmt = useFormatCurrency();
@@ -467,44 +478,132 @@ export default function OrdersPage() {
     return true;
   });
 
-  const handleCheckout = async (orderId: number) => {
-    setGeneratingBill(orderId);
-    try {
-      const { data } = await api.post('/bills/generate', { order_id: orderId });
-      setPaymentBill(data.bill);
-    } catch (err: unknown) {
-      const error = err as { response?: { data?: { message?: string } } };
-      toast.error(error.response?.data?.message || t('orders.generateBillFailed'));
-    } finally {
-      setGeneratingBill(null);
-    }
+  const openPayOrderModal = (order: Order) => {
+    const total = Math.round(Number(order.total || 0));
+    setOrderToPay(order);
+    setOrderPaymentTab('cash');
+    setOrderCashTendered(String(total));
+    setOrderPaymentNotes('');
+    setOrderSelectedMember((order.customer as any) || null);
+    setOrderMemberSearch('');
+    setOrderMemberResults([]);
   };
 
-  const handlePaymentComplete = async () => {
-    const bill = paymentBill; // capture before clearing state
-    setPaymentBill(null);
-    fetchOrders();
+  const handleSearchOrderMembers = (query: string) => {
+    setOrderMemberSearch(query);
+    if (orderMemberSearchRef.current) clearTimeout(orderMemberSearchRef.current);
+    if (!query.trim()) {
+      setOrderMemberResults([]);
+      return;
+    }
+    orderMemberSearchRef.current = setTimeout(async () => {
+      setOrderMemberSearching(true);
+      try {
+        const { data } = await api.get('/members/lookup', { params: { q: query.trim() } });
+        setOrderMemberResults(data.members || []);
+      } catch {
+        // ignore
+      } finally {
+        setOrderMemberSearching(false);
+      }
+    }, 250);
+  };
 
-    if (bill && autoPrintBill) {
-      const order = orders.find((o) => o.bill?.id === bill.id);
-      if (order) {
-        try {
-          const { data } = await api.get(`/bills/${bill.id}`);
-          const latestBill = data.bill as Bill;
-          await printBill(
-            { ...latestBill, order },
-            {
-              business_name: currentTenant?.business_name || t('common.businessNameFallback'),
-              currency,
-              country: currentTenant?.country || 'IN',
-            },
-            { isReprint: false }
-          );
-          await api.post(`/bills/${bill.id}/print`, { print_type: 'receipt' });
-        } catch {
-          toast.error(t('orders.receiptPrintFailedHint'));
+  const handlePayOrder = async () => {
+    if (!orderToPay) return;
+    setPayingOrder(true);
+
+    try {
+      const totalAmount = Math.round(Number(orderToPay.total));
+      let effectiveBillId = orderToPay.bill?.id;
+
+      // 1. Ensure Bill exists
+      if (!effectiveBillId) {
+        const { data: billData } = await api.post('/bills/generate', { order_id: orderToPay.id });
+        effectiveBillId = billData.bill.id;
+      }
+
+      // 2. Validate and execute payment
+      if (orderPaymentTab === 'salary_deduction') {
+        const targetMember = orderSelectedMember || (orderToPay.customer as any);
+        if (!targetMember) {
+          toast.error('Pilih anggota terlebih dahulu untuk metode Potong Gaji.');
+          setPayingOrder(false);
+          return;
+        }
+
+        const res = await api.post(`/bills/${effectiveBillId}/payment`, {
+          amount: totalAmount,
+          method: 'salary_deduction',
+          notes: orderPaymentNotes || undefined,
+          customer_id: targetMember.id,
+        });
+
+        const updatedBill = res.data?.bill;
+        const deductionNumber = res.data?.salary_deduction?.deduction_number;
+        toast.success(`Potong Gaji Berhasil! ${deductionNumber ? `(${deductionNumber})` : ''}`, { duration: 4000 });
+
+        // Thermal Receipt Print
+        if (updatedBill) {
+          try {
+            await printBill(
+              { ...updatedBill, order: orderToPay },
+              {
+                business_name: currentTenant?.business_name || 'Koperasi',
+                currency,
+                country: currentTenant?.country || 'ID',
+              },
+              { isReprint: false }
+            );
+          } catch {
+            // non-fatal
+          }
+        }
+      } else {
+        // Cash payment
+        const tenderedNum = parseFloat(orderCashTendered) || totalAmount;
+        if (tenderedNum < totalAmount) {
+          toast.error('Jumlah uang tunai yang diterima kurang dari total tagihan.');
+          setPayingOrder(false);
+          return;
+        }
+
+        const res = await api.post(`/bills/${effectiveBillId}/payment`, {
+          amount: totalAmount,
+          method: 'cash',
+          notes: orderPaymentNotes || undefined,
+          customer_id: orderSelectedMember?.id || orderToPay.customer?.id || undefined,
+        });
+
+        const updatedBill = res.data?.bill;
+        toast.success(`Pembayaran Tunai Berhasil (${orderToPay.order_number})`, { duration: 3000 });
+
+        // Thermal Receipt Print
+        if (updatedBill) {
+          try {
+            await printBill(
+              { ...updatedBill, order: orderToPay },
+              {
+                business_name: currentTenant?.business_name || 'Koperasi',
+                currency,
+                country: currentTenant?.country || 'ID',
+              },
+              { isReprint: false }
+            );
+          } catch {
+            // non-fatal
+          }
         }
       }
+
+      setOrderToPay(null);
+      fetchOrders();
+    } catch (err: any) {
+      console.error('[Orders] Payment failed:', err);
+      const msg = err.response?.data?.error || err.response?.data?.message || 'Gagal memproses pembayaran.';
+      toast.error(msg, { duration: 5000 });
+    } finally {
+      setPayingOrder(false);
     }
   };
 
@@ -1248,7 +1347,6 @@ export default function OrdersPage() {
                     </div>
                   )}
 
-                  {t('orders.printHistory')}
                   {order.bill && printHistory[order.bill.id]?.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-gray-100">
                       <button
@@ -1278,13 +1376,12 @@ export default function OrdersPage() {
                 <div className="px-4 py-3 border-t border-gray-100 flex flex-wrap gap-2">
                     {showCheckout(order) && (
                       <Button
-                        onClick={() => handleCheckout(order.id)}
-                        disabled={generatingBill === order.id}
+                        onClick={() => openPayOrderModal(order)}
                         size="sm"
-                        className="flex-1 justify-center"
+                        className="flex-1 justify-center bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-xs"
                       >
                         <CreditCard size={14} className="mr-1.5" />
-                        {generatingBill === order.id ? t('orders.generating') : t('orders.checkout')}
+                        Bayar
                       </Button>
                     )}
                     {!['completed', 'cancelled'].includes(order.status) && (
@@ -1339,44 +1436,58 @@ export default function OrdersPage() {
 
       {/* Pagination Footer */}
       {pagination.totalPages > 1 && (
-        <div className="flex items-center justify-between py-3 px-4 bg-white border border-gray-200 rounded-xl mt-4 shrink-0 shadow-xs">
-          <div className="text-xs text-gray-500 font-medium">
-            Halaman <strong className="text-gray-900">{pagination.page}</strong> dari{' '}
-            <strong className="text-gray-900">{pagination.totalPages}</strong> ({pagination.totalCount} Total)
-          </div>
-
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3 bg-white rounded-b-xl shadow-xs mt-4">
+          <div className="flex-1 flex justify-between sm:hidden">
             <Button
               variant="outline"
               size="sm"
-              disabled={pagination.page <= 1 || loading}
               onClick={() => fetchOrders(pagination.page - 1)}
-              className="h-8 text-xs font-semibold px-3"
+              disabled={pagination.page <= 1}
             >
-              <ChevronLeft size={14} className="mr-1" /> Sebelumnya
+              {t('common.previous')}
             </Button>
             <Button
               variant="outline"
               size="sm"
-              disabled={pagination.page >= pagination.totalPages || loading}
               onClick={() => fetchOrders(pagination.page + 1)}
-              className="h-8 text-xs font-semibold px-3"
+              disabled={pagination.page >= pagination.totalPages}
             >
-              Selanjutnya <ChevronRight size={14} className="ml-1" />
+              {t('common.next')}
             </Button>
+          </div>
+          <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs text-gray-700">
+                {t('orders.showingRange', {
+                  start: Math.min(pagination.totalCount, (pagination.page - 1) * pagination.pageSize + 1),
+                  end: Math.min(pagination.totalCount, pagination.page * pagination.pageSize),
+                  total: pagination.totalCount,
+                })}
+              </p>
+            </div>
+            <div>
+              <nav className="relative z-0 inline-flex rounded-md shadow-xs -space-x-px" aria-label="Pagination">
+                <button
+                  onClick={() => fetchOrders(pagination.page - 1)}
+                  disabled={pagination.page <= 1}
+                  className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-xs font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <span className="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-xs font-medium text-gray-700">
+                  {pagination.page} / {pagination.totalPages}
+                </span>
+                <button
+                  onClick={() => fetchOrders(pagination.page + 1)}
+                  disabled={pagination.page >= pagination.totalPages}
+                  className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-xs font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </nav>
+            </div>
           </div>
         </div>
-      )}
-
-      {/* Payment Modal */}
-      {paymentBill && (
-        <PaymentModal
-          bill={paymentBill}
-          currency={currency}
-          onClose={() => setPaymentBill(null)}
-          onPaid={handlePaymentComplete}
-          onBillUpdate={(updated) => setPaymentBill(updated)}
-        />
       )}
 
       {/* Print Confirmation Modal */}
@@ -1737,6 +1848,294 @@ placeholder={t('orders.managerPin')}
           </div>
         </div>
       )}
+
+      {/* ── UNIFIED KOPERASI ORDER PAYMENT MODAL ───────────────────────── */}
+      {orderToPay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/80">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <CreditCard className="text-emerald-600" size={20} />
+                  Pembayaran Pesanan #{orderToPay.order_number}
+                </h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Selesaikan pembayaran untuk order yang tertunda
+                </p>
+              </div>
+              <button
+                onClick={() => setOrderToPay(null)}
+                className="text-gray-400 hover:text-gray-600 p-1.5 rounded-lg hover:bg-gray-200/60 transition-colors"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            {/* Total Banner */}
+            <div className="px-6 py-3.5 bg-emerald-50/60 border-b border-emerald-100/60 flex items-center justify-between">
+              <span className="text-xs font-semibold text-emerald-800 uppercase tracking-wider">Total Tagihan</span>
+              <span className="text-2xl font-black text-emerald-700 tracking-tight">{fmt(Math.round(Number(orderToPay.total || 0)))}</span>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-5 flex-1">
+              {/* Payment Method Tabs */}
+              <div className="grid grid-cols-2 gap-2 bg-gray-100/80 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setOrderPaymentTab('cash')}
+                  className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                    orderPaymentTab === 'cash'
+                      ? 'bg-white text-emerald-700 shadow-xs ring-1 ring-black/5'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Banknote size={16} />
+                  Bayar Tunai (Cash)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOrderPaymentTab('salary_deduction')}
+                  className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold transition-all ${
+                    orderPaymentTab === 'salary_deduction'
+                      ? 'bg-white text-emerald-700 shadow-xs ring-1 ring-black/5'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Building2 size={16} />
+                  Potong Gaji
+                </button>
+              </div>
+
+              {/* TAB 1: CASH PAYMENT */}
+              {orderPaymentTab === 'cash' && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                      Jumlah Uang Diterima ({currency})
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-sm">
+                        {currency}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={orderCashTendered}
+                        onChange={(e) => setOrderCashTendered(e.target.value)}
+                        className="w-full pl-12 pr-4 py-2.5 text-base font-bold text-gray-900 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                        placeholder="0"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Quick Denomination Buttons */}
+                  <div>
+                    <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider block mb-1.5">Uang Pas & Pecahan</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setOrderCashTendered(String(Math.round(Number(orderToPay.total || 0))))}
+                        className="px-2.5 py-1.5 text-xs font-bold rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors"
+                      >
+                        Uang Pas
+                      </button>
+                      {[10000, 20000, 50000, 100000, 200000].map((nominal) => (
+                        <button
+                          key={nominal}
+                          type="button"
+                          onClick={() => setOrderCashTendered(String(nominal))}
+                          className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 transition-colors"
+                        >
+                          {fmt(nominal)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Kembalian Calculation */}
+                  {(() => {
+                    const total = Math.round(Number(orderToPay.total || 0));
+                    const tendered = parseFloat(orderCashTendered) || 0;
+                    const change = tendered - total;
+
+                    return (
+                      <div className={`p-3.5 rounded-xl border flex items-center justify-between ${
+                        tendered < total
+                          ? 'bg-red-50/70 border-red-200 text-red-700'
+                          : 'bg-emerald-50/70 border-emerald-200 text-emerald-800'
+                      }`}>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wider">
+                            {tendered < total ? 'Uang Kurang' : 'Kembalian'}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {tendered < total
+                              ? `Kurang ${fmt(total - tendered)}`
+                              : `Kembalian tunai ke pembeli`}
+                          </p>
+                        </div>
+                        <p className="text-xl font-black">
+                          {fmt(Math.abs(change))}
+                        </p>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Notes */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      Catatan Pembayaran (Opsional)
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={100}
+                      value={orderPaymentNotes}
+                      onChange={(e) => setOrderPaymentNotes(e.target.value)}
+                      placeholder="Contoh: Titipan kasir, bayar pas"
+                      className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: SALARY DEDUCTION */}
+              {orderPaymentTab === 'salary_deduction' && (
+                <div className="space-y-4">
+                  {/* Member Selection Display */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                      Anggota Koperasi
+                    </label>
+                    {orderSelectedMember ? (
+                      <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-xl flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs">
+                            <UserCheck size={16} />
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold text-gray-900">{orderSelectedMember.name}</p>
+                            <p className="text-[11px] text-gray-500">
+                              {orderSelectedMember.employee_id ? `NIK: ${orderSelectedMember.employee_id}` : `No: ${orderSelectedMember.member_no}`}
+                              {orderSelectedMember.department ? ` • ${orderSelectedMember.department}` : ''}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setOrderSelectedMember(null)}
+                          className="text-xs text-red-600 font-semibold hover:underline"
+                        >
+                          Ganti
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="relative">
+                          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                          <input
+                            type="text"
+                            value={orderMemberSearch}
+                            onChange={(e) => handleSearchOrderMembers(e.target.value)}
+                            placeholder="Cari nama, NIK, atau nomor anggota..."
+                            className="w-full pl-9 pr-3 py-2 text-xs border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                          />
+                          {orderMemberSearching && (
+                            <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400" />
+                          )}
+                        </div>
+
+                        {orderMemberResults.length > 0 && (
+                          <div className="border border-gray-200 rounded-xl max-h-40 overflow-y-auto divide-y divide-gray-100 bg-white shadow-sm">
+                            {orderMemberResults.map((m) => (
+                              <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => {
+                                  setOrderSelectedMember(m);
+                                  setOrderMemberResults([]);
+                                  setOrderMemberSearch('');
+                                }}
+                                className="w-full px-3 py-2 text-left hover:bg-emerald-50/50 flex items-center justify-between text-xs transition-colors"
+                              >
+                                <div>
+                                  <p className="font-bold text-gray-900">{m.name}</p>
+                                  <p className="text-[10px] text-gray-500">
+                                    {m.employee_id ? `NIK: ${m.employee_id}` : `No: ${m.member_no}`}
+                                    {m.department ? ` • ${m.department}` : ''}
+                                  </p>
+                                </div>
+                                <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">Pilih</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl flex items-start gap-2.5">
+                    <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                    <div className="text-xs text-amber-800">
+                      <p className="font-semibold">Pencatatan Potong Gaji Internal</p>
+                      <p className="text-[11px] text-amber-700 mt-0.5">
+                        Transaksi akan dicatat ke saldo piutang potong gaji dan menunggu rekonsiliasi manual oleh HR Koperasi.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Notes */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      Catatan Potong Gaji (Opsional)
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={100}
+                      value={orderPaymentNotes}
+                      onChange={(e) => setOrderPaymentNotes(e.target.value)}
+                      placeholder="Contoh: Belanja bulanan sembako"
+                      className="w-full px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-end gap-2.5">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setOrderToPay(null)}
+                disabled={payingOrder}
+              >
+                Batal
+              </Button>
+              <Button
+                size="sm"
+                onClick={handlePayOrder}
+                disabled={payingOrder || (orderPaymentTab === 'salary_deduction' && !orderSelectedMember && !orderToPay.customer)}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 shadow-xs"
+              >
+                {payingOrder ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin mr-1.5" />
+                    Memproses...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={14} className="mr-1.5" />
+                    Selesaikan Pembayaran
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {ConfirmDialog}
     </div>
   );

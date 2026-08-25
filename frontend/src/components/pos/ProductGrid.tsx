@@ -131,19 +131,34 @@ export default function ProductGrid({
               .filter((i) => i.product.id === product.id)
               .reduce((sum, i) => sum + i.quantity, 0);
             
+            const isTracked = product.track_inventory === 1 || (product.track_inventory as any) === true;
+            const availableStock = isTracked ? Math.max(0, Number(product.stock_quantity || 0) - inCartQty) : Infinity;
+            const isOutOfStock = isTracked && Number(product.stock_quantity || 0) <= 0;
+            const isCartFull = isTracked && availableStock <= 0;
 
             return (
               <div
                 key={product.id}
                 data-testid="pos-product-card"
-                onClick={() => onProductClick(product)}
-                className="bg-white rounded-xl p-2.5 border border-gray-100 hover:border-brand/40 hover:shadow-md transition-all text-left relative group cursor-pointer overflow-hidden"
+                onClick={() => {
+                  if (isCartFull) return;
+                  onProductClick(product);
+                }}
+                className={`rounded-xl p-2.5 border transition-all text-left relative group overflow-hidden ${
+                  isCartFull
+                    ? 'bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed select-none'
+                    : 'bg-white border-gray-100 hover:border-brand/40 hover:shadow-md cursor-pointer'
+                }`}
               >
-                {!!product.track_inventory && (
+                {isTracked && (
                   <>
-                    {product.stock_quantity <= 0 ? (
+                    {isOutOfStock ? (
                       <span className="absolute top-2 left-2 bg-red-100 text-red-700 text-[10px] font-bold px-2 py-0.5 rounded-full z-10 shadow-sm border border-red-200 pointer-events-none">
                         {t('pos.outOfStock')}
+                      </span>
+                    ) : isCartFull ? (
+                      <span className="absolute top-2 left-2 bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full z-10 shadow-sm border border-amber-300 pointer-events-none">
+                        Stok Maks. di Keranjang
                       </span>
                     ) : product.stock_quantity <= (product.low_stock_threshold || 0) ? (
                       <span className="absolute top-2 left-2 bg-orange-100 text-orange-700 text-[10px] font-bold px-2 py-0.5 rounded-full z-10 shadow-sm border border-orange-200 pointer-events-none">
@@ -202,7 +217,7 @@ export default function ProductGrid({
                 </div>
 
                 {/* Stock information if tracked */}
-                {!!product.track_inventory && (
+                {isTracked && (
                   <p className="text-[11px] text-gray-500 mb-1">
                     Stok: <span className={`font-semibold ${product.stock_quantity <= 0 ? 'text-red-600' : product.stock_quantity <= (product.low_stock_threshold || 5) ? 'text-amber-600' : 'text-gray-700'}`}>{product.stock_quantity} {product.unit || 'pcs'}</span>
                   </p>
