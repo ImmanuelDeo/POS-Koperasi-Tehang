@@ -58,9 +58,16 @@ export default function ProductGrid({
 
   const filtered = products.filter((p) => {
     const matchCat = !selectedCategory || p.category_id === selectedCategory;
-    const matchSearch = !search || p.name.toLowerCase().includes(search.toLowerCase());
+    const sLower = search.toLowerCase().trim();
+    const matchSearch =
+      !sLower ||
+      p.name.toLowerCase().includes(sLower) ||
+      (p.barcode && p.barcode.toLowerCase().includes(sLower)) ||
+      (p.sku && p.sku.toLowerCase().includes(sLower));
     return matchCat && matchSearch;
   });
+
+  const displayedProducts = filtered.slice(0, 100);
 
   return (
     <div data-testid="pos-product-grid" className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
@@ -77,7 +84,7 @@ export default function ProductGrid({
               // action into this field works regardless of typing speed.
               const trimmed = search.trim();
               if (!trimmed) return;
-              const match = products.find((p) => p.barcode === trimmed);
+              const match = products.find((p) => p.barcode === trimmed || p.sku === trimmed);
               if (match) {
                 onProductClick(match);
                 setSearch('');
@@ -87,7 +94,7 @@ export default function ProductGrid({
             className="w-full pl-9 pr-4 py-2 bg-white border border-gray-200 rounded-xl focus:border-brand outline-none transition-colors text-sm"
           />
         </div>
-        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none items-center">
           <button
             onClick={() => setSelectedCategory(null)}
             className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
@@ -118,6 +125,12 @@ export default function ProductGrid({
             );
           })}
         </div>
+        {filtered.length > 100 && (
+          <div className="text-[11px] text-gray-500 font-medium mt-1 px-1 flex items-center justify-between">
+            <span>Menampilkan 100 produk teratas dari {filtered.length.toLocaleString('id-ID')} produk.</span>
+            <span className="text-gray-400">Gunakan pencarian atau scan barcode untuk produk spesifik</span>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto pb-20 md:pb-0">
@@ -126,7 +139,7 @@ export default function ProductGrid({
             ? 'grid-cols-4' 
             : 'grid-cols-5'
         }`}>
-          {filtered.map((product) => {
+          {displayedProducts.map((product) => {
             const inCartQty = cart.items
               .filter((i) => i.product.id === product.id)
               .reduce((sum, i) => sum + i.quantity, 0);
