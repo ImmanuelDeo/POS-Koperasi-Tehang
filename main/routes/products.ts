@@ -11,7 +11,7 @@ const router = Router();
  * 2. prices are clean integer/numbers
  * 3. category and addon groups relations are populated safely
  */
-export function formatProductResponse(product: any, db: any) {
+export function formatProductResponse(product: any, db: any, catMap?: Map<string, any>) {
   if (!product) return null;
   let parsedTags: string[] = [];
   if (product.tags) {
@@ -27,16 +27,9 @@ export function formatProductResponse(product: any, db: any) {
     }
   }
 
-  const category = product.category_id ? db.prepare('SELECT * FROM categories WHERE id = ?').get(product.category_id) : null;
-  const addonGroupIds = db.prepare('SELECT addon_group_id FROM addon_group_product WHERE product_id = ?').all(product.id).map((r: any) => r.addon_group_id);
-  const addonGroups = addonGroupIds.length > 0
-    ? db.prepare(`SELECT * FROM addon_groups WHERE id IN (${addonGroupIds.map(() => '?').join(',')})`).all(...addonGroupIds)
-    : [];
-
-  const addonGroupsWithAddons = addonGroups.map((group: any) => {
-    const addons = db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(group.id);
-    return { ...group, addons };
-  });
+  const category = product.category_id
+    ? (catMap ? catMap.get(product.category_id) || null : db.prepare('SELECT * FROM categories WHERE id = ?').get(product.category_id))
+    : null;
 
   return {
     ...product,
@@ -45,7 +38,7 @@ export function formatProductResponse(product: any, db: any) {
     member_price: product.member_price != null ? Math.round(Number(product.member_price)) : null,
     tags: parsedTags,
     category,
-    addon_groups: addonGroupsWithAddons,
+    addon_groups: [],
   };
 }
 
@@ -73,8 +66,11 @@ router.get('/', (req: Request, res: Response) => {
 
     query += ' ORDER BY sort_order, name';
 
+    const categories = db.prepare('SELECT * FROM categories').all();
+    const catMap = new Map<string, any>(categories.map((c: any) => [c.id, c]));
+
     const products = db.prepare(query).all(...params);
-    const productsWithRelations = products.map((product: any) => formatProductResponse(product, db));
+    const productsWithRelations = products.map((product: any) => formatProductResponse(product, db, catMap));
 
     res.json({ products: productsWithRelations });
   } catch (error: any) {

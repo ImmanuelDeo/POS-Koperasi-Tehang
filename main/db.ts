@@ -10,19 +10,21 @@ const SCHEMA_VERSION = 13;
 let db: Database.Database;
 
 function usesElectronUserDataPath(): boolean {
-  return app.isPackaged || Boolean(process.env.FLO_USER_DATA_DIR?.trim());
+  return Boolean(app?.isPackaged) || Boolean(process.env.FLO_USER_DATA_DIR?.trim());
 }
 
 export function getDbPath(): string {
-  const userDataPath = usesElectronUserDataPath()
+  const userDataPath = usesElectronUserDataPath() && app?.getPath
     ? app.getPath('userData')
-    : path.join(__dirname, '../../');
+    : path.join(__dirname, '../');
 
   return path.join(userDataPath, 'flo.db');
 }
 
 function getBackupDir(): string {
-  const userDataPath = app.getPath('userData');
+  const userDataPath = usesElectronUserDataPath() && app?.getPath
+    ? app.getPath('userData')
+    : path.join(__dirname, '../');
   return path.join(userDataPath, 'backups');
 }
 

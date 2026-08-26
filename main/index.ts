@@ -318,7 +318,7 @@ function createTray(): void {
   }
 
   const iconPath = isDev
-    ? path.join(__dirname, '../../assets/icon.png')
+    ? path.join(__dirname, '../assets/icon.png')
     : path.join(process.resourcesPath, 'assets/icon.png');
 
   try {
