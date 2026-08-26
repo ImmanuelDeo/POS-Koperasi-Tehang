@@ -134,6 +134,42 @@ function runMigrations(): void {
     runIncrementalMigrations(currentVersion);
   }
 
+  // Self-healing: Ensure users table has password & pin columns and at least 1 active user
+  try {
+    if (!columnExists('users', 'password')) {
+      console.log('[DB] Adding missing password column to users table...');
+      db.exec(`ALTER TABLE users ADD COLUMN password TEXT NOT NULL DEFAULT ''`);
+    }
+    if (!columnExists('users', 'pin')) {
+      console.log('[DB] Adding missing pin column to users table...');
+      db.exec(`ALTER TABLE users ADD COLUMN pin TEXT DEFAULT '1234'`);
+    }
+
+    const userCount = (db.prepare('SELECT COUNT(*) as c FROM users WHERE is_active = 1').get() as any)?.c || 0;
+    if (userCount === 0) {
+      console.log('[DB] Seeding default cooperative user accounts...');
+      const hashedAdmin = bcrypt.hashSync('admin123', 10);
+      const hashedKasir = bcrypt.hashSync('kasir123', 10);
+
+      db.prepare(`
+        INSERT OR REPLACE INTO users (id, name, email, password, pin, role, is_active, created_at, updated_at)
+        VALUES ('user-owner-1', 'Pengelola Koperasi', 'admin@koperasi.local', ?, '1234', 'owner', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `).run(hashedAdmin);
+
+      db.prepare(`
+        INSERT OR REPLACE INTO users (id, name, email, password, pin, role, is_active, created_at, updated_at)
+        VALUES ('user-cashier-1', 'Kasir Utama', 'kasir@koperasi.local', ?, '1234', 'cashier', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `).run(hashedKasir);
+
+      db.prepare(`
+        INSERT OR REPLACE INTO users (id, name, email, password, pin, role, is_active, created_at, updated_at)
+        VALUES ('user-manager-1', 'Manajer Operasional', 'manager@koperasi.local', ?, '1234', 'manager', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `).run(hashedAdmin);
+    }
+  } catch (err: any) {
+    console.warn('[DB] User self-healing notice:', err.message);
+  }
+
   // Ensure default country/currency are IDR/Rp/ID for POS Koperasi (non-destructive)
   try {
     db.prepare(`
