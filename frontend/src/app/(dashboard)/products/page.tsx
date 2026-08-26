@@ -5,10 +5,12 @@ import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2, X, Package, Folder, Puzzle, FileSpreadsheet, Download, Upload, CheckCircle, AlertCircle, AlertTriangle, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Package, Folder, Puzzle, FileSpreadsheet, Download, Upload, CheckCircle, AlertCircle, AlertTriangle, Search, Boxes, History } from 'lucide-react';
 import type { Product, Category, AddonGroup } from '@/lib/types';
 import TagBadge, { tagLabel } from '@/components/pos/DietaryBadge';
 import ImageUploader from '@/components/products/ImageUploader';
+import BulkStockWorkspace from '@/components/products/BulkStockWorkspace';
+import StockHistoryTable from '@/components/products/StockHistoryTable';
 import { getCurrencySymbol, getCountryByCode } from '@/lib/countries';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
 import { useConfirm } from '@/hooks/use-confirm';
@@ -75,7 +77,7 @@ function parseTagsArray(tags: any): string[] {
   return [];
 }
 
-type TabType = 'products' | 'categories' | 'addons';
+type TabType = 'products' | 'categories' | 'stock_management' | 'stock_history' | 'addons';
 
 export default function ProductsPage() {
   const { t } = useI18n();
@@ -472,14 +474,20 @@ export default function ProductsPage() {
       </div>
 
       <div className="flex gap-1 mb-6 border-b">
-        <button onClick={() => setActiveTab('products')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'products' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+        <button onClick={() => setActiveTab('products')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'products' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <Package size={16} /> {t('products.tabProducts')}
         </button>
-        <button onClick={() => setActiveTab('categories')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'categories' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+        <button onClick={() => setActiveTab('categories')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'categories' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <Folder size={16} /> {t('products.tabCategories')}
         </button>
+        <button onClick={() => setActiveTab('stock_management')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 -mb-px transition-colors ${activeTab === 'stock_management' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          <Boxes size={16} /> Stok & Opname
+        </button>
+        <button onClick={() => setActiveTab('stock_history')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'stock_history' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          <History size={16} /> Riwayat Mutasi
+        </button>
         {isRestaurant && (
-          <button onClick={() => setActiveTab('addons')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'addons' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          <button onClick={() => setActiveTab('addons')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'addons' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
             <Puzzle size={16} /> {t('products.tabAddonGroups')}
           </button>
         )}
@@ -1168,6 +1176,19 @@ export default function ProductsPage() {
             </div>
           )}
         </>
+      )}
+
+      {activeTab === 'stock_management' && (
+        <BulkStockWorkspace
+          products={products}
+          onSuccess={() => {
+            fetchData();
+          }}
+        />
+      )}
+
+      {activeTab === 'stock_history' && (
+        <StockHistoryTable />
       )}
 
       {showCsvModal && (

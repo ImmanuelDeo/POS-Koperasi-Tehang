@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase } from '../db';
-import { executeStockMovement, parseIntegerRupiah } from '../services/cooperative';
+import { executeStockMovement, executeBulkStockMovement, parseIntegerRupiah } from '../services/cooperative';
 import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
@@ -212,6 +212,43 @@ router.post('/adjust', (req: AuthenticatedRequest, res: Response) => {
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ── POST /api/stock-movements/bulk ───────────────────────────────────────────
+// Process atomic batch of stock receiving, adjustment, or stock opname
+router.post('/bulk', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const db = getDatabase();
+    const userId = req.user?.id || 'system';
+    const userRole = req.user?.role || 'admin';
+
+    const result = executeBulkStockMovement(db, req.body, userId, userRole);
+
+    if (!result.success) {
+      if (result.status_code === 409) {
+        return res.status(409).json({
+          error: result.error,
+          conflict_item: result.conflict_item,
+        });
+      }
+      return res.status(result.status_code || 422).json({
+        error: result.error,
+      });
+    }
+
+    return res.status(201).json({
+      message: `Batch mutasi stok (${result.mode}) berhasil diproses`,
+      batch_id: result.batch_id,
+      mode: result.mode,
+      batch_reference: result.batch_reference,
+      total_items: result.total_items,
+      total_quantity_in: result.total_quantity_in,
+      total_quantity_out: result.total_quantity_out,
+      updated_products: result.updated_products,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Gagal memproses batch mutasi stok.' });
   }
 });
 
