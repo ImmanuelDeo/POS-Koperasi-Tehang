@@ -70,6 +70,22 @@ export function startServer(): Promise<void> {
       next();
     });
 
+    // ── Multipart Raw Buffer Capture ───────────────────────────────────
+    app.use((req: Request, _res: Response, next: NextFunction) => {
+      const contentType = req.headers['content-type'] || '';
+      if (contentType.includes('multipart/form-data')) {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        req.on('end', () => {
+          (req as any).rawBody = Buffer.concat(chunks);
+          next();
+        });
+        req.on('error', (err) => next(err));
+      } else {
+        next();
+      }
+    });
+
     app.use(express.json({ limit: '50mb' }));
     app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 

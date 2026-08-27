@@ -2,7 +2,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { getDatabase, now } from '../db';
+import { getDatabase, now, getUserDataDirectory } from '../db';
 import { maskNik } from '../services/privacy';
 
 export interface PrinterInfo {
@@ -372,20 +372,29 @@ export function getReceiptLogoRasterBuffer(settings: Record<string, string> = {}
       return logoRasterCache.get(sizeProfile) || null;
     }
 
-    // 2. Locate official logo from internal whitelist paths
-    const candidatePaths = [
-      path.join(__dirname, '..', '..', 'assets', 'logo_makin-group.png'),
-      path.join(__dirname, '..', 'assets', 'logo_makin-group.png'),
-      path.join(__dirname, '..', '..', 'frontend', 'public', 'logo.png'),
-      path.join(process.cwd(), 'assets', 'logo_makin-group.png'),
-      path.join(process.cwd(), 'frontend', 'public', 'logo.png'),
-    ];
-
+    // 2. Locate official logo: first check custom uploaded logo in userData/branding, then fallback to candidate paths
     let logoPath = '';
-    for (const p of candidatePaths) {
-      if (fs.existsSync(p)) {
-        logoPath = p;
-        break;
+    if (settings.logo_path && settings.logo_path.trim().length > 0) {
+      const customPath = path.join(getUserDataDirectory(), 'branding', settings.logo_path.trim());
+      if (fs.existsSync(customPath)) {
+        logoPath = customPath;
+      }
+    }
+
+    if (!logoPath) {
+      const candidatePaths = [
+        path.join(__dirname, '..', '..', 'assets', 'logo_makin-group.png'),
+        path.join(__dirname, '..', 'assets', 'logo_makin-group.png'),
+        path.join(__dirname, '..', '..', 'frontend', 'public', 'logo.png'),
+        path.join(process.cwd(), 'assets', 'logo_makin-group.png'),
+        path.join(process.cwd(), 'frontend', 'public', 'logo.png'),
+      ];
+
+      for (const p of candidatePaths) {
+        if (fs.existsSync(p)) {
+          logoPath = p;
+          break;
+        }
       }
     }
 
@@ -599,9 +608,11 @@ export function generateKoperasiReceipt(
   const sepBar = '='.repeat(cols);
   const dashBar = '-'.repeat(cols);
 
-  const bizName = settings.business_name || 'Koperasi';
+  const bizName = settings.business_name || 'POS Koperasi';
   const bizAddress = settings.business_address || settings.address || '';
   const bizPhone = settings.business_phone || settings.phone || '';
+  const showAddress = settings.bill_show_address !== 'false';
+  const showPhone = settings.bill_show_phone !== 'false';
 
   const billNumber = bill?.bill_number || order?.order_number || 'BILL-' + Date.now();
   const createdAt = bill?.created_at || order?.created_at || new Date();
@@ -620,12 +631,12 @@ export function generateKoperasiReceipt(
   }
 
   lines.push('{CENTER}{BOLD}' + bizName.toUpperCase() + '{/BOLD}{/CENTER}');
-  if (bizAddress) {
+  if (showAddress && bizAddress) {
     for (const l of wrapText(bizAddress, cols)) {
       lines.push('{CENTER}' + l + '{/CENTER}');
     }
   }
-  if (bizPhone) {
+  if (showPhone && bizPhone) {
     lines.push('{CENTER}Telp: ' + bizPhone + '{/CENTER}');
   }
   lines.push(sepBar);
@@ -718,10 +729,21 @@ export function generateKoperasiReceipt(
     lines.push(sepBar);
   }
 
-  lines.push('{CENTER}Terima kasih atas kunjungan{/CENTER}');
-  lines.push('{CENTER}di ' + bizName + '{/CENTER}');
-  lines.push('{CENTER}Barang yang dibeli tidak dapat{/CENTER}');
-  lines.push('{CENTER}ditukar / dikembalikan{/CENTER}');
+  const footerText = settings.receipt_footer_text ? settings.receipt_footer_text.trim() : ('Terima kasih atas kunjungan anda di ' + bizName);
+  const returnPolicy = settings.receipt_return_policy_text ? settings.receipt_return_policy_text.trim() : 'Barang yang dibeli tidak dapat ditukar / dikembalikan';
+
+  if (footerText) {
+    for (const fl of wrapText(footerText, cols)) {
+      lines.push('{CENTER}' + fl + '{/CENTER}');
+    }
+  }
+
+  if (returnPolicy) {
+    for (const rp of wrapText(returnPolicy, cols)) {
+      lines.push('{CENTER}' + rp + '{/CENTER}');
+    }
+  }
+
   lines.push('{CENTER}Simpan struk sbg bukti yg sah{/CENTER}');
   lines.push(dashBar);
 

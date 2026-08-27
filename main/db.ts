@@ -13,19 +13,24 @@ function usesElectronUserDataPath(): boolean {
   return Boolean(app?.isPackaged) || Boolean(process.env.FLO_USER_DATA_DIR?.trim());
 }
 
-export function getDbPath(): string {
-  const userDataPath = usesElectronUserDataPath() && app?.getPath
-    ? app.getPath('userData')
-    : path.join(__dirname, '../');
+export function getUserDataDirectory(): string {
+  if (process.env.FLO_USER_DATA_DIR?.trim()) {
+    return path.resolve(process.env.FLO_USER_DATA_DIR.trim());
+  }
+  if (usesElectronUserDataPath() && app?.getPath) {
+    try {
+      return app.getPath('userData');
+    } catch {}
+  }
+  return path.join(__dirname, '../');
+}
 
-  return path.join(userDataPath, 'flo.db');
+export function getDbPath(): string {
+  return path.join(getUserDataDirectory(), 'flo.db');
 }
 
 function getBackupDir(): string {
-  const userDataPath = usesElectronUserDataPath() && app?.getPath
-    ? app.getPath('userData')
-    : path.join(__dirname, '../');
-  return path.join(userDataPath, 'backups');
+  return path.join(getUserDataDirectory(), 'backups');
 }
 
 export function initDatabase(): void {

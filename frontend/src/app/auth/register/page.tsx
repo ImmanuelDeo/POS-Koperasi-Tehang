@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/store/auth';
@@ -16,6 +16,24 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [branding, setBranding] = useState({
+    business_name: 'POS Koperasi',
+    logo_url: '/api/settings/logo',
+  });
+
+  useEffect(() => {
+    fetch('/api/settings/public')
+      .then(r => r.json())
+      .then(data => {
+        if (data.business_name) {
+          setBranding({
+            business_name: data.business_name,
+            logo_url: data.logo_url || '/api/settings/logo',
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const [form, setForm] = useState({
     name: '',
@@ -24,7 +42,7 @@ export default function RegisterPage() {
     password_confirmation: '',
     business_name: '',
     business_type: 'restaurant',
-    country: 'IN',
+    country: 'ID',
   });
   const passwordsEntered = form.password.length > 0 && form.password_confirmation.length > 0;
   const passwordsMatch = !passwordsEntered || form.password === form.password_confirmation;
@@ -67,8 +85,16 @@ export default function RegisterPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4 py-12">
       <div className="w-full max-w-lg">
         <div className="text-center mb-8">
-          <img src="/logo.png" alt="Logo POS Koperasi" width={220} height={55} className="h-14 w-auto mx-auto mb-3 object-contain" />
-          <p className="text-gray-500 mt-2">{t('auth.registerSubtitle')}</p>
+          <img
+            src={branding.logo_url}
+            onError={(e) => { e.currentTarget.src = '/logo.png'; }}
+            alt={branding.business_name}
+            width={220}
+            height={55}
+            className="h-14 w-auto mx-auto mb-3 object-contain"
+          />
+          <h1 className="text-xl font-bold text-gray-900">{branding.business_name}</h1>
+          <p className="text-gray-500 mt-1 text-xs">{t('auth.registerSubtitle')}</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-lg p-8">

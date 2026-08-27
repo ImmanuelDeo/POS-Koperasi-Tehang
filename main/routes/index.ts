@@ -14,7 +14,7 @@ import { memberRoutes } from './members';
 import { stockMovementRoutes } from './stock-movements';
 import { salaryDeductionRoutes } from './salary-deductions';
 import { staffRoutes } from './staff';
-import { settingsRoutes } from './settings';
+import { settingsRoutes, serveCooperativeLogo } from './settings';
 import { reportRoutes } from './reports';
 import { dashboardRoutes } from './dashboard';
 import { kdsRoutes } from './kds';
@@ -220,6 +220,29 @@ export function registerRoutes(app: Express): void {
     }),
     staffRoutes
   );
+
+  // Public settings routes (accessible on unauthenticated login/register screens)
+  app.get('/api/settings/public', (_req, res) => {
+    try {
+      const db = getDatabase();
+      const rows = db.prepare("SELECT key, value FROM settings WHERE key IN ('business_name', 'business_address', 'business_phone', 'business_email', 'logo_path')").all() as { key: string; value: string }[];
+      const s: Record<string, string> = Object.fromEntries(rows.map(r => [r.key, r.value]));
+      res.json({
+        business_name: s.business_name || 'POS Koperasi',
+        business_address: s.business_address || '',
+        business_phone: s.business_phone || '',
+        business_email: s.business_email || '',
+        logo_url: '/api/settings/logo',
+        has_custom_logo: Boolean(s.logo_path && s.logo_path.trim().length > 0),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/settings/logo', (_req, res) => {
+    serveCooperativeLogo(res);
+  });
 
   // Settings are restricted to owner and admin only
   app.use(

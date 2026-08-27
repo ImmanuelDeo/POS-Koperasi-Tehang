@@ -20,6 +20,11 @@ export interface Tenant {
   timezone: string;
   plan: string;
   status: string;
+  business_address?: string;
+  business_phone?: string;
+  business_email?: string;
+  logo_url?: string;
+  logo_path?: string;
   role?: string;
   language?: 'id' | 'en' | 'es';
 }

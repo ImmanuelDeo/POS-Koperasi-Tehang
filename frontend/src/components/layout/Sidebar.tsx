@@ -110,15 +110,18 @@ export default function AppSidebar() {
             <SidebarMenuButton size="lg" asChild>
               <Link href={homeHref}>
                 <div className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-md bg-white/90 p-0.5 overflow-hidden shadow-xs border border-gray-200/60">
-                  <img src="/logo.png" alt={t('common.logoAlt')} className="w-full h-full object-contain" />
+                  <img
+                    src={currentTenant?.logo_url || '/api/settings/logo'}
+                    onError={(e) => { e.currentTarget.src = '/logo.png'; }}
+                    alt={t('common.logoAlt')}
+                    className="w-full h-full object-contain"
+                  />
                 </div>
                 <div className="flex flex-col gap-0.5 min-w-0 leading-none">
                   <span className="font-semibold truncate">{currentTenant?.business_name || t('common.brandName')}</span>
-                  {currentTenant && (
-                    <span className="text-xs text-muted-foreground truncate">
-                      {currentTenant.business_name}
-                    </span>
-                  )}
+                  <span className="text-xs text-muted-foreground truncate">
+                    {currentTenant?.business_address || 'Sistem Kasir Koperasi'}
+                  </span>
                 </div>
               </Link>
             </SidebarMenuButton>

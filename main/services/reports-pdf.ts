@@ -82,6 +82,9 @@ export interface SalaryDeductionReportItem {
 
 export interface SalaryDeductionRekapReportData {
   businessName: string;
+  businessAddress?: string;
+  businessPhone?: string;
+  reportHeaderTitle?: string;
   startDate: string;
   endDate: string;
   statusFilter: string;
@@ -93,6 +96,9 @@ export interface SalaryDeductionRekapReportData {
 
 export interface MemberSalaryDeductionReportData {
   businessName: string;
+  businessAddress?: string;
+  businessPhone?: string;
+  reportHeaderTitle?: string;
   member: {
     id: string;
     name: string;
@@ -241,14 +247,14 @@ export async function generateSalaryDeductionsRekapPdf(data: SalaryDeductionReka
             width: '*',
             stack: [
               { text: data.businessName || 'POS KOPERASI', fontSize: 14, bold: true, color: '#0F766E' },
-              { text: 'Sistem Manajemen Koperasi & Kasir Sembako', fontSize: 9, color: '#4B5563', margin: [0, 2, 0, 0] },
+              { text: data.businessAddress ? (data.businessAddress + (data.businessPhone ? ` • Telp: ${data.businessPhone}` : '')) : 'Sistem Manajemen Koperasi & Kasir Sembako', fontSize: 9, color: '#4B5563', margin: [0, 2, 0, 0] },
             ],
           },
           {
             width: 'auto',
             alignment: 'right',
             stack: [
-              { text: 'REKAPITULASI TRANSAKSI POTONG GAJI', fontSize: 13, bold: true, color: '#111827' },
+              { text: data.reportHeaderTitle || 'REKAPITULASI TRANSAKSI POTONG GAJI', fontSize: 13, bold: true, color: '#111827' },
               {
                 text: `Periode: ${formatDateIndo(data.startDate)} s/d ${formatDateIndo(data.endDate)}`,
                 fontSize: 9,
@@ -458,7 +464,7 @@ export async function generateMemberSalaryDeductionPdf(data: MemberSalaryDeducti
             width: '*',
             stack: [
               { text: data.businessName || 'POS KOPERASI', fontSize: 13, bold: true, color: '#0F766E' },
-              { text: 'Laporan Bon Belanja Potong Gaji Karyawan', fontSize: 9, color: '#4B5563', margin: [0, 2, 0, 0] },
+              { text: data.businessAddress ? (data.businessAddress + (data.businessPhone ? ` • Telp: ${data.businessPhone}` : '')) : 'Laporan Bon Belanja Potong Gaji Karyawan', fontSize: 9, color: '#4B5563', margin: [0, 2, 0, 0] },
             ],
           },
           {

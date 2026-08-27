@@ -20,18 +20,23 @@ function buildLocalTenant(db: ReturnType<typeof getDatabase>, userRole: string) 
 
   return {
     id: 1,
-    business_name:  s.business_name  || 'POS Koperasi',
-    slug:           'local',
-    database_name:  'local',
-    business_type:  s.business_type  || 'restaurant',
-    country:        s.country        || 'ID',
-    currency:       s.currency       || 'IDR',
+    business_name:   s.business_name   || 'POS Koperasi',
+    business_address: s.business_address || '',
+    business_phone:  s.business_phone  || '',
+    business_email:  s.business_email  || '',
+    logo_path:       s.logo_path       || '',
+    logo_url:        '/api/settings/logo',
+    slug:            'local',
+    database_name:   'local',
+    business_type:   s.business_type   || 'restaurant',
+    country:         s.country         || 'ID',
+    currency:        s.currency        || 'IDR',
     currency_symbol: s.currency_symbol || 'Rp',
-    timezone:       s.timezone       || 'Asia/Jakarta',
-    language:       s.language       || 'id',
-    plan:           'desktop',
-    status:         'active',
-    role:           userRole,  // user's role — AuthGuard uses this for routing
+    timezone:        s.timezone        || 'Asia/Jakarta',
+    language:        s.language        || 'id',
+    plan:            'desktop',
+    status:          'active',
+    role:            userRole,  // user's role — AuthGuard uses this for routing
   };
 }
 

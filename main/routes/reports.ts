@@ -371,8 +371,12 @@ router.get(
       const db = getDatabase();
       const { from_date, to_date, period_month, status, member_id } = req.query;
 
-      const businessNameRow = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
-      const businessName = businessNameRow?.value || 'POS Koperasi';
+      const settingsRows = db.prepare("SELECT key, value FROM settings WHERE key IN ('business_name', 'business_address', 'business_phone', 'report_header_title')").all() as { key: string; value: string }[];
+      const sMap: Record<string, string> = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
+      const businessName = sMap.business_name || 'POS Koperasi';
+      const businessAddress = sMap.business_address || '';
+      const businessPhone = sMap.business_phone || '';
+      const reportHeaderTitle = sMap.report_header_title || 'REKAPITULASI TRANSAKSI POTONG GAJI';
 
       let query = `
         SELECT
@@ -448,6 +452,9 @@ router.get(
 
       const pdfBuffer = await generateSalaryDeductionsRekapPdf({
         businessName,
+        businessAddress,
+        businessPhone,
+        reportHeaderTitle,
         startDate,
         endDate,
         statusFilter: (status as string) || 'all',
@@ -504,8 +511,12 @@ router.get(
         return res.status(404).json({ error: 'Anggota koperasi tidak ditemukan' });
       }
 
-      const businessNameRow = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
-      const businessName = businessNameRow?.value || 'POS Koperasi';
+      const settingsRows = db.prepare("SELECT key, value FROM settings WHERE key IN ('business_name', 'business_address', 'business_phone', 'report_header_title')").all() as { key: string; value: string }[];
+      const sMap: Record<string, string> = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
+      const businessName = sMap.business_name || 'POS Koperasi';
+      const businessAddress = sMap.business_address || '';
+      const businessPhone = sMap.business_phone || '';
+      const reportHeaderTitle = sMap.report_header_title || 'RINCIAN BON POTONG GAJI ANGGOTA';
 
       let query = `
         SELECT
@@ -572,6 +583,9 @@ router.get(
 
       const pdfBuffer = await generateMemberSalaryDeductionPdf({
         businessName,
+        businessAddress,
+        businessPhone,
+        reportHeaderTitle,
         member: {
           id: member.id,
           name: member.name,

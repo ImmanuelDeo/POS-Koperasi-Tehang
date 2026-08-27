@@ -26,8 +26,24 @@ function LoginContent() {
   const [dbError, setDbError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [branding, setBranding] = useState({
+    business_name: 'POS Koperasi',
+    logo_url: '/api/settings/logo',
+  });
 
   useEffect(() => {
+    fetch('/api/settings/public')
+      .then(r => r.json())
+      .then(data => {
+        if (data.business_name) {
+          setBranding({
+            business_name: data.business_name,
+            logo_url: data.logo_url || '/api/settings/logo',
+          });
+        }
+      })
+      .catch(() => {});
+
     fetch('/api/auth/setup/status')
       .then(r => r.json())
       .then(data => {
@@ -151,8 +167,16 @@ function LoginContent() {
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <img src="/logo.png" alt="Logo POS Koperasi" width={220} height={55} className="h-14 w-auto mx-auto mb-3 object-contain" />
-          <p className="text-muted-foreground mt-2">{t('auth.signInTitle')}</p>
+          <img
+            src={branding.logo_url}
+            onError={(e) => { e.currentTarget.src = '/logo.png'; }}
+            alt={branding.business_name}
+            width={220}
+            height={55}
+            className="h-14 w-auto mx-auto mb-3 object-contain"
+          />
+          <h1 className="text-xl font-bold text-gray-900">{branding.business_name}</h1>
+          <p className="text-muted-foreground mt-1 text-xs">{t('auth.signInTitle')}</p>
         </div>
         {dbError && (
           <div className="mb-4 rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">

@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { useAuthStore } from '@/store/auth';
 import { usePosSettingsStore, type PaperSize, type BillTemplate } from '@/store/pos-settings';
 import { usePrinterStore, usePrinterStatusSync } from '@/hooks/usePrinter';
-import { Settings, Building2, CreditCard, Monitor, Users, Gift, Printer, Share2, FileText, Lock, Smartphone, RefreshCw, Copy, Check, Wifi, Usb, Trash2, Plus, Star, TestTube2, ChefHat, QrCode, CheckCircle2, Database, Cloud, CloudOff, Zap, Percent, KeyRound, AlertTriangle, Wrench, HardDrive, UploadCloud } from 'lucide-react';
+import { Settings, Building2, CreditCard, Monitor, Users, Gift, Printer, Share2, FileText, Lock, Smartphone, RefreshCw, Copy, Check, Wifi, Usb, Trash2, Plus, Star, TestTube2, ChefHat, QrCode, CheckCircle2, Database, Cloud, CloudOff, Zap, Percent, KeyRound, AlertTriangle, Wrench, HardDrive, UploadCloud, Upload, Image as ImageIcon } from 'lucide-react';
 import { Tabs, TabsContent } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -993,18 +993,37 @@ export default function SettingsPage() {
     billingType: 'postpaid' | 'prepaid';
     tablesRequired: boolean;
     taxRegistered: boolean;
-    gstin: string; businessAddress: string; businessPhone: string; instagramHandle: string;
+    gstin: string; businessAddress: string; businessPhone: string; businessEmail: string; instagramHandle: string;
     billShowName: boolean; billShowAddress: boolean; billShowPhone: boolean; billShowGstn: boolean;
+    receiptLogoEnabled: boolean;
+    receiptLogoSize: 'small' | 'standard' | 'large';
+    receiptFooterText: string;
+    receiptReturnPolicyText: string;
+    reportHeaderTitle: string;
+    reportShowContact: boolean;
   };
   const [savedBusiness, setSavedBusiness] = useState<BusinessForm>({
     businessName: '', countryCode: '', timezone: '', currency: '', billingType: 'postpaid',
     tablesRequired: true,
     taxRegistered: false,
-    gstin: '', businessAddress: '', businessPhone: '', instagramHandle: '',
+    gstin: '', businessAddress: '', businessPhone: '', businessEmail: '', instagramHandle: '',
     billShowName: true, billShowAddress: true, billShowPhone: true, billShowGstn: false,
+    receiptLogoEnabled: true,
+    receiptLogoSize: 'standard',
+    receiptFooterText: 'Terima kasih atas kunjungan anda',
+    receiptReturnPolicyText: 'Barang yang dibeli tidak dapat ditukar/dikembalikan',
+    reportHeaderTitle: 'Laporan Rekapitulasi Potong Gaji',
+    reportShowContact: true,
   });
   const [form, setForm] = useState<BusinessForm>(savedBusiness);
   const [savingBusiness, setSavingBusiness] = useState(false);
+
+  // Logo upload state
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [hasCustomLogo, setHasCustomLogo] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [deletingLogo, setDeletingLogo] = useState(false);
 
   // Payment Method Settings (QRIS & Bank Account)
   const [paymentSettings, setPaymentSettings] = useState({
@@ -1099,11 +1118,18 @@ export default function SettingsPage() {
         gstin: d.gstin || '',
         businessAddress: d.business_address || '',
         businessPhone: d.business_phone || '',
+        businessEmail: d.business_email || '',
         instagramHandle: d.instagram_handle || '',
         billShowName: typeof d.bill_show_name === 'boolean' ? d.bill_show_name : true,
         billShowAddress: typeof d.bill_show_address === 'boolean' ? d.bill_show_address : true,
         billShowPhone: typeof d.bill_show_phone === 'boolean' ? d.bill_show_phone : true,
         billShowGstn: typeof d.bill_show_gstn === 'boolean' ? d.bill_show_gstn : false,
+        receiptLogoEnabled: d.receipt_logo_enabled !== false && d.receipt_logo_enabled !== 'false',
+        receiptLogoSize: (d.receipt_logo_size === 'small' || d.receipt_logo_size === 'large') ? d.receipt_logo_size : 'standard',
+        receiptFooterText: d.receipt_footer_text || 'Terima kasih atas kunjungan anda',
+        receiptReturnPolicyText: d.receipt_return_policy_text || 'Barang yang dibeli tidak dapat ditukar/dikembalikan',
+        reportHeaderTitle: d.report_header_title || 'Laporan Rekapitulasi Potong Gaji',
+        reportShowContact: d.report_show_contact !== false && d.report_show_contact !== 'false',
       };
       setSavedBusiness(loaded);
       setForm(loaded);
@@ -1241,19 +1267,29 @@ export default function SettingsPage() {
         gstin: d.gstin || '',
         businessAddress: d.business_address || '',
         businessPhone: d.business_phone || '',
+        businessEmail: d.business_email || '',
         instagramHandle: d.instagram_handle || '',
         billShowName: typeof d.bill_show_name === 'boolean' ? d.bill_show_name : true,
         billShowAddress: typeof d.bill_show_address === 'boolean' ? d.bill_show_address : true,
         billShowPhone: typeof d.bill_show_phone === 'boolean' ? d.bill_show_phone : true,
         billShowGstn: typeof d.bill_show_gstn === 'boolean' ? d.bill_show_gstn : false,
+        receiptLogoEnabled: d.receipt_logo_enabled !== false && d.receipt_logo_enabled !== 'false',
+        receiptLogoSize: (d.receipt_logo_size === 'small' || d.receipt_logo_size === 'large') ? d.receipt_logo_size : 'standard',
+        receiptFooterText: d.receipt_footer_text || 'Terima kasih atas kunjungan anda',
+        receiptReturnPolicyText: d.receipt_return_policy_text || 'Barang yang dibeli tidak dapat ditukar/dikembalikan',
+        reportHeaderTitle: d.report_header_title || 'Laporan Rekapitulasi Potong Gaji',
+        reportShowContact: d.report_show_contact !== false && d.report_show_contact !== 'false',
       };
       setSavedBusiness(loaded);
       setForm(loaded);
+      setHasCustomLogo(Boolean(d.logo_path && String(d.logo_path).trim().length > 0));
       // Sync to pos-settings store for bill printing
       posSettings.setBillShowName(loaded.billShowName);
       posSettings.setBillShowAddress(loaded.billShowAddress);
       posSettings.setBillShowPhone(loaded.billShowPhone);
       posSettings.setBillShowGstn(loaded.billShowGstn);
+      posSettings.setReceiptLogoEnabled(loaded.receiptLogoEnabled);
+      posSettings.setReceiptLogoSize(loaded.receiptLogoSize);
       if (d.gstin) posSettings.setBillGstin(d.gstin);
       if (d.business_address) posSettings.setBillAddress(d.business_address);
       if (d.business_phone) posSettings.setBillPhone(d.business_phone);
@@ -1505,8 +1541,38 @@ export default function SettingsPage() {
 
   const saveBusinessInfo = async (silent = false) => {
     const phone = form.businessPhone.trim();
-    if (phone && !/^\+?[\d\s\-().]{7,20}$/.test(phone)) {
-      toast.error(t('settings.invalidPhoneFormat', { defaultValue: 'Invalid phone number format' }));
+    if (phone && !/^\+?[\d\s\-().]{7,25}$/.test(phone)) {
+      toast.error('Format nomor telepon tidak valid');
+      return;
+    }
+
+    if (form.businessName.trim().length > 60) {
+      toast.error('Nama koperasi maksimal 60 karakter');
+      return;
+    }
+
+    if (form.businessAddress.trim().length > 150) {
+      toast.error('Alamat koperasi maksimal 150 karakter');
+      return;
+    }
+
+    if (form.businessEmail.trim().length > 50) {
+      toast.error('Email koperasi maksimal 50 karakter');
+      return;
+    }
+
+    if (form.receiptFooterText.trim().length > 100) {
+      toast.error('Teks ucapan terima kasih maksimal 100 karakter');
+      return;
+    }
+
+    if (form.receiptReturnPolicyText.trim().length > 120) {
+      toast.error('Teks kebijakan retur maksimal 120 karakter');
+      return;
+    }
+
+    if (form.reportHeaderTitle.trim().length > 80) {
+      toast.error('Judul laporan PDF maksimal 80 karakter');
       return;
     }
 
@@ -1523,11 +1589,18 @@ export default function SettingsPage() {
         gstin: form.gstin,
         business_address: form.businessAddress,
         business_phone: form.businessPhone,
+        business_email: form.businessEmail,
         instagram_handle: form.instagramHandle,
         bill_show_name: form.billShowName,
         bill_show_address: form.billShowAddress,
         bill_show_phone: form.billShowPhone,
         bill_show_gstn: form.billShowGstn,
+        receipt_logo_enabled: form.receiptLogoEnabled,
+        receipt_logo_size: form.receiptLogoSize,
+        receipt_footer_text: form.receiptFooterText,
+        receipt_return_policy_text: form.receiptReturnPolicyText,
+        report_header_title: form.reportHeaderTitle,
+        report_show_contact: form.reportShowContact,
       });
       setSavedBusiness(form);
       posSettings.setBillGstin(form.gstin);
@@ -1537,15 +1610,91 @@ export default function SettingsPage() {
       posSettings.setBillShowAddress(form.billShowAddress);
       posSettings.setBillShowPhone(form.billShowPhone);
       posSettings.setBillShowGstn(form.billShowGstn);
+      posSettings.setReceiptLogoEnabled(form.receiptLogoEnabled);
+      posSettings.setReceiptLogoSize(form.receiptLogoSize);
       posSettings.setBillingType(form.billingType);
       posSettings.setTablesRequired(form.tablesRequired);
-      updateCurrentTenant({ currency: form.currency, timezone: form.timezone, country: form.countryCode });
-      if (!silent) toast.success(t('settings.storeSaved'));
-    } catch (err) {
-      if (!silent) toast.error(t('settings.saveFailed'));
+      updateCurrentTenant({
+        business_name: form.businessName,
+        business_address: form.businessAddress,
+        business_phone: form.businessPhone,
+        business_email: form.businessEmail,
+        currency: form.currency,
+        timezone: form.timezone,
+        country: form.countryCode,
+      });
+      if (!silent) toast.success('Identitas Koperasi & Format Struk berhasil disimpan');
+    } catch (err: any) {
+      if (!silent) toast.error(err?.response?.data?.error || t('settings.saveFailed'));
       throw err;
     } finally {
       setSavingBusiness(false);
+    }
+  };
+
+  const handleLogoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.type !== 'image/png' && file.type !== 'image/jpeg' && file.type !== 'image/jpg') {
+      toast.error('Hanya format PNG atau JPG/JPEG yang diperbolehkan (SVG tidak didukung)');
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('Ukuran file maksimal 2MB');
+      return;
+    }
+
+    setLogoFile(file);
+    setLogoPreview(URL.createObjectURL(file));
+  };
+
+  const handleUploadLogo = async () => {
+    if (!logoFile) {
+      toast.error('Pilih file gambar logo terlebih dahulu');
+      return;
+    }
+
+    setUploadingLogo(true);
+    const formData = new FormData();
+    formData.append('logo', logoFile);
+
+    try {
+      await api.post('/settings/logo', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success('Logo koperasi berhasil diunggah!');
+      setHasCustomLogo(true);
+      setLogoFile(null);
+      setLogoPreview(null);
+      updateCurrentTenant({ logo_url: `/api/settings/logo?t=${Date.now()}` });
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Gagal mengunggah logo');
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
+  const handleDeleteLogo = async () => {
+    const ok = await confirm('Kembalikan ke logo default bawaan sistem?', {
+      confirmLabel: 'Hapus Logo Kustom',
+      destructive: true,
+    });
+    if (!ok) return;
+
+    setDeletingLogo(true);
+    try {
+      await api.delete('/settings/logo');
+      toast.success('Logo kustom dihapus, menggunakan logo bawaan');
+      setHasCustomLogo(false);
+      setLogoFile(null);
+      setLogoPreview(null);
+      updateCurrentTenant({ logo_url: `/api/settings/logo?t=${Date.now()}` });
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Gagal menghapus logo');
+    } finally {
+      setDeletingLogo(false);
     }
   };
 
@@ -1724,11 +1873,18 @@ export default function SettingsPage() {
 
         <TabsContent value="store">
           <div className="pb-6 max-w-3xl space-y-6">
-            {/* Store Details — editable for admin, readonly otherwise */}
-            <div className="lg:col-span-2 bg-white rounded-xl border border-gray-100 p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Building2 size={20} className="text-gray-500" />
-                <h2 className="font-semibold text-gray-900">{t('settings.storeDetails')}</h2>
+            {/* 1. Identitas Koperasi & Branding */}
+            <div className="bg-white rounded-xl border border-gray-100 p-6 space-y-6">
+              <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
+                <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-700 flex items-center justify-center font-bold">
+                  <Building2 size={18} />
+                </div>
+                <div>
+                  <h2 className="font-semibold text-gray-900">Identitas Koperasi & Branding</h2>
+                  <p className="text-xs text-gray-500">
+                    Konfigurasi nama koperasi, alamat kontak, dan logo resmi yang tampil di antarmuka serta struk.
+                  </p>
+                </div>
                 {!isAdmin && (
                   <span className="ml-auto flex items-center gap-1 text-xs text-gray-400">
                     <Lock size={12} /> {t('settings.adminOnly')}
@@ -1736,191 +1892,318 @@ export default function SettingsPage() {
                 )}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-gray-500 mb-1">{t('settings.businessName')}</label>
-                  {isAdmin ? (
-                    <input type="text" value={form.businessName} onChange={(e) => setForm((p) => ({ ...p, businessName: e.target.value }))}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
-                  ) : (
-                    <p className="font-medium text-gray-900">{form.businessName || currentTenant?.business_name}</p>
+              {/* Logo Upload & Preview Section */}
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+                    <ImageIcon size={16} className="text-teal-600" /> Logo Resmi Koperasi
+                  </span>
+                  {hasCustomLogo && (
+                    <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+                      Logo Kustom Aktif
+                    </span>
                   )}
                 </div>
-                {/* Country, Timezone, Currency in single line with individual headings */}
-                <div className="md:col-span-2 space-y-2">
-                  {/* Headings */}
-                  <div className="grid grid-cols-3 gap-2">
-                    <label className="text-sm text-gray-500">{t('settings.country')}</label>
-                    <label className="text-sm text-gray-500">{t('settings.timezone')}</label>
-                    <label className="text-sm text-gray-500">{t('settings.currency')}</label>
+
+                <div className="flex flex-col sm:flex-row items-center gap-5">
+                  <div className="relative w-32 h-20 bg-white rounded-lg border border-gray-200 p-2 flex items-center justify-center overflow-hidden shadow-xs shrink-0">
+                    <img
+                      src={logoPreview || '/api/settings/logo'}
+                      onError={(e) => { e.currentTarget.src = '/logo.png'; }}
+                      alt="Logo Koperasi"
+                      className="max-h-full max-w-full object-contain"
+                    />
                   </div>
-                  
-                  {/* Input fields */}
-                  {isAdmin ? (
-                    <div className="grid grid-cols-3 gap-2">
-                      <select
-                        value={form.countryCode}
-                        onChange={(e) => {
-                          const country = COUNTRIES.find(c => c.code === e.target.value);
-                          setForm((p) => ({
-                            ...p,
-                            countryCode: e.target.value,
-                            currency: country?.currency || p.currency,
-                            timezone: country?.timezone || p.timezone,
-                          }));
-                        }}
-                        aria-label={t('common.search')}
-                        className="px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white"
-                      >
-                        <option value="">{t('settings.selectCountry')}</option>
-                        {COUNTRIES.map((c) => (
-                          <option key={c.code} value={c.code}>{countryName(c.code)}</option>
-                        ))}
-                      </select>
-                      <input 
-                        type="text" 
-                        value={form.timezone} 
-                        onChange={(e) => setForm((p) => ({ ...p, timezone: e.target.value }))}
-                        placeholder={t('settings.timezoneAutoFilled')}
-                        className="px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-gray-50" 
-                        readOnly
-                      />
-                      <input 
-                        type="text" 
-                        value={form.currency} 
-                        onChange={(e) => setForm((p) => ({ ...p, currency: e.target.value }))}
-                        placeholder={t('settings.currencyAutoFilled')}
-                        className="px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-gray-50" 
-                        readOnly
-                      />
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-3 gap-2">
-                      <p className="font-medium text-gray-900">
-                        {form.countryCode ? countryName(form.countryCode) : '—'}
-                      </p>
-                      <p className="font-medium text-gray-900">
-                        {form.timezone || '—'}
-                      </p>
-                      <p className="font-medium text-gray-900">
-                        {form.currency || '—'}
-                      </p>
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-500 mb-1">{t('settings.billingType')}</label>
-                  {isAdmin ? (
-                    <select value={form.billingType}
-                      onChange={(e) => setForm((p) => ({ ...p, billingType: e.target.value as 'postpaid' | 'prepaid' }))}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white">
-                      <option value="postpaid">{t('settings.billingTypePostpaid')}</option>
-                      <option value="prepaid">{t('settings.billingTypePrepaid')}</option>
-                    </select>
-                  ) : (
-                    <p className="font-medium text-gray-900 capitalize">{form.billingType}</p>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-500 mb-1">{t('settings.tablesRequired')}</label>
-                  {isAdmin ? (
-                    <select
-                      value={form.tablesRequired ? 'yes' : 'no'}
-                      onChange={(e) => setForm((p) => ({ ...p, tablesRequired: e.target.value === 'yes' }))}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white"
-                    >
-                      <option value="yes">{t('settings.tablesRequiredYes')}</option>
-                      <option value="no">{t('settings.tablesRequiredNo')}</option>
-                    </select>
-                  ) : (
-                    <p className="font-medium text-gray-900">{form.tablesRequired ? t('settings.yes') : t('settings.no')}</p>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-sm text-gray-500 mb-1">{t('settings.taxRegistered', { defaultValue: 'Tax Registered' })}</label>
-                  {isAdmin ? (
-                    <select
-                      value={form.taxRegistered ? 'yes' : 'no'}
-                      onChange={(e) => setForm((p) => ({ ...p, taxRegistered: e.target.value === 'yes' }))}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand bg-white"
-                    >
-                      <option value="yes">{t('settings.yes')}</option>
-                      <option value="no">{t('settings.no')}</option>
-                    </select>
-                  ) : (
-                    <p className="font-medium text-gray-900">{form.taxRegistered ? t('settings.yes') : t('settings.no')}</p>
-                  )}
-                </div>
-                {form.taxRegistered ? (
-                  <div>
-                    <label className="block text-sm text-gray-500 mb-1">{t('settings.taxIdLabel')}</label>
-                    {isAdmin ? (
-                      <input type="text" value={form.gstin} onChange={(e) => setForm((p) => ({ ...p, gstin: e.target.value.toUpperCase() }))}
-                        placeholder={t('settings.taxIdPlaceholder')}
-                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
-                    ) : (
-                      <p className="font-medium text-gray-900">{form.gstin || '—'}</p>
+
+                  <div className="flex-1 space-y-2 text-center sm:text-left">
+                    <p className="text-xs text-gray-600 leading-relaxed">
+                      Format: <strong>PNG / JPG</strong> (SVG tidak didukung). Ukuran file maks <strong>2 MB</strong>. Resolusi 64x64 hingga 2048x2048 piksel.
+                    </p>
+
+                    {isAdmin && (
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 rounded-lg shadow-xs transition-colors">
+                          <Upload size={13} />
+                          <span>Pilih Gambar...</span>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg"
+                            className="hidden"
+                            onChange={handleLogoFileSelect}
+                          />
+                        </label>
+
+                        {logoFile && (
+                          <Button
+                            size="sm"
+                            onClick={handleUploadLogo}
+                            disabled={uploadingLogo}
+                            className="text-xs bg-teal-600 hover:bg-teal-700 text-white h-7 px-3"
+                          >
+                            {uploadingLogo ? 'Mengunggah...' : 'Simpan Logo'}
+                          </Button>
+                        )}
+
+                        {hasCustomLogo && !logoFile && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleDeleteLogo}
+                            disabled={deletingLogo}
+                            className="text-xs text-red-600 border-red-200 hover:bg-red-50 h-7 px-2.5"
+                          >
+                            <Trash2 size={12} className="mr-1" />
+                            {deletingLogo ? 'Menghapus...' : 'Reset Bawaan'}
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </div>
-                ) : <div className="hidden md:block" />}
-                <div>
-                  <label className="block text-sm text-gray-500 mb-1">{t('settings.phone')}</label>
+                </div>
+              </div>
+
+              {/* Form Input Identitas */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="md:col-span-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm text-gray-700 font-medium">{t('settings.businessName')}</label>
+                    <span className="text-xs text-gray-400">{form.businessName.length}/60</span>
+                  </div>
                   {isAdmin ? (
-                    <input type="text" value={form.businessPhone} onChange={(e) => setForm((p) => ({ ...p, businessPhone: e.target.value }))}
-                      placeholder={t('settings.phonePlaceholder', { dialCode: dialCodeFor(form.countryCode) || '+1', defaultValue: '+1 555 000 0000' })}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
+                    <input
+                      type="text"
+                      maxLength={60}
+                      value={form.businessName}
+                      onChange={(e) => setForm((p) => ({ ...p, businessName: e.target.value }))}
+                      placeholder="Contoh: Koperasi Karyawan Sejahtera"
+                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand font-medium"
+                    />
                   ) : (
-                    <p className="font-medium text-gray-900">{form.businessPhone || '—'}</p>
+                    <p className="font-medium text-gray-900">{form.businessName || 'POS Koperasi'}</p>
                   )}
                 </div>
+
                 <div className="md:col-span-2">
-                  <label className="block text-sm text-gray-500 mb-1">{t('settings.address')}</label>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm text-gray-700 font-medium">{t('settings.address')}</label>
+                    <span className="text-xs text-gray-400">{form.businessAddress.length}/150</span>
+                  </div>
                   {isAdmin ? (
-                    <textarea value={form.businessAddress} onChange={(e) => setForm((p) => ({ ...p, businessAddress: e.target.value }))}
-                      rows={2} placeholder={t('settings.addressPlaceholder')}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none" />
+                    <textarea
+                      maxLength={150}
+                      rows={2}
+                      value={form.businessAddress}
+                      onChange={(e) => setForm((p) => ({ ...p, businessAddress: e.target.value }))}
+                      placeholder="Contoh: Jl. Raya Perkebunan No. 1, Desa Tehang"
+                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
+                    />
                   ) : (
                     <p className="font-medium text-gray-900">{form.businessAddress || '—'}</p>
                   )}
                 </div>
+
                 <div>
-                  <label className="block text-sm text-gray-500 mb-1">{t('settings.instagramHandle')}</label>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm text-gray-700 font-medium">{t('settings.phone')}</label>
+                    <span className="text-xs text-gray-400">{form.businessPhone.length}/25</span>
+                  </div>
                   {isAdmin ? (
-                    <input type="text" value={form.instagramHandle} onChange={(e) => setForm((p) => ({ ...p, instagramHandle: e.target.value }))}
-                      placeholder={t('settings.instagramPlaceholder')}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand" />
+                    <input
+                      type="text"
+                      maxLength={25}
+                      value={form.businessPhone}
+                      onChange={(e) => setForm((p) => ({ ...p, businessPhone: e.target.value }))}
+                      placeholder="Contoh: +62 812-3456-7890"
+                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
+                    />
                   ) : (
-                    <p className="font-medium text-gray-900">{form.instagramHandle || '—'}</p>
+                    <p className="font-medium text-gray-900">{form.businessPhone || '—'}</p>
                   )}
-                  <p className="text-xs text-gray-500 mt-1">{t('settings.instagramHint')}</p>
+                </div>
+
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm text-gray-700 font-medium">Email Kontak</label>
+                    <span className="text-xs text-gray-400">{form.businessEmail.length}/50</span>
+                  </div>
+                  {isAdmin ? (
+                    <input
+                      type="email"
+                      maxLength={50}
+                      value={form.businessEmail}
+                      onChange={(e) => setForm((p) => ({ ...p, businessEmail: e.target.value }))}
+                      placeholder="Contoh: koperasi@perusahaan.com"
+                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
+                    />
+                  ) : (
+                    <p className="font-medium text-gray-900">{form.businessEmail || '—'}</p>
+                  )}
                 </div>
               </div>
+            </div>
 
-              {/* Bill display toggles */}
-              <div className="mt-5 pt-5 border-t border-gray-100">
-                <p className="text-sm font-semibold text-gray-700 mb-3">{t('settings.showOnInvoice')}</p>
+            {/* 2. Format Struk Termal & Laporan Transaksi */}
+            <div className="bg-white rounded-xl border border-gray-100 p-6 space-y-6">
+              <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
+                <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold">
+                  <Printer size={18} />
+                </div>
+                <div>
+                  <h2 className="font-semibold text-gray-900">Format Struk Kasir & Header Laporan</h2>
+                  <p className="text-xs text-gray-500">
+                    Kustomisasi teks footer struk, kebijakan retur barang, dan judul kop laporan PDF.
+                  </p>
+                </div>
+                {!isAdmin && (
+                  <span className="ml-auto flex items-center gap-1 text-xs text-gray-400">
+                    <Lock size={12} /> {t('settings.adminOnly')}
+                  </span>
+                )}
+              </div>
+
+              {/* Logo di Struk Termal */}
+              <div className="p-4 rounded-xl bg-indigo-50/50 border border-indigo-100 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-sm font-medium text-gray-800">Cetak Logo di Header Struk Termal (58mm)</span>
+                    <p className="text-xs text-gray-500">Otomatis di-raster menjadi 1-bit hitam putih kontras tinggi untuk printer kasir.</p>
+                  </div>
+                  <Toggle
+                    value={form.receiptLogoEnabled}
+                    onChange={isAdmin ? (v) => setForm((p) => ({ ...p, receiptLogoEnabled: v })) : () => {}}
+                  />
+                </div>
+
+                {form.receiptLogoEnabled && (
+                  <div className="pt-2 border-t border-indigo-100 flex items-center gap-4">
+                    <label className="text-xs font-medium text-gray-700">Ukuran Logo Struk:</label>
+                    {(['small', 'standard', 'large'] as const).map((sz) => (
+                      <label key={sz} className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer capitalize">
+                        <input
+                          type="radio"
+                          name="receiptLogoSize"
+                          value={sz}
+                          checked={form.receiptLogoSize === sz}
+                          onChange={(e) => setForm((p) => ({ ...p, receiptLogoSize: e.target.value as 'small' | 'standard' | 'large' }))}
+                          disabled={!isAdmin}
+                          className="text-indigo-600 focus:ring-indigo-500"
+                        />
+                        {sz === 'small' ? 'Kecil (56%)' : sz === 'standard' ? 'Standar (75%)' : 'Lebar (92%)'}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Toggles Tampilan Header Struk */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-gray-700 uppercase tracking-wider">Elemen Header Struk</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {([
-                    { label: t('settings.showBusinessName'), key: 'billShowName' as const },
-                    { label: t('settings.showAddress'), key: 'billShowAddress' as const },
-                    { label: t('settings.showPhoneNumber'), key: 'billShowPhone' as const },
-                    { label: t('settings.showTaxId'), key: 'billShowGstn' as const },
-                  ] as const).map((item) => (
-                    <div key={item.key} className="flex items-center justify-between py-2">
-                      <span className="text-sm text-gray-700">{item.label}</span>
-                      <Toggle
-                        value={form[item.key]}
-                        onChange={isAdmin ? (v) => setForm((p) => ({ ...p, [item.key]: v })) : () => {}}
-                      />
-                    </div>
-                  ))}
+                  <div className="flex items-center justify-between p-3 rounded-lg border border-gray-100 bg-gray-50/50">
+                    <span className="text-sm text-gray-700">Tampilkan Alamat Koperasi</span>
+                    <Toggle
+                      value={form.billShowAddress}
+                      onChange={isAdmin ? (v) => setForm((p) => ({ ...p, billShowAddress: v })) : () => {}}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg border border-gray-100 bg-gray-50/50">
+                    <span className="text-sm text-gray-700">Tampilkan Nomor Telepon</span>
+                    <Toggle
+                      value={form.billShowPhone}
+                      onChange={isAdmin ? (v) => setForm((p) => ({ ...p, billShowPhone: v })) : () => {}}
+                    />
+                  </div>
                 </div>
               </div>
 
-              {isAdmin && (
-                <div className="mt-4 flex gap-2">
+              {/* Teks Footer Struk & Kebijakan Retur */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="md:col-span-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm text-gray-700 font-medium">Teks Ucapan Terima Kasih (Footer Struk)</label>
+                    <span className="text-xs text-gray-400">{form.receiptFooterText.length}/100</span>
+                  </div>
+                  {isAdmin ? (
+                    <input
+                      type="text"
+                      maxLength={100}
+                      value={form.receiptFooterText}
+                      onChange={(e) => setForm((p) => ({ ...p, receiptFooterText: e.target.value }))}
+                      placeholder="Contoh: Terima kasih atas kunjungan anda di Koperasi"
+                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
+                    />
+                  ) : (
+                    <p className="font-medium text-gray-900">{form.receiptFooterText}</p>
+                  )}
                 </div>
-              )}
+
+                <div className="md:col-span-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm text-gray-700 font-medium">Kebijakan Retur / Pengembalian Barang</label>
+                    <span className="text-xs text-gray-400">{form.receiptReturnPolicyText.length}/120</span>
+                  </div>
+                  {isAdmin ? (
+                    <input
+                      type="text"
+                      maxLength={120}
+                      value={form.receiptReturnPolicyText}
+                      onChange={(e) => setForm((p) => ({ ...p, receiptReturnPolicyText: e.target.value }))}
+                      placeholder="Contoh: Barang yang dibeli tidak dapat ditukar/dikembalikan"
+                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
+                    />
+                  ) : (
+                    <p className="font-medium text-gray-900">{form.receiptReturnPolicyText}</p>
+                  )}
+                </div>
+
+                <div className="md:col-span-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-sm text-gray-700 font-medium">Judul Kop Laporan Rekapitulasi PDF</label>
+                    <span className="text-xs text-gray-400">{form.reportHeaderTitle.length}/80</span>
+                  </div>
+                  {isAdmin ? (
+                    <input
+                      type="text"
+                      maxLength={80}
+                      value={form.reportHeaderTitle}
+                      onChange={(e) => setForm((p) => ({ ...p, reportHeaderTitle: e.target.value }))}
+                      placeholder="Contoh: Laporan Rekapitulasi Potong Gaji"
+                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand font-medium"
+                    />
+                  ) : (
+                    <p className="font-medium text-gray-900">{form.reportHeaderTitle}</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Live Preview Box Struk 32-Kolom */}
+              <div className="mt-4 p-4 bg-gray-950 text-gray-100 rounded-xl font-mono text-xs shadow-inner space-y-1">
+                <p className="text-[10px] text-gray-400 uppercase tracking-widest font-sans mb-2 font-semibold">
+                  Live Preview Struk 58mm (32 Karakter)
+                </p>
+                <div className="border border-dashed border-gray-700 p-3 rounded space-y-0.5 leading-tight">
+                  <p className="text-center font-bold text-teal-400">[LOGO {form.receiptLogoEnabled ? form.receiptLogoSize.toUpperCase() : 'NONAKTIF'}]</p>
+                  <p className="text-center font-bold">{form.businessName.toUpperCase() || 'POS KOPERASI'}</p>
+                  {form.billShowAddress && form.businessAddress && (
+                    <p className="text-center text-gray-400 truncate">{form.businessAddress}</p>
+                  )}
+                  {form.billShowPhone && form.businessPhone && (
+                    <p className="text-center text-gray-400">Telp: {form.businessPhone}</p>
+                  )}
+                  <p className="text-gray-500">================================</p>
+                  <p className="flex justify-between"><span>No. Struk :</span><span>BILL-1001</span></p>
+                  <p className="flex justify-between"><span>Anggota   :</span><span>Budi Santoso</span></p>
+                  <p className="text-gray-500">--------------------------------</p>
+                  <p className="flex justify-between"><span>Beras 5kg (1 sak)</span><span>Rp 75.000</span></p>
+                  <p className="flex justify-between"><span>Minyak 2L (1 pch)</span><span>Rp 32.000</span></p>
+                  <p className="text-gray-500">--------------------------------</p>
+                  <p className="flex justify-between font-bold text-yellow-400"><span>TOTAL</span><span>Rp 107.000</span></p>
+                  <p className="text-gray-500">================================</p>
+                  <p className="text-center text-gray-300">{form.receiptFooterText || 'Terima kasih atas kunjungan anda'}</p>
+                  <p className="text-center text-gray-400">{form.receiptReturnPolicyText || 'Barang yang dibeli tidak dapat ditukar/dikembalikan'}</p>
+                  <p className="text-center text-gray-500 text-[10px]">Simpan struk sbg bukti yg sah</p>
+                </div>
+              </div>
             </div>
 
             {/* Informasi Pembayaran QRIS & Rekening Bank (Koperasi) */}
