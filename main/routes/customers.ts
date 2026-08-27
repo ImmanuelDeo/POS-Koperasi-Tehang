@@ -2,6 +2,12 @@ import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
 import { normalizeNik, maskNik } from '../services/privacy';
 import { createAuditLog } from '../services/audit';
+import {
+  calculatePayrollPeriod,
+  getMemberMonthlyUsage,
+  getMemberTotalAccumulatedUsage,
+  getMemberOutstandingExposure,
+} from '../services/cooperative';
 
 const router = Router();
 
@@ -22,17 +28,35 @@ function getWalletBalance(customerId: string | number): number {
 
 function formatCustomerResponse(c: any, userRole?: string) {
   if (!c) return null;
+  const db = getDatabase();
+  const periodMonth = calculatePayrollPeriod(db);
+
+  const monthlyLimit = Number(c.monthly_deduction_limit ?? 0);
+  const outstandingLimit = Number(c.outstanding_deduction_limit ?? 0);
+  const monthlyUsage = getMemberMonthlyUsage(db, c.id, periodMonth);
+  const totalAccumulated = getMemberTotalAccumulatedUsage(db, c.id);
+  const currentOutstanding = getMemberOutstandingExposure(db, c.id);
+
+  const remainingMonthly = monthlyLimit > 0 ? Math.max(0, monthlyLimit - monthlyUsage) : 999999999;
+  const remainingOutstanding = outstandingLimit > 0 ? Math.max(0, outstandingLimit - currentOutstanding) : 999999999;
+
   const masked = maskNik(c.nik);
   const canViewFullNik = userRole === 'owner' || userRole === 'office_hr' || userRole === 'admin';
+
   return {
     ...c,
     nik: canViewFullNik ? (c.nik || null) : masked,
     nik_masked: masked,
     has_nik: Boolean(c.nik && String(c.nik).trim().length > 0),
-    is_member: 1,
-    salary_deduction_enabled: 1,
-    monthly_deduction_limit: 0,
-    outstanding_deduction_limit: 0,
+    is_member: c.is_member !== undefined ? (c.is_member === 1 ? 1 : 0) : 1,
+    salary_deduction_enabled: c.salary_deduction_enabled !== undefined ? (c.salary_deduction_enabled === 1 ? 1 : 0) : 1,
+    monthly_deduction_limit: monthlyLimit,
+    outstanding_deduction_limit: outstandingLimit,
+    current_monthly_usage: monthlyUsage,
+    total_accumulated_deductions: totalAccumulated,
+    current_outstanding: currentOutstanding,
+    remaining_monthly_limit: remainingMonthly,
+    remaining_outstanding_limit: remainingOutstanding,
     is_active: c.is_active !== 0 && (c.is_active as any) !== false ? 1 : 0,
     member_no: c.member_no || ('MBR-' + String(c.id).slice(-4)),
     employee_id: c.employee_id || '-',

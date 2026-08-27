@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 let db: Database.Database;
 
@@ -87,8 +87,18 @@ function getCurrentSchemaVersion(): number {
   }
 }
 
+function tableExists(tableName: string): boolean {
+  try {
+    const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
 function columnExists(tableName: string, columnName: string): boolean {
   try {
+    if (!tableExists(tableName)) return false;
     const columns = db.pragma(`table_info(${tableName})`) as any[];
     return columns.some((col: any) => col.name === columnName);
   } catch {
@@ -186,6 +196,272 @@ function runMigrations(): void {
     `).run();
   } catch {
     // Safe fallback if settings table query fails
+  }
+
+  // Self-healing: Ensure all essential tables and columns exist in POS Koperasi
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tables (
+        id TEXT PRIMARY KEY,
+        number TEXT NOT NULL UNIQUE,
+        capacity INTEGER DEFAULT 4,
+        status TEXT DEFAULT 'available',
+        floor TEXT,
+        section TEXT,
+        position_x REAL,
+        position_y REAL,
+        kitchen_station_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS customers (
+        id TEXT PRIMARY KEY,
+        nik TEXT NULL,
+        member_no TEXT NULL,
+        employee_id TEXT NULL,
+        name TEXT NOT NULL,
+        department TEXT NULL,
+        email TEXT,
+        phone TEXT,
+        country_code TEXT DEFAULT '+62',
+        address TEXT,
+        loyalty_points INTEGER DEFAULT 0,
+        is_member INTEGER NOT NULL DEFAULT 1 CHECK(is_member IN (0, 1)),
+        salary_deduction_enabled INTEGER NOT NULL DEFAULT 1 CHECK(salary_deduction_enabled IN (0, 1)),
+        monthly_deduction_limit INTEGER NOT NULL DEFAULT 0 CHECK(monthly_deduction_limit >= 0),
+        outstanding_deduction_limit INTEGER NOT NULL DEFAULT 0 CHECK(outstanding_deduction_limit >= 0),
+        notes TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_number TEXT UNIQUE NOT NULL,
+        table_id TEXT,
+        customer_id TEXT,
+        user_id TEXT,
+        type TEXT DEFAULT 'takeaway',
+        guest_count INTEGER,
+        special_instructions TEXT,
+        packaging_charge REAL DEFAULT 0,
+        delivery_charge REAL DEFAULT 0,
+        status TEXT DEFAULT 'pending',
+        subtotal REAL DEFAULT 0,
+        tax_amount REAL DEFAULT 0,
+        tax_breakdown TEXT,
+        discount_amount REAL DEFAULT 0,
+        discount_type TEXT,
+        discount_value REAL,
+        discount_reason TEXT,
+        round_off REAL DEFAULT 0,
+        total REAL DEFAULT 0,
+        cooking_started_at TEXT,
+        ready_at TEXT,
+        served_at TEXT,
+        completed_at TEXT,
+        cancelled_at TEXT,
+        cancellation_reason TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        product_id TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        product_sku TEXT,
+        unit_price REAL NOT NULL,
+        quantity INTEGER NOT NULL DEFAULT 1,
+        subtotal REAL NOT NULL,
+        tax_amount REAL DEFAULT 0,
+        tax_breakdown TEXT,
+        tax_type TEXT,
+        discount_amount REAL DEFAULT 0,
+        total REAL NOT NULL,
+        variant_selection TEXT,
+        modifier_selection TEXT,
+        addons TEXT,
+        special_instructions TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (order_id) REFERENCES orders(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS bills (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bill_number TEXT UNIQUE NOT NULL,
+        order_id INTEGER NOT NULL,
+        customer_id TEXT,
+        subtotal REAL DEFAULT 0,
+        tax_amount REAL DEFAULT 0,
+        tax_breakdown TEXT,
+        discount_amount REAL DEFAULT 0,
+        discount_type TEXT,
+        discount_value REAL,
+        discount_reason TEXT,
+        delivery_charge REAL DEFAULT 0,
+        packaging_charge REAL DEFAULT 0,
+        round_off REAL DEFAULT 0,
+        total REAL DEFAULT 0,
+        paid_amount REAL DEFAULT 0,
+        balance REAL DEFAULT 0,
+        payment_status TEXT DEFAULT 'unpaid',
+        payment_details TEXT,
+        paid_at TEXT,
+        printed_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (order_id) REFERENCES orders(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS salary_deductions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deduction_number TEXT NOT NULL UNIQUE,
+        member_id TEXT NOT NULL,
+        order_id INTEGER NOT NULL,
+        bill_id INTEGER NOT NULL,
+        amount INTEGER NOT NULL CHECK(amount > 0),
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK(status IN ('pending', 'confirmed', 'rejected', 'cancelled')),
+        period_month TEXT NOT NULL,
+        notes TEXT,
+        rejection_reason TEXT,
+        cancellation_reason TEXT,
+        created_by TEXT NOT NULL,
+        confirmed_by TEXT,
+        rejected_by TEXT,
+        cancelled_by TEXT,
+        confirmed_at TEXT,
+        rejected_at TEXT,
+        cancelled_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES customers(id),
+        FOREIGN KEY (order_id) REFERENCES orders(id),
+        FOREIGN KEY (bill_id) REFERENCES bills(id),
+        FOREIGN KEY (created_by) REFERENCES users(id),
+        FOREIGN KEY (confirmed_by) REFERENCES users(id),
+        FOREIGN KEY (rejected_by) REFERENCES users(id),
+        FOREIGN KEY (cancelled_by) REFERENCES users(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS loyalty_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id TEXT NOT NULL,
+        bill_id INTEGER,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        description TEXT,
+        expires_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_user_id TEXT,
+        actor_role TEXT,
+        action TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT,
+        details TEXT,
+        ip_address TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (actor_user_id) REFERENCES users(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS printers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        connection_type TEXT NOT NULL CHECK (connection_type IN ('network', 'usb', 'webusb')),
+        ip_address TEXT,
+        port INTEGER DEFAULT 9100,
+        usb_device_path TEXT,
+        is_default INTEGER DEFAULT 0,
+        paper_width TEXT DEFAULT '80mm',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS addon_groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        category_name TEXT,
+        description TEXT,
+        promo_start_date TEXT,
+        promo_end_date TEXT,
+        is_forever INTEGER DEFAULT 1,
+        bundle_price REAL,
+        is_required INTEGER DEFAULT 0,
+        min_selection INTEGER DEFAULT 0,
+        max_selection INTEGER DEFAULT 1,
+        is_active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS addons (
+        id TEXT PRIMARY KEY,
+        addon_group_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        price REAL NOT NULL DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (addon_group_id) REFERENCES addon_groups(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS addon_group_product (
+        product_id TEXT NOT NULL,
+        addon_group_id TEXT NOT NULL,
+        PRIMARY KEY (product_id, addon_group_id)
+      );
+    `);
+
+    // Ensure missing columns in customers
+    if (!columnExists('customers', 'monthly_deduction_limit')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN monthly_deduction_limit INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!columnExists('customers', 'outstanding_deduction_limit')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN outstanding_deduction_limit INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!columnExists('customers', 'nik')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN nik TEXT NULL`);
+    }
+    if (!columnExists('customers', 'member_no')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN member_no TEXT NULL`);
+    }
+    if (!columnExists('customers', 'employee_id')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN employee_id TEXT NULL`);
+    }
+    if (!columnExists('customers', 'department')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN department TEXT NULL`);
+    }
+    if (!columnExists('customers', 'notes')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN notes TEXT NULL`);
+    }
+    if (!columnExists('customers', 'address')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN address TEXT NULL`);
+    }
+    if (!columnExists('customers', 'is_member')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN is_member INTEGER NOT NULL DEFAULT 1`);
+    }
+    if (!columnExists('customers', 'salary_deduction_enabled')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN salary_deduction_enabled INTEGER NOT NULL DEFAULT 1`);
+    }
+    if (!columnExists('customers', 'is_active')) {
+      db.exec(`ALTER TABLE customers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1`);
+    }
+  } catch (err: any) {
+    console.warn('[DB] Self-healing table check notice:', err.message);
   }
 
   console.log('[DB] Migrations complete');
@@ -428,6 +704,85 @@ function runIncrementalMigrations(fromVersion: number): void {
     console.log('[DB] Migration to v13 complete');
   }
 
+  // Migration to version 14 (Add-ons Bundling/Promo Schema & QRIS/Bank Settings)
+  if (fromVersion < 14) {
+    console.log('[DB] Applying migration to v14 (Add-ons Bundling/Promo & Payment Settings)...');
+    const migrationV14 = db.transaction(() => {
+      // 1. Ensure addon_groups, addons, and addon_group_product tables exist
+      db.exec(`CREATE TABLE IF NOT EXISTS addon_groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        category_name TEXT,
+        description TEXT,
+        promo_start_date TEXT,
+        promo_end_date TEXT,
+        is_forever INTEGER DEFAULT 1,
+        bundle_price REAL,
+        is_required INTEGER DEFAULT 0,
+        min_selection INTEGER DEFAULT 0,
+        max_selection INTEGER DEFAULT 1,
+        is_active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`);
+
+      db.exec(`CREATE TABLE IF NOT EXISTS addons (
+        id TEXT PRIMARY KEY,
+        addon_group_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        price REAL NOT NULL DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        sort_order INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (addon_group_id) REFERENCES addon_groups(id)
+      )`);
+
+      db.exec(`CREATE TABLE IF NOT EXISTS addon_group_product (
+        product_id TEXT NOT NULL,
+        addon_group_id TEXT NOT NULL,
+        PRIMARY KEY (product_id, addon_group_id)
+      )`);
+
+      // Add columns if addon_groups was pre-existing from an earlier schema without these fields
+      if (!columnExists('addon_groups', 'category_name')) {
+        db.exec(`ALTER TABLE addon_groups ADD COLUMN category_name TEXT`);
+      }
+      if (!columnExists('addon_groups', 'promo_start_date')) {
+        db.exec(`ALTER TABLE addon_groups ADD COLUMN promo_start_date TEXT`);
+      }
+      if (!columnExists('addon_groups', 'promo_end_date')) {
+        db.exec(`ALTER TABLE addon_groups ADD COLUMN promo_end_date TEXT`);
+      }
+      if (!columnExists('addon_groups', 'is_forever')) {
+        db.exec(`ALTER TABLE addon_groups ADD COLUMN is_forever INTEGER DEFAULT 1`);
+      }
+      if (!columnExists('addon_groups', 'bundle_price')) {
+        db.exec(`ALTER TABLE addon_groups ADD COLUMN bundle_price REAL`);
+      }
+
+      // 2. Default settings for QRIS and Bank Transfer if not exist
+      const defaultSettings = [
+        ['qris_merchant_name', 'Koperasi Karyawan Tehang'],
+        ['qris_image_url', ''],
+        ['bank_name', 'Bank BCA'],
+        ['bank_account_number', '1234567890'],
+        ['bank_account_holder', 'Koperasi Tehang'],
+      ];
+      const insertSetting = db.prepare(`
+        INSERT OR IGNORE INTO settings (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+      `);
+      for (const [k, v] of defaultSettings) {
+        insertSetting.run(k, v);
+      }
+    });
+
+    migrationV14();
+    console.log('[DB] Migration to v14 complete');
+  }
+
   // Update schema version
   db.prepare(`
     INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, CURRENT_TIMESTAMP)
@@ -492,7 +847,12 @@ function createSchema(): void {
     CREATE TABLE addon_groups (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      category_name TEXT,
       description TEXT,
+      promo_start_date TEXT,
+      promo_end_date TEXT,
+      is_forever INTEGER DEFAULT 1,
+      bundle_price REAL,
       is_required INTEGER DEFAULT 0,
       min_selection INTEGER DEFAULT 0,
       max_selection INTEGER DEFAULT 1,

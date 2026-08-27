@@ -35,7 +35,14 @@ router.post('/preview', (req: AuthenticatedRequest, res: Response) => {
     const db = getDatabase();
     const validationResult = validateCatalogCsv(db, csv);
 
-    return res.status(200).json(validationResult);
+    // Limit browser payload to max 50 preview rows and max 50 errors
+    return res.status(200).json({
+      ...validationResult,
+      rows: validationResult.rows.slice(0, 50),
+      errors: validationResult.errors.slice(0, 50),
+      preview_limited: validationResult.rows.length > 50,
+      errors_limited: validationResult.errors.length > 50,
+    });
   } catch (error: any) {
     return res.status(500).json({ error: error.message || 'Gagal memproses validasi CSV' });
   }

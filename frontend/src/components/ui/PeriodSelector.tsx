@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Calendar, ChevronDown, Check, X, ArrowRight } from 'lucide-react';
+import { Calendar, ChevronDown, Check, X, Sparkles, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-export type PeriodType = 'daily' | 'weekly' | 'monthly' | 'custom' | 'all';
+export type PeriodType = 'daily' | 'weekly' | 'monthly' | 'yearly' | 'custom' | 'all';
 
 export interface PeriodFilterState {
   period: PeriodType;
@@ -52,10 +52,20 @@ export default function PeriodSelector({
   const [isOpen, setIsOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  // Custom range temp state
+  // Custom range state
   const [customStart, setCustomStart] = useState(startDate || date || today);
   const [customEnd, setCustomEnd] = useState(endDate || date || today);
   const [customError, setCustomError] = useState<string | null>(null);
+
+  // Keep local state in sync when external props change
+  useEffect(() => {
+    if (startDate) setCustomStart(startDate);
+    if (endDate) setCustomEnd(endDate);
+    if (date && !startDate && !endDate) {
+      setCustomStart(date);
+      setCustomEnd(date);
+    }
+  }, [startDate, endDate, date]);
 
   // Close popover when clicking outside
   useEffect(() => {
@@ -86,6 +96,36 @@ export default function PeriodSelector({
     });
   };
 
+  const handleCustomStartChange = (val: string) => {
+    setCustomStart(val);
+    if (val && customEnd && val <= customEnd) {
+      setCustomError(null);
+      // Auto-trigger filter immediately on date selection
+      onChange({
+        period: 'custom',
+        startDate: val,
+        endDate: customEnd,
+      });
+    } else if (val && customEnd && val > customEnd) {
+      setCustomError('Tanggal awal tidak boleh lebih dari tanggal akhir');
+    }
+  };
+
+  const handleCustomEndChange = (val: string) => {
+    setCustomEnd(val);
+    if (customStart && val && customStart <= val) {
+      setCustomError(null);
+      // Auto-trigger filter immediately on date selection
+      onChange({
+        period: 'custom',
+        startDate: customStart,
+        endDate: val,
+      });
+    } else if (customStart && val && customStart > val) {
+      setCustomError('Tanggal awal tidak boleh lebih dari tanggal akhir');
+    }
+  };
+
   const handleQuickDateSelect = (selectedDate: string) => {
     setIsOpen(false);
     onChange({
@@ -101,7 +141,7 @@ export default function PeriodSelector({
         <button
           type="button"
           onClick={() => onChange({ period: 'daily', date: today })}
-          className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
             period === 'daily' && (!date || date === today)
               ? 'bg-white text-emerald-800 shadow-sm ring-1 ring-black/5'
               : 'text-gray-600 hover:text-gray-900'
@@ -113,7 +153,7 @@ export default function PeriodSelector({
         <button
           type="button"
           onClick={() => onChange({ period: 'weekly', date: today })}
-          className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
             period === 'weekly'
               ? 'bg-white text-emerald-800 shadow-sm ring-1 ring-black/5'
               : 'text-gray-600 hover:text-gray-900'
@@ -125,7 +165,7 @@ export default function PeriodSelector({
         <button
           type="button"
           onClick={() => onChange({ period: 'monthly', date: today })}
-          className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
             period === 'monthly'
               ? 'bg-white text-emerald-800 shadow-sm ring-1 ring-black/5'
               : 'text-gray-600 hover:text-gray-900'
@@ -134,11 +174,23 @@ export default function PeriodSelector({
           Bulanan
         </button>
 
+        <button
+          type="button"
+          onClick={() => onChange({ period: 'yearly', date: today })}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+            period === 'yearly'
+              ? 'bg-white text-emerald-800 shadow-sm ring-1 ring-black/5'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          Tahunan
+        </button>
+
         {allowAll && (
           <button
             type="button"
             onClick={() => onChange({ period: 'all' })}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
               period === 'all'
                 ? 'bg-white text-emerald-800 shadow-sm ring-1 ring-black/5'
                 : 'text-gray-600 hover:text-gray-900'
@@ -188,22 +240,27 @@ export default function PeriodSelector({
             {/* Quick Single Date */}
             <div className="mb-4">
               <label className="block text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
-                Pilih Satu Hari (Harian)
+                Pilih Satu Hari (Otomatis Filter)
               </label>
               <input
                 type="date"
                 max={today}
                 value={date || today}
                 onChange={(e) => e.target.value && handleQuickDateSelect(e.target.value)}
-                className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-gray-50/50"
               />
             </div>
 
             {/* Custom Date Range */}
             <div className="space-y-3 pt-3 border-t border-gray-100">
-              <label className="block text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
-                Rentang Kustom (Custom Range)
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
+                  Rentang Kustom (Custom Range)
+                </label>
+                <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded">
+                  Otomatis Terapkan
+                </span>
+              </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -212,11 +269,8 @@ export default function PeriodSelector({
                     type="date"
                     max={today}
                     value={customStart}
-                    onChange={(e) => {
-                      setCustomStart(e.target.value);
-                      setCustomError(null);
-                    }}
-                    className="w-full px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    onChange={(e) => handleCustomStartChange(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-gray-50/50"
                   />
                 </div>
                 <div>
@@ -225,11 +279,8 @@ export default function PeriodSelector({
                     type="date"
                     max={today}
                     value={customEnd}
-                    onChange={(e) => {
-                      setCustomEnd(e.target.value);
-                      setCustomError(null);
-                    }}
-                    className="w-full px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    onChange={(e) => handleCustomEndChange(e.target.value)}
+                    className="w-full px-2.5 py-1.5 text-xs border border-gray-200 rounded-lg text-gray-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-gray-50/50"
                   />
                 </div>
               </div>
@@ -245,7 +296,7 @@ export default function PeriodSelector({
                   onClick={handleApplyCustom}
                   className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold h-8 rounded-lg shadow-sm"
                 >
-                  <Check size={13} className="mr-1" /> Terapkan Rentang
+                  <Check size={13} className="mr-1" /> Tutup & Terapkan
                 </Button>
                 <Button
                   type="button"

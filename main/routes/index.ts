@@ -22,6 +22,7 @@ import { kdsInfoRoutes } from './kds-info';
 import { printerRoutes } from './printers';
 import { databaseRoutes } from './database';
 import { catalogCsvRoutes } from './catalog-csv';
+import { memberCsvRoutes } from './member-csv';
 import { getDatabase, now, parseItemJson } from '../db';
 import { authenticateToken, requireRole, requireMethodRoles, AuthenticatedRequest } from '../middleware/auth';
 
@@ -35,6 +36,20 @@ export function registerRoutes(app: Express): void {
     authenticateToken,
     requireRole(['owner', 'admin', 'office_inventory']),
     catalogCsvRoutes
+  );
+
+  // ── POS Koperasi: Member / Customer CSV Import & Template ─────────────────
+  app.use(
+    '/api/members-csv',
+    authenticateToken,
+    requireRole(['owner', 'admin', 'office_hr', 'cashier']),
+    memberCsvRoutes
+  );
+  app.use(
+    '/api/customers-csv',
+    authenticateToken,
+    requireRole(['owner', 'admin', 'office_hr', 'cashier']),
+    memberCsvRoutes
   );
 
   // ── Resource routes (Strictly Authenticated & Role Protected) ─────────────
@@ -130,7 +145,7 @@ export function registerRoutes(app: Express): void {
       POST: ['owner', 'admin', 'cashier'],
       PUT: ['owner', 'admin', 'cashier'],
       PATCH: ['owner', 'admin', 'cashier'],
-      DELETE: ['owner', 'admin', 'cashier'],
+      DELETE: ['owner'],
     }),
     orderRoutes
   );
@@ -159,10 +174,10 @@ export function registerRoutes(app: Express): void {
     authenticateToken,
     requireMethodRoles({
       GET: ['owner', 'admin', 'office_hr', 'cashier'],
-      POST: ['owner', 'admin', 'office_hr'],
-      PUT: ['owner', 'admin', 'office_hr'],
-      PATCH: ['owner', 'admin', 'office_hr'],
-      DELETE: ['owner', 'admin'],
+      POST: ['owner', 'admin', 'office_hr', 'cashier'],
+      PUT: ['owner', 'admin', 'office_hr', 'cashier'],
+      PATCH: ['owner', 'admin', 'office_hr', 'cashier'],
+      DELETE: ['owner', 'admin', 'office_hr', 'cashier'],
     }),
     customerRoutes
   );
@@ -171,29 +186,13 @@ export function registerRoutes(app: Express): void {
   app.use(
     '/api/members',
     authenticateToken,
-    (req: AuthenticatedRequest, res, next) => {
-      const user = req.user!;
-      if (user.role === 'owner') return next();
-
-      const effectiveRoles = [user.role];
-      if (user.role === 'manager') effectiveRoles.push('admin');
-      if (user.role === 'waiter') effectiveRoles.push('cashier');
-
-      // Cashier is only allowed on GET /lookup
-      if (effectiveRoles.includes('cashier')) {
-        if (req.method === 'GET' && (req.path === '/lookup' || req.path.startsWith('/lookup'))) {
-          return next();
-        }
-        return res.status(403).json({ error: 'Forbidden: Cashier can only access member lookup' });
-      }
-
-      // Office HR and Admin have full access (GET, POST, PUT, PATCH)
-      if (effectiveRoles.includes('office_hr') || effectiveRoles.includes('admin')) {
-        return next();
-      }
-
-      return res.status(403).json({ error: `Forbidden: Role '${user.role}' is not authorized for member management` });
-    },
+    requireMethodRoles({
+      GET: ['owner', 'admin', 'office_hr', 'cashier'],
+      POST: ['owner', 'admin', 'office_hr', 'cashier'],
+      PUT: ['owner', 'admin', 'office_hr', 'cashier'],
+      PATCH: ['owner', 'admin', 'office_hr', 'cashier'],
+      DELETE: ['owner', 'admin', 'office_hr', 'cashier'],
+    }),
     memberRoutes
   );
 

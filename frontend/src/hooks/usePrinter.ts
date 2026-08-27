@@ -28,6 +28,9 @@ export interface HardwarePrinter {
   usb_device_path?: string | null;
   paper_width?: string | null;
   is_default: number;
+  is_online?: boolean;
+  status?: string;
+  message?: string;
 }
 
 interface PrinterState {
@@ -68,6 +71,20 @@ export const usePrinterStore = create<PrinterState>()(
 
       refreshHardwarePrinter: async () => {
         try {
+          const statusRes = await api.get('/printers/status');
+          const hwData = statusRes.data;
+          if (hwData && hwData.printer) {
+            set({
+              hardwarePrinter: {
+                ...hwData.printer,
+                is_online: Boolean(hwData.isOnline),
+                status: hwData.status,
+                message: hwData.message,
+              },
+            });
+            return;
+          }
+
           const res = await api.get('/printers');
           const list: HardwarePrinter[] = res.data.printers || [];
           const defaultPrinter = list.find((p) => p.is_default === 1 && p.connection_type !== 'webusb') || null;

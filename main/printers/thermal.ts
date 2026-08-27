@@ -158,7 +158,7 @@ export function detectWindowsPrinters(): PrinterInfo[] {
   const printers: PrinterInfo[] = [];
 
   try {
-    const psCmd = `Get-CimInstance Win32_Printer | Select-Object Name, Default, PrinterStatus, DriverName, PortName | ConvertTo-Json -Compress`;
+    const psCmd = `Get-CimInstance Win32_Printer | Select-Object Name, Default, WorkOffline, PrinterStatus, ExtendedPrinterStatus, DetectedErrorState, DriverName, PortName | ConvertTo-Json -Compress`;
     const output = execSync(`powershell -NoProfile -NonInteractive -Command "${psCmd}"`, {
       encoding: 'utf8',
       timeout: 6000,
@@ -180,6 +180,7 @@ export function detectWindowsPrinters(): PrinterInfo[] {
         const connectionType: 'usb' | 'network' | 'bluetooth' = isBluetooth ? 'bluetooth' : isNetwork ? 'network' : 'usb';
 
         const makeModel = detectWindowsMakeModel(name, driver);
+        const isOffline = p.WorkOffline === true || p.ExtendedPrinterStatus === 7 || p.PrinterStatus === 7;
 
         printers.push({
           name,
@@ -188,7 +189,7 @@ export function detectWindowsPrinters(): PrinterInfo[] {
           connectionType,
           deviceUri: name,
           driver,
-          status: 'idle',
+          status: isOffline ? 'offline' : 'idle',
           isDefault,
         });
       }
@@ -701,6 +702,16 @@ export function generateKoperasiReceipt(
     lines.push('');
     lines.push('{CENTER}(............................){/CENTER}');
     lines.push('');
+  } else if (paymentMethod === 'qris') {
+    lines.push('{BOLD}METODE : QRIS (NON-TUNAI){/BOLD}');
+    lines.push(leftRight('Nominal QRIS:', formatCurrencyRp(totalVal), cols));
+    lines.push(leftRight('Status       :', 'LUNAS (BERHASIL)', cols));
+    lines.push(sepBar);
+  } else if (paymentMethod === 'transfer') {
+    lines.push('{BOLD}METODE : TRANSFER BANK{/BOLD}');
+    lines.push(leftRight('Nominal Trf :', formatCurrencyRp(totalVal), cols));
+    lines.push(leftRight('Status       :', 'LUNAS (BERHASIL)', cols));
+    lines.push(sepBar);
   } else {
     lines.push(leftRight('Tunai', formatCurrencyRp(paidAmount > 0 ? paidAmount : totalVal), cols));
     lines.push(leftRight('Kembalian', formatCurrencyRp(Math.max(0, change)), cols));
@@ -788,6 +799,9 @@ $requestedPrinter = '${escapedPrinter}'
 $filePath = '${escapedFile}'
 $bytes = [System.IO.File]::ReadAllBytes($filePath)
 
+# 1. Clean any stuck/orphaned print jobs from previous disconnected attempts
+Get-CimInstance Win32_PrintJob -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$requestedPrinter*" -or $_.Name -like "*Blueprint*" -or $_.Name -like "*ECO58*" -or $_.Name -like "*POS*" } | Remove-CimInstance -ErrorAction SilentlyContinue
+
 $installedPrinters = @(Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name)
 $targetPrinter = $null
 
@@ -822,14 +836,36 @@ if (-not $targetPrinter) {
 if (-not $targetPrinter) {
     $pnpDev = Get-PnpDevice -Class 'Printer','PrintQueue','USB' -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like '*ECO58*' -or $_.FriendlyName -like '*HaoYin*' -or $_.FriendlyName -like '*Blueprint*' } | Select-Object -ExpandProperty FriendlyName -First 1
     if ($pnpDev) {
-        Write-Error "Antrean printer '$requestedPrinter' tidak ditemukan di Windows. Perangkat USB fisik ($pnpDev) terdeteksi terhubung, namun driver antrean printer belum terdaftar pada Windows Printers & Scanners. Buka Windows Settings -> Bluetooth & devices -> Printers & Scanners -> Add device (Gunakan driver POS-58 / Blueprint pada port USB)."
+        Write-Error "Antrean printer '$requestedPrinter' tidak ditemukan di Windows. Perangkat USB fisik ($pnpDev) terdeteksi terhubung, namun antrean printer belum terdaftar pada Windows Printers & Scanners."
     } else {
         $namesStr = ($installedPrinters -join ', ')
-        Write-Error "Antrean printer '$requestedPrinter' tidak ditemukan di Windows. Printer yang terpasang di Windows saat ini: [$namesStr]. Silakan pilih printer yang sesuai pada menu Pengaturan Printer."
+        Write-Error "Printer thermal '$requestedPrinter' tidak terdeteksi. Printer yang terpasang di Windows saat ini: [$namesStr]. Periksa kabel USB dan pengaturan printer."
     }
     exit 1
 }
 
+# 2. Pre-flight Hardware & WorkOffline Verification
+$printerObj = Get-CimInstance Win32_Printer -Filter "Name = '$targetPrinter'" -ErrorAction SilentlyContinue
+if ($printerObj) {
+    if ($printerObj.WorkOffline -eq $true) {
+        Write-Error "Printer '$targetPrinter' sedang OFFLINE / Terputus. Kabel USB belum terhubung ke PC kasir atau tombol daya printer belum dinyalakan."
+        exit 1
+    }
+    if ($printerObj.DetectedErrorState -eq 4) {
+        Write-Error "Kertas thermal pada printer '$targetPrinter' habis (Out of Paper). Silakan pasang gulungan kertas baru."
+        exit 1
+    }
+    if ($printerObj.DetectedErrorState -eq 7) {
+        Write-Error "Penutup roll printer '$targetPrinter' terbuka (Cover Open). Silakan tutup rapat penutup printer."
+        exit 1
+    }
+    if ($printerObj.DetectedErrorState -eq 8) {
+        Write-Error "Kertas pada printer '$targetPrinter' macet / tersangkut (Paper Jam). Silakan rapikan kertas."
+        exit 1
+    }
+}
+
+# 3. C# Low-Level RawPrinterHelper with Real-Time Attributes & Status Check
 $code = @"
 using System;
 using System.Runtime.InteropServices;
@@ -842,11 +878,39 @@ public class RawPrinterHelper {
         [MarshalAs(UnmanagedType.LPWStr)] public string pDataType;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct PRINTER_INFO_2 {
+        public string pServerName;
+        public string pPrinterName;
+        public string pShareName;
+        public string pPortName;
+        public string pDriverName;
+        public string pComment;
+        public string pLocation;
+        public IntPtr pDevMode;
+        public string pSepFile;
+        public string pPrintProcessor;
+        public string pDataType;
+        public string pParameters;
+        public IntPtr pSecurityDescriptor;
+        public uint Attributes;
+        public uint Priority;
+        public uint DefaultPriority;
+        public uint StartTime;
+        public uint UntilTime;
+        public uint Status;
+        public uint cJobs;
+        public uint AveragePPM;
+    }
+
     [DllImport("winspool.drv", EntryPoint = "OpenPrinterW", SetLastError = true, CharSet = CharSet.Unicode, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
 
     [DllImport("winspool.drv", EntryPoint = "ClosePrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool ClosePrinter(IntPtr hPrinter);
+
+    [DllImport("winspool.drv", EntryPoint = "GetPrinterW", SetLastError = true, CharSet = CharSet.Unicode, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
+    public static extern bool GetPrinter(IntPtr hPrinter, int dwLevel, IntPtr pPrinter, int cbBuf, out int pcbNeeded);
 
     [DllImport("winspool.drv", EntryPoint = "StartDocPrinterW", SetLastError = true, CharSet = CharSet.Unicode, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool StartDocPrinter(IntPtr hPrinter, int level, [In] DOCINFOW pDocInfo);
@@ -869,33 +933,74 @@ public class RawPrinterHelper {
         DOCINFOW di = new DOCINFOW();
         di.pDocName = "POS Koperasi Struk";
         di.pDataType = "RAW";
+
         if (!OpenPrinter(szPrinterName, out hPrinter, IntPtr.Zero)) {
             int err = Marshal.GetLastWin32Error();
-            errorMsg = "Gagal membuka antrean printer " + szPrinterName + " (Win32 Error: " + err + ")";
+            errorMsg = "Gagal mengakses antrean printer " + szPrinterName + " (Win32 Error: " + err + ")";
             return false;
         }
+
+        // Check real-time attributes & offline status before starting doc
+        int needed = 0;
+        GetPrinter(hPrinter, 2, IntPtr.Zero, 0, out needed);
+        if (needed > 0) {
+            IntPtr pBuf = Marshal.AllocHGlobal(needed);
+            try {
+                if (GetPrinter(hPrinter, 2, pBuf, needed, out needed)) {
+                    PRINTER_INFO_2 info = (PRINTER_INFO_2)Marshal.PtrToStructure(pBuf, typeof(PRINTER_INFO_2));
+                    // 1024 = PRINTER_ATTRIBUTE_WORK_OFFLINE
+                    if ((info.Attributes & 1024) != 0) {
+                        ClosePrinter(hPrinter);
+                        errorMsg = "Printer " + szPrinterName + " sedang OFFLINE / Terputus. Pastikan kabel USB printer terhubung ke PC kasir dan tombol daya menyala.";
+                        return false;
+                    }
+                    if ((info.Status & 128) != 0) {
+                        ClosePrinter(hPrinter);
+                        errorMsg = "Printer " + szPrinterName + " dalam kondisi Offline.";
+                        return false;
+                    }
+                    if ((info.Status & 16) != 0) {
+                        ClosePrinter(hPrinter);
+                        errorMsg = "Kertas thermal pada printer " + szPrinterName + " habis.";
+                        return false;
+                    }
+                    if ((info.Status & 4194304) != 0) {
+                        ClosePrinter(hPrinter);
+                        errorMsg = "Penutup roll printer " + szPrinterName + " terbuka.";
+                        return false;
+                    }
+                }
+            } finally {
+                Marshal.FreeHGlobal(pBuf);
+            }
+        }
+
         if (!StartDocPrinter(hPrinter, 1, di)) {
             int err = Marshal.GetLastWin32Error();
             ClosePrinter(hPrinter);
-            errorMsg = "Gagal memulai print job pada " + szPrinterName + " (Win32 Error: " + err + ")";
+            errorMsg = "Gagal memulai dokumen cetak pada " + szPrinterName + " (Win32 Error: " + err + ")";
             return false;
         }
+
         if (!StartPagePrinter(hPrinter)) {
             EndDocPrinter(hPrinter);
             ClosePrinter(hPrinter);
             errorMsg = "Gagal memulai halaman cetak pada " + szPrinterName;
             return false;
         }
+
         IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
         Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
         int written = 0;
         bool success = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out written);
         Marshal.FreeCoTaskMem(pUnmanagedBytes);
+
         EndPagePrinter(hPrinter);
         EndDocPrinter(hPrinter);
         ClosePrinter(hPrinter);
+
         if (!success) {
-            errorMsg = "Gagal menulis byte ke printer " + szPrinterName;
+            errorMsg = "Gagal menulis data ke printer " + szPrinterName;
         }
         return success;
     }
@@ -908,6 +1013,8 @@ $result = [RawPrinterHelper]::SendBytesToPrinter($targetPrinter, $bytes, [ref]$e
 if ($result) {
     Write-Output "SUCCESS:$targetPrinter"
 } else {
+    # If writing failed or was rejected, ensure no lingering jobs remain queued in spooler
+    Get-CimInstance Win32_PrintJob -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$targetPrinter*" } | Remove-CimInstance -ErrorAction SilentlyContinue
     Write-Error "$errOut"
 }
 `;
@@ -1195,7 +1302,110 @@ export async function printKOT(_order: any, _items: any[], _stationName: string)
   return false;
 }
 
+export function getPrinterHardwareStatus(printer?: any): {
+  isConfigured: boolean;
+  isOnline: boolean;
+  status: 'online' | 'offline' | 'error' | 'not_configured';
+  message: string;
+  printer: any;
+} {
+  const p = printer || getPrinterConfig();
+  if (!p) {
+    return {
+      isConfigured: false,
+      isOnline: false,
+      status: 'not_configured',
+      message: 'Belum ada printer default yang dikonfigurasi.',
+      printer: null,
+    };
+  }
+
+  if (p.connection_type === 'network') {
+    return {
+      isConfigured: true,
+      isOnline: !!p.ip_address,
+      status: p.ip_address ? 'online' : 'offline',
+      message: p.ip_address ? `Printer network siap (${p.ip_address})` : 'IP printer belum disetting',
+      printer: p,
+    };
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      const pName = (p.name || 'Blueprint ECO-58D').replace(/'/g, "''");
+      const psCmd = `
+$pName = '${pName}'
+$p = Get-CimInstance Win32_Printer -Filter "Name = '$pName'" -ErrorAction SilentlyContinue
+if (-not $p) {
+    $p = Get-CimInstance Win32_Printer | Where-Object { $_.Name -like '*ECO58*' -or $_.Name -like '*Blueprint*' -or $_.Name -like '*POS*' } | Select-Object -First 1
+}
+if ($p) {
+    [PSCustomObject]@{
+        Name = $p.Name
+        WorkOffline = $p.WorkOffline
+        PrinterStatus = $p.PrinterStatus
+        ExtendedPrinterStatus = $p.ExtendedPrinterStatus
+        DetectedErrorState = $p.DetectedErrorState
+    } | ConvertTo-Json -Compress
+} else {
+    Write-Output "NOT_FOUND"
+}
+`;
+      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${psCmd}"`, {
+        encoding: 'utf8',
+        timeout: 4000,
+      }).trim();
+
+      if (out && out !== 'NOT_FOUND') {
+        const info = JSON.parse(out);
+        if (info.WorkOffline === true) {
+          return {
+            isConfigured: true,
+            isOnline: false,
+            status: 'offline',
+            message: `Printer '${info.Name}' sedang Offline. Kabel USB terputus atau printer mati.`,
+            printer: { ...p, is_online: false, hardware_name: info.Name },
+          };
+        }
+        if (info.DetectedErrorState === 4) {
+          return {
+            isConfigured: true,
+            isOnline: false,
+            status: 'error',
+            message: `Kertas thermal pada printer '${info.Name}' habis.`,
+            printer: { ...p, is_online: false, hardware_name: info.Name },
+          };
+        }
+        if (info.DetectedErrorState === 7) {
+          return {
+            isConfigured: true,
+            isOnline: false,
+            status: 'error',
+            message: `Penutup printer '${info.Name}' terbuka.`,
+            printer: { ...p, is_online: false, hardware_name: info.Name },
+          };
+        }
+        return {
+          isConfigured: true,
+          isOnline: true,
+          status: 'online',
+          message: `Printer '${info.Name}' siap dan terhubung.`,
+          printer: { ...p, is_online: true, hardware_name: info.Name },
+        };
+      }
+    } catch {}
+  }
+
+  return {
+    isConfigured: true,
+    isOnline: false,
+    status: 'offline',
+    message: `Printer '${p.name}' tidak terdeteksi di sistem operasi.`,
+    printer: { ...p, is_online: false },
+  };
+}
+
 export function getPrinterStatus(): { connected: boolean; printer: any } {
-  const printer = getPrinterConfig();
-  return { connected: !!printer, printer };
+  const hw = getPrinterHardwareStatus();
+  return { connected: hw.isOnline, printer: hw.printer };
 }

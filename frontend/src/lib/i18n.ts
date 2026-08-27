@@ -45,6 +45,7 @@ export function getBrowserLanguage(): Language {
     const navLang = navigator.language?.toLowerCase() || '';
     if (navLang.startsWith('es')) return 'es';
     if (navLang.startsWith('en')) return 'en';
+    if (navLang.startsWith('id')) return 'id';
   }
   return 'id';
 }
@@ -102,7 +103,7 @@ export async function fetchServerInfo(baseUrl = '', timeoutMs = 1500): Promise<S
       kds_default_view?: string | null;
     };
     return {
-      language: data.language === 'es' ? 'es' : data.language === 'en' ? 'en' : null,
+      language: data.language === 'es' ? 'es' : data.language === 'en' ? 'en' : 'id',
       country: data.country || null,
       kdsDefaultView:
         data.kds_default_view === 'kanban' ? 'kanban' : data.kds_default_view === 'tabs' ? 'tabs' : null,

@@ -110,18 +110,12 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
       return;
     }
 
-    // 2. Lookup product from backend or existing products array
+    // 2. Lookup product from backend on-demand
     try {
-      let matchedProd = products.find(
-        (p) => p.barcode === cleanCode || p.sku === cleanCode
-      );
-
-      if (!matchedProd) {
-        const { data } = await api.get('/products/lookup-barcode', {
-          params: { code: cleanCode },
-        });
-        matchedProd = data.product;
-      }
+      const { data } = await api.get('/products/lookup-barcode', {
+        params: { code: cleanCode },
+      });
+      const matchedProd = data.product;
 
       if (!matchedProd) {
         toast.error(`Barcode "${cleanCode}" tidak terdaftar di sistem.`);
@@ -189,26 +183,23 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
     }, 150);
   };
 
-  // Search input handler
-  const handleSearchChange = (query: string) => {
+  // Search input handler - server-side search (min 2 chars)
+  const handleSearchChange = async (query: string) => {
     setSearchQuery(query);
-    if (!query.trim()) {
+    const q = query.trim();
+    if (!q || q.length < 2) {
       setSearchResults([]);
       return;
     }
 
-    const q = query.toLowerCase().trim();
-    const filtered = products
-      .filter(
-        (p) =>
-          p.is_active !== false &&
-          (p.name.toLowerCase().includes(q) ||
-            (p.barcode && p.barcode.toLowerCase().includes(q)) ||
-            (p.sku && p.sku.toLowerCase().includes(q)))
-      )
-      .slice(0, 8);
-
-    setSearchResults(filtered);
+    try {
+      const { data } = await api.get('/products/search', {
+        params: { q, limit: 15, active: true },
+      });
+      setSearchResults(data.products || []);
+    } catch {
+      // Non-fatal
+    }
   };
 
   // Update item field
@@ -410,12 +401,17 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
   // Reload current DB stock into draft after a conflict
   const handleRefreshStockInDraft = async () => {
     try {
-      const { data } = await api.get('/products');
-      const latestProds: Product[] = data.products || [];
+      const idsToRefresh = draftItems.map((i) => i.product_id);
+      if (idsToRefresh.length === 0) return;
+
+      const { data } = await api.post('/products/stock-snapshot', {
+        product_ids: idsToRefresh,
+      });
+      const freshStocks: any[] = data.stocks || [];
 
       setDraftItems((prev) =>
         prev.map((item) => {
-          const fresh = latestProds.find((p) => String(p.id) === item.product_id);
+          const fresh = freshStocks.find((p) => String(p.id) === item.product_id);
           if (fresh) {
             return { ...item, system_stock: Number(fresh.stock_quantity || 0) };
           }

@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2, X, Package, Folder, Puzzle, FileSpreadsheet, Download, Upload, CheckCircle, AlertCircle, AlertTriangle, Search, Boxes, History } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Package, Folder, Puzzle, FileSpreadsheet, Download, Upload, CheckCircle, AlertCircle, AlertTriangle, Search, Boxes, History, Loader2, Layers } from 'lucide-react';
 import type { Product, Category, AddonGroup } from '@/lib/types';
 import TagBadge, { tagLabel } from '@/components/pos/DietaryBadge';
 import ImageUploader from '@/components/products/ImageUploader';
@@ -84,7 +85,9 @@ export default function ProductsPage() {
   const { currentTenant } = useAuthStore();
   const [activeTab, setActiveTab] = useState<TabType>('products');
   const [products, setProducts] = useState<Product[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [committedSearch, setCommittedSearch] = useState('');
+  const [initialLoaded, setInitialLoaded] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
   const [addonGroups, setAddonGroups] = useState<AddonGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,9 +102,9 @@ export default function ProductsPage() {
 
   const [addonList, setAddonList] = useState<{ id?: number | string; name: string; price: number; is_active?: boolean }[]>([]);
   const [form, setForm] = useState({
-    name: '', category_id: '', price: '', cost_price: '', member_price: '', unit: 'pcs', cb_percent: '0', sku: '', barcode: '',
+    name: '', category_id: '', price: '', cost_price: '', member_price: '', unit: 'pcs', allow_decimal: false, cb_percent: '0', sku: '', barcode: '',
     tax_type: 'none', tax_rate: '0', description: '',
-    track_inventory: true, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
+    track_inventory: true, stock_quantity: '0', low_stock_threshold: '5', min_reorder_qty: '10', is_active: true,
     tags: [] as string[],
     customTag: '',
     addon_group_ids: [] as (number | string)[],
@@ -141,7 +144,8 @@ export default function ProductsPage() {
         });
       } else if (activeTab === 'products') {
         // Modal is closed: filter/search products list
-        setSearchQuery(trimmed);
+        setSearchInput(trimmed);
+        handleExecuteSearch(trimmed);
         toast.success(`Filter barcode: ${trimmed}`, { id: 'barcode-filter-toast', duration: 2000 });
       }
     },
@@ -152,26 +156,102 @@ export default function ProductsPage() {
     }
   );
 
-  const fetchData = async () => {
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [cursorHistory, setCursorHistory] = useState<(string | null)[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [totalCount, setTotalCount] = useState<number>(0);
+  const [isSearching, setIsSearching] = useState(false);
+
+  const fetchCategoriesAndAddons = async () => {
     try {
-      const requests: Promise<{ data: Record<string, unknown> }>[] = [
-        api.get('/products'),
-        api.get('/categories'),
-      ];
+      const requests: Promise<{ data: Record<string, unknown> }>[] = [api.get('/categories')];
       if (isRestaurant) requests.push(api.get('/addon-groups'));
-      const [prodRes, catRes, agRes] = await Promise.all(requests);
-      setProducts((prodRes.data.products as Product[]) || []);
+      const [catRes, agRes] = await Promise.all(requests);
       setCategories((catRes.data.categories as Category[]) || []);
       if (agRes) setAddonGroups((agRes.data.addon_groups as AddonGroup[]) || []);
+    } catch {
+      // Non-fatal
+    }
+  };
+
+  const fetchProductsList = useCallback(async (targetCursor?: string | null, searchStr?: string) => {
+    setLoading(true);
+    try {
+      if (searchStr && searchStr.trim().length >= 1) {
+        setIsSearching(true);
+        const res = await api.get('/products/search', {
+          params: { q: searchStr.trim(), limit: 50, active: false },
+        });
+        setProducts((res.data.products as Product[]) || []);
+        setHasMore(false);
+        setNextCursor(null);
+      } else {
+        setIsSearching(false);
+        const params: Record<string, any> = { limit: 50 };
+        if (targetCursor) {
+          params.cursor = targetCursor;
+        } else {
+          params.include_total = true;
+        }
+        const res = await api.get('/products', { params });
+        setProducts((res.data.products as Product[]) || []);
+        setNextCursor(res.data.next_cursor || null);
+        setHasMore(Boolean(res.data.has_more));
+        if (res.data.total_count !== undefined) {
+          setTotalCount(res.data.total_count);
+        }
+      }
     } catch {
       toast.error(t('products.failedToLoad'));
     } finally {
       setLoading(false);
+      setInitialLoaded(true);
     }
+  }, [t]);
+
+  const handleExecuteSearch = (val?: string) => {
+    const query = val !== undefined ? val : searchInput;
+    setCommittedSearch(query);
+    setCursor(null);
+    setCursorHistory([]);
+    fetchProductsList(null, query);
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { fetchData(); }, []);
+  const handleClearSearch = () => {
+    setSearchInput('');
+    setCommittedSearch('');
+    setCursor(null);
+    setCursorHistory([]);
+    fetchProductsList(null, '');
+  };
+
+  useEffect(() => {
+    fetchCategoriesAndAddons();
+    fetchProductsList(null, '');
+  }, [fetchProductsList]);
+
+  const handleNextPage = () => {
+    if (!nextCursor) return;
+    setCursorHistory((prev) => [...prev, cursor]);
+    setCursor(nextCursor);
+    fetchProductsList(nextCursor, committedSearch);
+  };
+
+  const handlePrevPage = () => {
+    if (cursorHistory.length === 0) return;
+    const newHistory = [...cursorHistory];
+    const prevCursor = newHistory.pop() || null;
+    setCursorHistory(newHistory);
+    setCursor(prevCursor);
+    fetchProductsList(prevCursor, committedSearch);
+  };
+
+  const reloadFullProducts = () => {
+    setCursor(null);
+    setCursorHistory([]);
+    fetchProductsList(null, committedSearch);
+  };
 
   const openCsvModal = (type: 'categories' | 'products' | 'addons' = 'products') => {
     setCsvType(type);
@@ -226,7 +306,8 @@ export default function ProductsPage() {
       const res = await api.post('/catalog-csv/import', { csv: csvFileText });
       setCsvResult(res.data?.result || res.data);
       toast.success(res.data?.message || 'Impor katalog berhasil');
-      fetchData();
+      fetchCategoriesAndAddons();
+      reloadFullProducts();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Gagal mengimpor katalog';
       toast.error(msg);
@@ -237,9 +318,9 @@ export default function ProductsPage() {
 
   const resetForm = () => {
     setForm({
-      name: '', category_id: '', price: '', cost_price: '', member_price: '', unit: 'pcs', cb_percent: '0', sku: '', barcode: '',
+      name: '', category_id: '', price: '', cost_price: '', member_price: '', unit: 'pcs', allow_decimal: false, cb_percent: '0', sku: '', barcode: '',
       tax_type: 'none', tax_rate: '0', description: '',
-      track_inventory: true, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
+      track_inventory: true, stock_quantity: '0', low_stock_threshold: '5', min_reorder_qty: '10', is_active: true,
       tags: [], customTag: '', addon_group_ids: [], image_url: null,
     });
     setImageTouched(false);
@@ -257,6 +338,7 @@ export default function ProductsPage() {
       cost_price: String(product.cost_price ?? ''),
       member_price: product.member_price != null ? String(product.member_price) : '',
       unit: product.unit || 'pcs',
+      allow_decimal: Boolean(product.allow_decimal),
       cb_percent: String(product.cb_percent ?? 0),
       sku: product.sku || '',
       barcode: product.barcode || '',
@@ -266,6 +348,7 @@ export default function ProductsPage() {
       track_inventory: product.track_inventory !== undefined ? Boolean(product.track_inventory) : true,
       stock_quantity: String(product.stock_quantity ?? '0'),
       low_stock_threshold: String(product.low_stock_threshold ?? '5'),
+      min_reorder_qty: String(product.min_reorder_qty ?? '10'),
       is_active: Boolean(product.is_active),
       tags: safeTags,
       customTag: '',
@@ -287,6 +370,7 @@ export default function ProductsPage() {
         cost_price: parsedCost,
         member_price: form.member_price ? parseRupiahInput(form.member_price) : null,
         unit: form.unit?.trim() || 'pcs',
+        allow_decimal: form.allow_decimal,
         cb_percent: Number(form.cb_percent) || 0,
         sku: form.sku.trim() || null,
         barcode: form.barcode.trim() || null,
@@ -296,6 +380,7 @@ export default function ProductsPage() {
         track_inventory: form.track_inventory,
         stock_quantity: Number(form.stock_quantity) || 0,
         low_stock_threshold: Number(form.low_stock_threshold) || 0,
+        min_reorder_qty: Number(form.min_reorder_qty) || 0,
         is_active: form.is_active,
         tags: form.tags && form.tags.length > 0 ? form.tags : null,
         addon_group_ids: form.addon_group_ids || [],
@@ -315,7 +400,7 @@ export default function ProductsPage() {
         toast.success(t('products.created'));
       }
       resetForm();
-      fetchData();
+      reloadFullProducts();
     } catch (err: unknown) {
       const error = err as { response?: { data?: { errors?: Record<string, string[]>; error?: string } } };
       const firstError = error.response?.data?.errors
@@ -330,7 +415,7 @@ export default function ProductsPage() {
     try {
       await api.delete(`/products/${id}`);
       toast.success(t('products.deleted'));
-      fetchData();
+      reloadFullProducts();
     } catch {
       toast.error(t('common.failedToDelete'));
     }
@@ -360,7 +445,7 @@ export default function ProductsPage() {
         toast.success(t('products.categoryCreated'));
       }
       resetCategoryForm();
-      fetchData();
+      fetchCategoriesAndAddons();
     } catch (err) {
       console.error('[Category] Save error:', err);
       toast.error(t('products.failedToSaveCategory'));
@@ -378,7 +463,7 @@ export default function ProductsPage() {
     try {
       await api.delete(`/categories/${id}`);
       toast.success(t('products.categoryDeleted'));
-      fetchData();
+      fetchCategoriesAndAddons();
     } catch (err: unknown) {
       const e = err as { response?: { status?: number; data?: { error?: string; productCount?: number } } };
       if (e?.response?.status === 400 && e?.response?.data?.productCount) {
@@ -396,7 +481,7 @@ export default function ProductsPage() {
       await api.delete(`/categories/${catDeleteModal.id}?action=reassign&reassign_to=${catReassignTo}`);
       toast.success(t('products.reassignAndDelete'));
       setCatDeleteModal({ open: false, id: null, name: '', productCount: 0 });
-      fetchData();
+      fetchCategoriesAndAddons();
     } catch (err: unknown) {
       const e = err as { response?: { data?: { error?: string } } };
       toast.error(e?.response?.data?.error || t('common.failedToDelete'));
@@ -409,7 +494,7 @@ export default function ProductsPage() {
       await api.delete(`/categories/${catDeleteModal.id}?action=delete_all`);
       toast.success(t('products.categoryAndProductsDeleted'));
       setCatDeleteModal({ open: false, id: null, name: '', productCount: 0 });
-      fetchData();
+      fetchCategoriesAndAddons();
     } catch (err: unknown) {
       const e = err as { response?: { data?: { error?: string } } };
       toast.error(e?.response?.data?.error || t('common.failedToDelete'));
@@ -442,7 +527,7 @@ export default function ProductsPage() {
         toast.success(t('products.addonGroupCreated'));
       }
       resetAddonForm();
-      fetchData();
+      fetchCategoriesAndAddons();
     } catch { toast.error(t('products.failedToSaveAddonGroup')); }
   };
 
@@ -451,7 +536,7 @@ export default function ProductsPage() {
     try {
       await api.delete(`/addon-groups/${id}`);
       toast.success(t('products.addonGroupDeleted'));
-      fetchData();
+      fetchCategoriesAndAddons();
     } catch { toast.error(t('common.failedToDelete')); }
   };
 
@@ -459,7 +544,7 @@ export default function ProductsPage() {
   const updateAddonItem = (idx: number, field: string, value: string | number) => setAddonList((prev) => prev.map((a, i) => i === idx ? { ...a, [field]: value } : a));
   const removeAddonItem = (idx: number) => setAddonList((prev) => prev.filter((_, i) => i !== idx));
 
-  if (loading) {
+  if (!initialLoaded && loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin" />
@@ -486,26 +571,57 @@ export default function ProductsPage() {
         <button onClick={() => setActiveTab('stock_history')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'stock_history' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <History size={16} /> Riwayat Mutasi
         </button>
-        {isRestaurant && (
-          <button onClick={() => setActiveTab('addons')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'addons' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            <Puzzle size={16} /> {t('products.tabAddonGroups')}
-          </button>
-        )}
+        <Link
+          href="/addon-groups"
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors border-transparent text-gray-500 hover:text-emerald-700 hover:border-emerald-300"
+        >
+          <Layers size={16} /> Paket & Promo (Add-ons)
+        </Link>
       </div>
 
       {activeTab === 'products' && (
         <>
           <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 mb-4">
-            <div className="relative flex-1 max-w-md">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleExecuteSearch();
+              }}
+              className="relative flex-1 max-w-md flex items-center"
+            >
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
               <input
                 type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Cari nama, SKU, atau scan barcode produk..."
-                className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-brand outline-none"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleExecuteSearch();
+                  }
+                }}
+                placeholder="Cari nama, SKU, barcode (Tekan Enter)..."
+                className="w-full pl-9 pr-20 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-brand outline-none bg-white"
               />
-            </div>
+              <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                {searchInput && (
+                  <button
+                    type="button"
+                    onClick={handleClearSearch}
+                    className="p-1 text-gray-400 hover:text-gray-600 rounded hover:bg-gray-100 transition-colors"
+                    title="Hapus pencarian"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="px-2.5 py-1 bg-brand text-white text-xs font-semibold rounded-md hover:bg-brand/90 transition-colors shadow-xs flex items-center gap-1"
+                >
+                  {loading && isSearching ? <Loader2 size={12} className="animate-spin" /> : 'Cari'}
+                </button>
+              </div>
+            </form>
             <div className="flex gap-2 shrink-0">
               <Button variant="outline" onClick={() => openCsvModal('products')}>
                 <FileSpreadsheet size={16} className="mr-1" /> CSV
@@ -517,7 +633,7 @@ export default function ProductsPage() {
           </div>
 
       {/* Product Table */}
-      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden shadow-xs">
         <table className="w-full">
           <thead className="bg-gray-50">
             <tr>
@@ -531,124 +647,151 @@ export default function ProductsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {products
-              .filter((product) => {
-                if (!searchQuery.trim()) return true;
-                const q = searchQuery.toLowerCase().trim();
-                return (
-                  (product.name && product.name.toLowerCase().includes(q)) ||
-                  (product.sku && product.sku.toLowerCase().includes(q)) ||
-                  (product.barcode && product.barcode.toLowerCase().includes(q))
-                );
-              })
-              .map((product) => {
-              const parentCat = categories.find((c) => String(c.id) === String(product.category_id || product.category?.id));
-              const isCategoryInactive = Boolean(parentCat && !parentCat.is_active);
-              const safeTags = parseTagsArray(product.tags);
-              return (
-              <tr key={product.id} className="hover:bg-gray-50">
-                <td className="p-4 max-w-[220px]">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0 relative flex items-center justify-center">
-                      <div
-                        className="absolute inset-0 flex items-center justify-center"
-                        style={{ backgroundColor: nameToColor(product.name || 'P') }}
-                      >
-                        <span className="text-sm font-bold text-white/80">
-                          {(product.name || 'P').substring(0, 2).toUpperCase()}
-                        </span>
-                      </div>
-                      {product.has_image && (
-                        <img 
-                          src={`${api.defaults.baseURL}/products/${product.id}/image?t=${product.updated_at ? new Date(product.updated_at).getTime() : 0}`}
-                          alt="" 
-                          className="absolute inset-0 w-full h-full object-cover"
-                          onError={(e) => { e.currentTarget.style.display = 'none'; }}
-                        />
-                      )}
-                    </div>
-                    <div>
-                      <p className="font-medium text-gray-900">{product.name}</p>
-                      {product.sku && <p className="text-xs text-gray-400 mt-0.5">{t('products.skuLabel', { sku: product.sku })}</p>}
-                      {product.barcode && <p className="text-xs text-gray-400 mt-0.5 font-mono">{t('products.barcodeLabel', { barcode: product.barcode })}</p>}
-                      {safeTags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1.5">
-                          {safeTags.map((tag: string) => <TagBadge key={tag} tag={tag} />)}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </td>
-                <td className="p-4 text-sm text-gray-600">
-                  <div className="flex flex-col gap-0.5">
-                    <span>{product.category?.name || parentCat?.name || '—'}</span>
-                    {isCategoryInactive && (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 w-fit" title="Parent category is inactive; product is hidden on POS">
-                        <AlertTriangle size={11} className="shrink-0" /> Category Inactive
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="p-4 text-center">
-                  {product.addon_groups && product.addon_groups.length > 0 ? (
-                    <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
-                      {product.addon_groups.length} {product.addon_groups.length === 1 ? 'group' : 'groups'}
-                    </span>
-                  ) : (
-                    <span className="text-gray-400 text-sm">—</span>
-                  )}
-                </td>
-                <td className="p-4 text-right">
-                  <p className="font-semibold text-gray-900">{fmt(Number(product.price || 0))}</p>
-                  {product.member_price != null && product.member_price > 0 && (
-                    <span className="inline-block text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 mt-0.5">
-                      Member: {fmt(Number(product.member_price))}
-                    </span>
-                  )}
-                  {product.cost_price != null && product.cost_price > 0 && (
-                    <p className="text-xs text-gray-400 mt-0.5">Modal: {fmt(Number(product.cost_price))}</p>
-                  )}
-                </td>
-                <td className="p-4 text-center">
-                  {product.track_inventory ? (
-                    <span className={`text-sm font-semibold ${(product.stock_quantity ?? 0) <= (product.low_stock_threshold || 0) ? 'text-red-600 font-bold' : 'text-gray-900'}`}>
-                      {(product.stock_quantity ?? 0) <= 0 ? t('pos.outOfStock') : `${product.stock_quantity} ${product.unit || 'pcs'}`}
-                    </span>
-                  ) : (
-                    <span className="text-gray-400 text-sm">—</span>
-                  )}
-                </td>
-                <td className="p-4 text-center">
-                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                    product.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
-                  }`}>
-                    {product.is_active ? t('common.active') : t('common.inactive')}
-                  </span>
-                  {product.is_active && isCategoryInactive && (
-                    <span className="text-[10px] text-amber-600 font-medium block mt-1">(Hidden on POS)</span>
-                  )}
-                </td>
-                <td className="p-4 text-right">
-                  <div className="flex gap-2 justify-end">
-                    {isOwnerOrManager && (
-                      <>
-                        <button onClick={() => openEdit(product)} className="p-1.5 text-gray-400 hover:text-brand">
-                          <Pencil size={16} />
-                        </button>
-                        <button onClick={() => handleDelete(product.id)} className="p-1.5 text-gray-400 hover:text-red-600">
-                          <Trash2 size={16} />
-                        </button>
-                      </>
-                    )}
+            {loading ? (
+              <tr>
+                <td colSpan={7} className="p-12 text-center text-gray-500">
+                  <div className="flex flex-col items-center justify-center gap-2">
+                    <Loader2 size={24} className="animate-spin text-brand" />
+                    <span className="text-xs font-medium">Mencari produk...</span>
                   </div>
                 </td>
               </tr>
-              );
-            })}
+            ) : products.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="p-12 text-center text-gray-500 text-sm">
+                  {committedSearch ? `Tidak ada produk yang cocok dengan "${committedSearch}"` : t('products.empty')}
+                </td>
+              </tr>
+            ) : (
+              products.map((product) => {
+                const parentCat = categories.find((c) => String(c.id) === String(product.category_id || product.category?.id));
+                const isCategoryInactive = Boolean(parentCat && !parentCat.is_active);
+                const safeTags = parseTagsArray(product.tags);
+                return (
+                <tr key={product.id} className="hover:bg-gray-50">
+                  <td className="p-4 max-w-[220px]">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0 relative flex items-center justify-center">
+                        <div
+                          className="absolute inset-0 flex items-center justify-center"
+                          style={{ backgroundColor: nameToColor(product.name || 'P') }}
+                        >
+                          <span className="text-sm font-bold text-white/80">
+                            {(product.name || 'P').substring(0, 2).toUpperCase()}
+                          </span>
+                        </div>
+                        {product.has_image && (
+                          <img
+                            src={`${api.defaults.baseURL}/products/${product.id}/image?t=${product.updated_at ? new Date(product.updated_at).getTime() : 0}`}
+                            alt=""
+                            className="absolute inset-0 w-full h-full object-cover"
+                            onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                          />
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-900">{product.name}</p>
+                        {product.sku && <p className="text-xs text-gray-400 mt-0.5">{t('products.skuLabel', { sku: product.sku })}</p>}
+                        {product.barcode && <p className="text-xs text-gray-400 mt-0.5 font-mono">{t('products.barcodeLabel', { barcode: product.barcode })}</p>}
+                        {safeTags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {safeTags.map((tag: string) => <TagBadge key={tag} tag={tag} />)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="p-4 text-sm text-gray-600">
+                    <div className="flex flex-col gap-0.5">
+                      <span>{product.category?.name || parentCat?.name || '—'}</span>
+                      {isCategoryInactive && (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 w-fit" title="Parent category is inactive; product is hidden on POS">
+                          <AlertTriangle size={11} className="shrink-0" /> Category Inactive
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="p-4 text-center">
+                    {product.addon_groups && product.addon_groups.length > 0 ? (
+                      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                        {product.addon_groups.length} group{product.addon_groups.length > 1 ? 's' : ''}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-300">—</span>
+                    )}
+                  </td>
+                  <td className="p-4 text-right">
+                    <div className="flex flex-col items-end">
+                      <span className="font-semibold text-gray-900">{fmt(product.price)}</span>
+                      {product.member_price != null && product.member_price > 0 && (
+                        <span className="text-[11px] text-emerald-700 font-medium">
+                          Member: {fmt(product.member_price)}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="p-4 text-center">
+                    {product.track_inventory ? (
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                        Number(product.stock_quantity) <= 0
+                          ? 'bg-red-100 text-red-700'
+                          : Number(product.stock_quantity) <= (product.low_stock_threshold ?? 5)
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}>
+                        {product.stock_quantity} {product.unit || 'pcs'}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-400">Tanpa Stok</span>
+                    )}
+                  </td>
+                  <td className="p-4 text-center">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${product.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                      {product.is_active ? t('common.active') : t('common.inactive')}
+                    </span>
+                  </td>
+                  <td className="p-4 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <button onClick={() => openEdit(product)} className="p-1.5 text-gray-400 hover:text-brand" title={t('common.edit')}>
+                        <Pencil size={16} />
+                      </button>
+                      <button onClick={() => handleDelete(product.id)} className="p-1.5 text-gray-400 hover:text-red-600" title={t('common.delete')}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                );
+              })
+            )}
           </tbody>
         </table>
-        {products.length === 0 && (
-          <p className="text-center text-gray-500 py-12">{t('products.empty')}</p>
+
+        {/* Pagination Footer */}
+        {!isSearching && (
+          <div className="bg-gray-50/70 px-4 py-3 border-t border-gray-100 flex items-center justify-between">
+            <div className="text-xs text-gray-600 font-medium">
+              Halaman {cursorHistory.length + 1} • Menampilkan {products.length} produk {totalCount > 0 ? `dari ${totalCount.toLocaleString('id-ID')} total produk` : ''}
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePrevPage}
+                disabled={cursorHistory.length === 0 || loading}
+              >
+                ← Halaman Sebelumnya
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleNextPage}
+                disabled={!hasMore || loading}
+              >
+                Halaman Berikutnya →
+              </Button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -888,7 +1031,9 @@ export default function ProductsPage() {
                         >
                           <option value="pcs">Pcs (Pieces)</option>
                           <option value="kg">Kg (Kilogram)</option>
-                          <option value="liter">Liter</option>
+                          <option value="gr">Gram (Gr)</option>
+                          <option value="liter">Liter (L)</option>
+                          <option value="ml">Mililiter (ml)</option>
                           <option value="sak">Sak (Karung)</option>
                           <option value="pack">Pack</option>
                           <option value="dus">Dus (Karton)</option>
@@ -897,6 +1042,9 @@ export default function ProductsPage() {
                           <option value="bungkus">Bungkus</option>
                           <option value="kaleng">Kaleng</option>
                           <option value="lusin">Lusin</option>
+                          <option value="roll">Roll</option>
+                          <option value="ikat">Ikat</option>
+                          <option value="porsi">Porsi</option>
                         </select>
                       </div>
 
@@ -908,6 +1056,7 @@ export default function ProductsPage() {
                           <input
                             type="number"
                             min="0"
+                            step={form.allow_decimal ? "0.01" : "1"}
                             value={form.stock_quantity}
                             onChange={(e) => setForm({ ...form, stock_quantity: e.target.value })}
                             placeholder="0"
@@ -928,6 +1077,7 @@ export default function ProductsPage() {
                           <input
                             type="number"
                             min="0"
+                            step={form.allow_decimal ? "0.01" : "1"}
                             value={form.low_stock_threshold}
                             onChange={(e) => setForm({ ...form, low_stock_threshold: e.target.value })}
                             placeholder="5"
@@ -939,6 +1089,38 @@ export default function ProductsPage() {
                           </span>
                         </div>
                       </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-700 mb-1">
+                          Minimal Reorder (Saran PO)
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            step={form.allow_decimal ? "0.01" : "1"}
+                            value={form.min_reorder_qty}
+                            onChange={(e) => setForm({ ...form, min_reorder_qty: e.target.value })}
+                            placeholder="10"
+                            className="w-full px-3 py-2 pr-12 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-brand outline-none text-sm"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">
+                            {form.unit || 'pcs'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={form.allow_decimal}
+                          onChange={(e) => setForm({ ...form, allow_decimal: e.target.checked })}
+                          className="rounded border-gray-300 text-brand focus:ring-brand"
+                        />
+                        <span>Izinkan nilai desimal / koma (contoh: timbangan beras 1.5 kg, 0.75 liter)</span>
+                      </label>
                     </div>
 
                     <div className="p-2.5 bg-blue-50/70 border border-blue-100 rounded-lg flex items-start gap-2 text-[11px] text-blue-800">
@@ -1182,7 +1364,7 @@ export default function ProductsPage() {
         <BulkStockWorkspace
           products={products}
           onSuccess={() => {
-            fetchData();
+            reloadFullProducts();
           }}
         />
       )}

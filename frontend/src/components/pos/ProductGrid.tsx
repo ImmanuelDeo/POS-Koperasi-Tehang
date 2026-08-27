@@ -1,6 +1,7 @@
 'use client';
 
-import { Search, SlidersHorizontal } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Search, Loader2 } from 'lucide-react';
 import type { Category, Product } from '@/lib/types';
 import { useCartStore } from '@/store/cart';
 import { usePosSettingsStore } from '@/store/pos-settings';
@@ -9,6 +10,7 @@ import TagBadge from './DietaryBadge';
 import api from '@/lib/api';
 import { useI18n } from '@/hooks/useI18n';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
+import { productCache } from '@/lib/lru-cache';
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; border: string; activeBg: string; activeText: string }> = {
   red: { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200', activeBg: 'bg-red-500', activeText: 'text-white' },
@@ -37,56 +39,105 @@ function getCategoryColorClasses(color: string | null | undefined) {
 
 interface Props {
   categories: Category[];
-  products: Product[];
+  products?: Product[];
   selectedCategory: number | null;
   setSelectedCategory: (id: number | null) => void;
-  search: string;
-  setSearch: (s: string) => void;
-  currency: string;
+  search?: string;
+  setSearch?: (s: string) => void;
+  currency?: string;
   onProductClick: (product: Product) => void;
   sidebarOpen?: boolean;
 }
 
 export default function ProductGrid({
-  categories, products, selectedCategory, setSelectedCategory,
-  search, setSearch, onProductClick, sidebarOpen = true,
+  categories, selectedCategory, setSelectedCategory,
+  onProductClick, sidebarOpen = true,
 }: Props) {
   const cart = useCartStore();
   const { showProductImages } = usePosSettingsStore();
   const { t } = useI18n();
   const fmt = useFormatCurrency();
 
-  const filtered = products.filter((p) => {
-    const matchCat = !selectedCategory || p.category_id === selectedCategory;
-    const sLower = search.toLowerCase().trim();
-    const matchSearch =
-      !sLower ||
-      p.name.toLowerCase().includes(sLower) ||
-      (p.barcode && p.barcode.toLowerCase().includes(sLower)) ||
-      (p.sku && p.sku.toLowerCase().includes(sLower));
-    return matchCat && matchSearch;
-  });
+  const [search, setSearch] = useState('');
+  const [displayedProducts, setDisplayedProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const displayedProducts = filtered.slice(0, 100);
+  const fetchSearchResults = useCallback(async (queryStr: string, catId: number | null) => {
+    // Cancel any in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    setLoading(true);
+
+    try {
+      const params: Record<string, any> = {
+        limit: 30,
+        active: true,
+      };
+      if (queryStr.trim()) {
+        params.q = queryStr.trim();
+      }
+      if (catId) {
+        params.categoryId = String(catId);
+      }
+
+      const res = await api.get('/products/search', {
+        params,
+        signal: controller.signal,
+      });
+
+      const items: Product[] = res.data?.products || [];
+      setDisplayedProducts(items);
+
+      // Populate LRU cache with returned items
+      for (const p of items) {
+        productCache.set(String(p.id), p);
+        if (p.barcode) productCache.set(String(p.barcode), p);
+      }
+    } catch (err: any) {
+      if (err.name !== 'CanceledError' && err.name !== 'AbortError') {
+        console.error('[POS Search] Error fetching products:', err);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Debounced search trigger (300ms)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchSearchResults(search, selectedCategory);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [search, selectedCategory, fetchSearchResults]);
 
   return (
     <div data-testid="pos-product-grid" className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
       <div className="shrink-0 mb-3">
         <div className="relative mb-2">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+          {loading ? (
+            <Loader2 size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand animate-spin" />
+          ) : (
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+          )}
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => {
               if (e.key !== 'Enter') return;
-              // Typed or pasted barcode, not just a scanner — a dedicated
-              // action into this field works regardless of typing speed.
               const trimmed = search.trim();
               if (!trimmed) return;
-              const match = products.find((p) => p.barcode === trimmed || p.sku === trimmed);
-              if (match) {
-                onProductClick(match);
+              if (displayedProducts.length > 0) {
+                const exact = displayedProducts.find(
+                  (p) => p.barcode === trimmed || (p.sku && p.sku.toLowerCase() === trimmed.toLowerCase())
+                );
+                onProductClick(exact || displayedProducts[0]);
                 setSearch('');
               }
             }}
@@ -125,12 +176,10 @@ export default function ProductGrid({
             );
           })}
         </div>
-        {filtered.length > 100 && (
-          <div className="text-[11px] text-gray-500 font-medium mt-1 px-1 flex items-center justify-between">
-            <span>Menampilkan 100 produk teratas dari {filtered.length.toLocaleString('id-ID')} produk.</span>
-            <span className="text-gray-400">Gunakan pencarian atau scan barcode untuk produk spesifik</span>
-          </div>
-        )}
+        <div className="text-[11px] text-gray-500 font-medium mt-1 px-1 flex items-center justify-between">
+          <span>Menampilkan {displayedProducts.length} produk{selectedCategory ? ' dalam kategori ini' : ''}.</span>
+          <span className="text-gray-400">Scan barcode atau ketik nama untuk produk lainnya</span>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto pb-20 md:pb-0">

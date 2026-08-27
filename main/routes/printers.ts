@@ -7,11 +7,28 @@ import {
   buildTestPage,
   dispatchPrint,
   printReceiptById,
+  getPrinterHardwareStatus,
 } from '../printers/thermal';
 import { createAuditLog } from '../services/audit';
 import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
+
+// GET /api/printers/status — get real-time physical connection status of default printer
+router.get('/status', (_req: Request, res: Response) => {
+  try {
+    const status = getPrinterHardwareStatus();
+    res.json(status);
+  } catch (error: any) {
+    res.status(500).json({
+      isConfigured: false,
+      isOnline: false,
+      status: 'error',
+      message: error.message,
+      printer: null,
+    });
+  }
+});
 
 // GET /api/printers — list all configured printers
 router.get('/', (_req: Request, res: Response) => {

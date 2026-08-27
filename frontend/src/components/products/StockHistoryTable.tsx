@@ -230,6 +230,61 @@ export default function StockHistoryTable() {
             />
           </div>
         </div>
+
+        {/* Quick Date Range Pills */}
+        <div className="pt-2.5 flex items-center gap-1.5 flex-wrap text-xs border-t border-gray-100 mt-2.5">
+          <span className="text-[11px] font-semibold text-gray-500 mr-1">Filter Cepat:</span>
+          <button
+            type="button"
+            onClick={() => {
+              const t = new Date().toISOString().slice(0, 10);
+              setFromDateFilter(t);
+              setToDateFilter(t);
+            }}
+            className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-emerald-50 hover:text-emerald-700 font-semibold text-gray-600 transition-colors"
+          >
+            Hari Ini
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const now = new Date();
+              const past7 = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10);
+              setFromDateFilter(past7);
+              setToDateFilter(now.toISOString().slice(0, 10));
+            }}
+            className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-emerald-50 hover:text-emerald-700 font-semibold text-gray-600 transition-colors"
+          >
+            7 Hari Terakhir
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const now = new Date();
+              const year = now.getFullYear();
+              const month = String(now.getMonth() + 1).padStart(2, '0');
+              setFromDateFilter(`${year}-${month}-01`);
+              setToDateFilter(now.toISOString().slice(0, 10));
+            }}
+            className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-emerald-50 hover:text-emerald-700 font-semibold text-gray-600 transition-colors"
+          >
+            Bulan Ini
+          </button>
+          {(fromDateFilter || toDateFilter || movementTypeFilter || searchQuery) && (
+            <button
+              type="button"
+              onClick={() => {
+                setFromDateFilter('');
+                setToDateFilter('');
+                setMovementTypeFilter('');
+                setSearchQuery('');
+              }}
+              className="px-2.5 py-1 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 font-semibold transition-colors ml-auto"
+            >
+              Reset Filter
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── MOVEMENTS TABLE ─────────────────────────────────────────────── */}

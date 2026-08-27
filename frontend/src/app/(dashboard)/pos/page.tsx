@@ -33,9 +33,7 @@ export default function POSPage() {
   const { t } = useI18n();
 
   const [categories, setCategories] = useState<Category[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
-  const [search, setSearch] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
 
@@ -43,7 +41,6 @@ export default function POSPage() {
   const [showMemberSelector, setShowMemberSelector] = useState(false);
   const [showPrepaidCheckout, setShowPrepaidCheckout] = useState(false);
   const [showAdminExitModal, setShowAdminExitModal] = useState(false);
-
 
   const currency = getCurrencySymbol(
     currentTenant?.currency || 'IDR',
@@ -61,23 +58,22 @@ export default function POSPage() {
         currency,
         country: currentTenant.country || 'ID',
       });
-    } catch {
+    } catch (err: any) {
       // Non-fatal: print failure should not block or rollback checkout
-      toast.error('Peringatan: Gagal mencetak struk thermal ke printer');
+      const errMsg = err?.message || 'Printer tidak terhubung atau offline';
+      toast.error(`⚠️ Struk tidak tercetak: ${errMsg}`, {
+        id: 'printer-error-toast',
+        duration: 6000,
+      });
     }
   };
 
   const refreshCatalog = useCallback(async () => {
     try {
-      const [catRes, prodRes] = await Promise.all([
-        api.get('/categories?active=1'),
-        api.get('/products?active=1'),
-      ]);
-
+      const catRes = await api.get('/categories?active=1');
       setCategories((catRes.data.categories as Category[]) || []);
-      setProducts((prodRes.data.products as Product[]) || []);
     } catch {
-      toast.error('Gagal memuat katalog produk');
+      toast.error('Gagal memuat kategori produk');
     }
   }, []);
 
@@ -96,52 +92,41 @@ export default function POSPage() {
     [cart]
   );
 
-  // Barcode scanner listener
+  // Barcode scanner listener - 100% On-Demand Exact Lookup + LRU Cache
   const anyModalOpen = showMemberSelector || showPrepaidCheckout || showAdminExitModal;
 
   useBarcodeScanner(async (code) => {
     const trimmed = code.trim();
     if (!trimmed) return;
 
-    // 1. Check in-memory catalog first
-    let product = products.find(
-      (p) => p.barcode === trimmed || (p.sku && p.sku.toLowerCase() === trimmed.toLowerCase())
-    );
+    try {
+      const res = await api.get(`/products/lookup-barcode?code=${encodeURIComponent(trimmed)}`);
+      const product = res.data?.product;
 
-    // 2. Fallback to backend exact lookup if not in cached memory
-    if (!product) {
-      try {
-        const res = await api.get(`/products/lookup-barcode?code=${encodeURIComponent(trimmed)}`);
-        if (res.data?.product) {
-          product = res.data.product;
-        }
-      } catch (err: any) {
-        if (err.response?.status === 404) {
-          toast.error('Produk belum terdaftar.');
-        } else if (err.response?.status === 409) {
-          toast.error('Barcode bermasalah. Hubungi admin.');
-        } else if (err.response?.status === 422) {
+      if (product) {
+        if (!product.is_active) {
           toast.error('Produk tidak aktif.');
-        } else {
-          toast.error('Gagal memproses scan barcode.');
+          return;
         }
-        return;
-      }
-    }
-
-    if (product) {
-      if (!product.is_active) {
-        toast.error('Produk tidak aktif.');
-        return;
-      }
-      const res = cart.addItem(product, 1);
-      if (!res.success) {
-        toast.error(res.message || `Stok '${product.name}' sudah mencapai batas maksimal.`);
+        const addRes = cart.addItem(product, 1);
+        if (!addRes.success) {
+          toast.error(addRes.message || `Stok '${product.name}' sudah mencapai batas maksimal.`);
+        } else {
+          toast.success(`+1 ${product.name}`, { duration: 1000 });
+        }
       } else {
-        toast.success(`+1 ${product.name}`, { duration: 1000 });
+        toast.error('Produk belum terdaftar.');
       }
-    } else {
-      toast.error('Produk belum terdaftar.');
+    } catch (err: any) {
+      if (err.response?.status === 404) {
+        toast.error('Produk belum terdaftar.');
+      } else if (err.response?.status === 409) {
+        toast.error('Barcode bermasalah. Hubungi admin.');
+      } else if (err.response?.status === 422) {
+        toast.error('Produk tidak aktif.');
+      } else {
+        toast.error('Gagal memproses scan barcode.');
+      }
     }
   }, !anyModalOpen);
 
@@ -283,12 +268,8 @@ export default function POSPage() {
         <div className="flex-1 min-w-0 h-full flex flex-col">
           <ProductGrid
             categories={categories}
-            products={products}
             selectedCategory={selectedCategory}
             setSelectedCategory={setSelectedCategory}
-            search={search}
-            setSearch={setSearch}
-            currency={currency}
             onProductClick={handleProductClick}
             sidebarOpen={leftSidebarOpen}
           />

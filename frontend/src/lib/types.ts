@@ -4,6 +4,7 @@ export interface User {
   email: string;
   phone: string | null;
   country_code: string;
+  role?: string;
   is_active: boolean;
 }
 
@@ -130,6 +131,11 @@ export interface Customer {
   salary_deduction_enabled?: boolean | number;
   monthly_deduction_limit?: number;
   outstanding_deduction_limit?: number;
+  current_monthly_usage?: number;
+  remaining_monthly_limit?: number;
+  total_accumulated_deductions?: number;
+  current_outstanding?: number;
+  remaining_outstanding_limit?: number;
   phone: string;
   phone_digits?: string | null;
   country_code: string;
@@ -144,6 +150,8 @@ export interface Customer {
   favourite_dishes?: string[] | null;
   tag_counts?: Record<string, number> | null;
   address?: string | null;
+  notes?: string | null;
+  is_active?: boolean | number;
 }
 
 export interface Order {

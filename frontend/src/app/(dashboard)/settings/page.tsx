@@ -1006,6 +1006,16 @@ export default function SettingsPage() {
   const [form, setForm] = useState<BusinessForm>(savedBusiness);
   const [savingBusiness, setSavingBusiness] = useState(false);
 
+  // Payment Method Settings (QRIS & Bank Account)
+  const [paymentSettings, setPaymentSettings] = useState({
+    qris_merchant_name: 'Koperasi Karyawan Tehang',
+    qris_image_url: '',
+    bank_name: 'Bank BCA',
+    bank_account_number: '1234567890',
+    bank_account_holder: 'Koperasi Tehang',
+  });
+  const [savingPaymentSettings, setSavingPaymentSettings] = useState(false);
+
   const [cloudSettings, setCloudSettings] = useState({
     cloud_api_key: '',
     cloud_store_id: '',
@@ -1113,6 +1123,17 @@ export default function SettingsPage() {
       }
       if (discountRes.data.discount_mode) { setDiscountMode(discountRes.data.discount_mode); setSavedDiscountMode(discountRes.data.discount_mode); }
       if (discountRes.data.discount_requires_approval !== undefined) { setDiscountRequiresApproval(!!discountRes.data.discount_requires_approval); setSavedDiscountRequiresApproval(!!discountRes.data.discount_requires_approval); }
+
+      api.get('/settings').then((res) => {
+        const s = res.data?.settings || {};
+        setPaymentSettings({
+          qris_merchant_name: s.qris_merchant_name || 'Koperasi Karyawan Tehang',
+          qris_image_url: s.qris_image_url || '',
+          bank_name: s.bank_name || 'Bank BCA',
+          bank_account_number: s.bank_account_number || '1234567890',
+          bank_account_holder: s.bank_account_holder || 'Koperasi Tehang',
+        });
+      }).catch(() => {});
 
       toast.success(t('settings.reloadedFromDb'));
     } catch {
@@ -1528,6 +1549,18 @@ export default function SettingsPage() {
     }
   };
 
+  const savePaymentSettings = async (silent = false) => {
+    setSavingPaymentSettings(true);
+    try {
+      await api.put('/settings/payment-methods', paymentSettings);
+      if (!silent) toast.success('Pengaturan QRIS & Rekening Bank berhasil disimpan');
+    } catch {
+      if (!silent) toast.error(t('settings.saveFailed'));
+    } finally {
+      setSavingPaymentSettings(false);
+    }
+  };
+
   const resetAllSettings = async () => {
     resetPrinting();
     resetBillTemplate();
@@ -1886,6 +1919,128 @@ export default function SettingsPage() {
 
               {isAdmin && (
                 <div className="mt-4 flex gap-2">
+                </div>
+              )}
+            </div>
+
+            {/* Informasi Pembayaran QRIS & Rekening Bank (Koperasi) */}
+            <div className="bg-white rounded-xl border border-gray-100 p-6 space-y-5">
+              <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
+                    <QrCode size={18} />
+                  </div>
+                  <div>
+                    <h2 className="font-semibold text-gray-900">Informasi Pembayaran QRIS & Rekening Bank</h2>
+                    <p className="text-xs text-gray-500">
+                      Konfigurasi tampilan QRIS dan rincian transfer bank untuk kasir dan struk transaksi.
+                    </p>
+                  </div>
+                </div>
+                {!isAdmin && (
+                  <span className="flex items-center gap-1 text-xs text-gray-400">
+                    <Lock size={12} /> {t('settings.adminOnly')}
+                  </span>
+                )}
+              </div>
+
+              {/* QRIS Settings */}
+              <div className="p-4 rounded-xl bg-emerald-50/50 border border-emerald-100 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded bg-emerald-600 text-white font-black text-xs tracking-wider">
+                    QRIS
+                  </span>
+                  <span className="text-xs font-bold text-gray-800">Pengaturan QRIS Koperasi</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      Nama Merchant QRIS
+                    </label>
+                    <input
+                      type="text"
+                      disabled={!isAdmin}
+                      value={paymentSettings.qris_merchant_name}
+                      onChange={(e) => setPaymentSettings({ ...paymentSettings, qris_merchant_name: e.target.value })}
+                      placeholder="Contoh: Koperasi Karyawan Tehang"
+                      className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      URL Gambar QRIS (Opsional)
+                    </label>
+                    <input
+                      type="text"
+                      disabled={!isAdmin}
+                      value={paymentSettings.qris_image_url}
+                      onChange={(e) => setPaymentSettings({ ...paymentSettings, qris_image_url: e.target.value })}
+                      placeholder="Contoh: /qris.png atau URL gambar QR"
+                      className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Bank Transfer Settings */}
+              <div className="p-4 rounded-xl bg-blue-50/50 border border-blue-100 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Building2 size={16} className="text-blue-600" />
+                  <span className="text-xs font-bold text-gray-800">Pengaturan Rekening Transfer Bank</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      Nama Bank
+                    </label>
+                    <input
+                      type="text"
+                      disabled={!isAdmin}
+                      value={paymentSettings.bank_name}
+                      onChange={(e) => setPaymentSettings({ ...paymentSettings, bank_name: e.target.value })}
+                      placeholder="Contoh: Bank BCA / Mandiri / BRI"
+                      className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      Nomor Rekening
+                    </label>
+                    <input
+                      type="text"
+                      disabled={!isAdmin}
+                      value={paymentSettings.bank_account_number}
+                      onChange={(e) => setPaymentSettings({ ...paymentSettings, bank_account_number: e.target.value })}
+                      placeholder="Contoh: 1234567890"
+                      className="w-full px-3 py-2 text-sm font-mono bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 mb-1">
+                      Nama Pemilik Rekening
+                    </label>
+                    <input
+                      type="text"
+                      disabled={!isAdmin}
+                      value={paymentSettings.bank_account_holder}
+                      onChange={(e) => setPaymentSettings({ ...paymentSettings, bank_account_holder: e.target.value })}
+                      placeholder="Contoh: Koperasi Tehang"
+                      className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {isAdmin && (
+                <div className="flex justify-end pt-2">
+                  <Button
+                    type="button"
+                    disabled={savingPaymentSettings}
+                    onClick={() => savePaymentSettings(false)}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold h-9 px-4 shadow-sm"
+                  >
+                    {savingPaymentSettings ? 'Menyimpan...' : 'Simpan Pengaturan Pembayaran'}
+                  </Button>
                 </div>
               )}
             </div>

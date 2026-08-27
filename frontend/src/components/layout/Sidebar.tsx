@@ -8,6 +8,7 @@ import {
   ShoppingCart,
   ClipboardList,
   Package,
+  Layers,
   Grid3X3,
   Users,
   UserCog,
@@ -38,7 +39,7 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 
-// POS Koperasi: Restaurant-specific features (Tables, KDS, Addon Groups) are hidden in cooperative mode
+// POS Koperasi: Restaurant-specific features (Tables, KDS) are hidden in cooperative mode
 const SHOW_RESTAURANT_FEATURES = false;
 
 // null = show for all business types
@@ -48,9 +49,10 @@ const ALL_NAV_ITEMS = [
   { href: '/orders', labelKey: 'nav.orders', icon: ClipboardList, roles: ['owner', 'manager', 'cashier'], businessTypes: null },
   { href: '/whatsapp', labelKey: 'nav.whatsapp', icon: MessageCircle, roles: ['owner', 'manager', 'cashier'], businessTypes: null },
   { href: '/products', labelKey: 'nav.products', icon: Package, roles: ['owner', 'manager'], businessTypes: null },
+  { href: '/addon-groups', labelKey: 'nav.addonGroups', icon: Layers, roles: ['owner', 'manager'], businessTypes: null },
   { href: '/tables', labelKey: 'nav.tables', icon: Grid3X3, roles: ['owner', 'manager'], businessTypes: ['restaurant'] },
   { href: '/settings?tab=kds', labelKey: 'nav.kds', icon: ChefHat, roles: ['owner', 'manager'], businessTypes: ['restaurant'] },
-  { href: '/customers', labelKey: 'nav.customers', icon: Users, roles: ['owner', 'manager'], businessTypes: null },
+  { href: '/customers', labelKey: 'nav.customers', icon: Users, roles: ['owner', 'admin', 'manager', 'office_hr', 'cashier'], businessTypes: null },
   { href: '/staff', labelKey: 'nav.staff', icon: UserCog, roles: ['owner', 'manager'], businessTypes: null },
   { href: '/settings', labelKey: 'nav.settings', icon: Settings, roles: ['owner', 'manager'], businessTypes: null },
 ];
@@ -68,7 +70,7 @@ export default function AppSidebar() {
   const businessType = currentTenant?.business_type || 'restaurant';
   const navItems = ALL_NAV_ITEMS.filter((item) => {
     // Hide restaurant-specific items in POS Koperasi mode
-    if (!SHOW_RESTAURANT_FEATURES && (item.href === '/tables' || item.href.startsWith('/settings?tab=kds') || item.href === '/addon-groups')) {
+    if (!SHOW_RESTAURANT_FEATURES && (item.href === '/tables' || item.href.startsWith('/settings?tab=kds'))) {
       return false;
     }
     if (item.href === '/tables' && !tablesRequired) return false;

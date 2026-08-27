@@ -231,24 +231,107 @@ export function getMemberOutstandingExposure(db: Database.Database, memberId: st
  * Returns error message if invalid, or null if valid.
  */
 export function validateMemberSalaryDeductionLimits(
-  _db: Database.Database,
+  db: Database.Database,
   member: {
     id: string;
+    name?: string;
     is_member?: number | boolean;
     is_active?: number | boolean;
     salary_deduction_enabled?: number | boolean;
     monthly_deduction_limit?: number;
     outstanding_deduction_limit?: number;
   },
-  _requestedAmount: number,
-  _periodMonth: string
-): { allowed: boolean; error?: string; remainingMonthly?: number; remainingOutstanding?: number } {
+  requestedAmount: number,
+  periodMonth: string
+): {
+  allowed: boolean;
+  error?: string;
+  remainingMonthly: number;
+  remainingOutstanding: number;
+  monthlyLimit: number;
+  currentMonthlyUsage: number;
+  totalAccumulatedUsage: number;
+} {
   if (member.is_active === 0 || (member.is_active as any) === false) {
-    return { allowed: false, error: 'Akun member ini berstatus non-aktif' };
+    return {
+      allowed: false,
+      error: 'Akun member ini berstatus non-aktif',
+      remainingMonthly: 0,
+      remainingOutstanding: 0,
+      monthlyLimit: 0,
+      currentMonthlyUsage: 0,
+      totalAccumulatedUsage: 0,
+    };
   }
 
-  // Koperasi Policy: Potong gaji is a universal privilege for ALL members with NO limit
-  return { allowed: true, remainingMonthly: 999999999, remainingOutstanding: 999999999 };
+  if (member.is_member === 0 || (member.is_member as any) === false) {
+    return {
+      allowed: false,
+      error: 'Pelanggan bukan anggota terdaftar koperasi. Fasilitas potong gaji hanya berlaku untuk member.',
+      remainingMonthly: 0,
+      remainingOutstanding: 0,
+      monthlyLimit: 0,
+      currentMonthlyUsage: 0,
+      totalAccumulatedUsage: 0,
+    };
+  }
+
+  if (member.salary_deduction_enabled === 0 || (member.salary_deduction_enabled as any) === false) {
+    return {
+      allowed: false,
+      error: 'Fasilitas potong gaji (bon) dinonaktifkan untuk member ini',
+      remainingMonthly: 0,
+      remainingOutstanding: 0,
+      monthlyLimit: 0,
+      currentMonthlyUsage: 0,
+      totalAccumulatedUsage: 0,
+    };
+  }
+
+  const monthlyLimit = Number(member.monthly_deduction_limit || 0);
+  const outstandingLimit = Number(member.outstanding_deduction_limit || 0);
+
+  const currentMonthlyUsage = getMemberMonthlyUsage(db, member.id, periodMonth);
+  const totalAccumulatedUsage = getMemberTotalAccumulatedUsage(db, member.id);
+  const currentOutstanding = getMemberOutstandingExposure(db, member.id);
+
+  const remainingMonthly = monthlyLimit > 0 ? Math.max(0, monthlyLimit - currentMonthlyUsage) : 999999999;
+  const remainingOutstanding = outstandingLimit > 0 ? Math.max(0, outstandingLimit - currentOutstanding) : 999999999;
+
+  // Monthly limit validation
+  if (monthlyLimit > 0 && currentMonthlyUsage + requestedAmount > monthlyLimit) {
+    return {
+      allowed: false,
+      error: `Limit potong gaji bulanan (${periodMonth}) tidak mencukupi. Limit: Rp ${monthlyLimit.toLocaleString('id-ID')}, Terpakai: Rp ${currentMonthlyUsage.toLocaleString('id-ID')}, Sisa: Rp ${remainingMonthly.toLocaleString('id-ID')}, Permintaan: Rp ${requestedAmount.toLocaleString('id-ID')}`,
+      remainingMonthly,
+      remainingOutstanding,
+      monthlyLimit,
+      currentMonthlyUsage,
+      totalAccumulatedUsage,
+    };
+  }
+
+  // Outstanding limit validation
+  if (outstandingLimit > 0 && currentOutstanding + requestedAmount > outstandingLimit) {
+    return {
+      allowed: false,
+      error: `Limit outstanding berjalan tidak mencukupi. Limit: Rp ${outstandingLimit.toLocaleString('id-ID')}, Sisa: Rp ${remainingOutstanding.toLocaleString('id-ID')}, Permintaan: Rp ${requestedAmount.toLocaleString('id-ID')}`,
+      remainingMonthly,
+      remainingOutstanding,
+      monthlyLimit,
+      currentMonthlyUsage,
+      totalAccumulatedUsage,
+    };
+  }
+
+  return {
+    allowed: true,
+    remainingMonthly,
+    remainingOutstanding,
+    monthlyLimit,
+    currentMonthlyUsage,
+    totalAccumulatedUsage,
+  };
 }
 
 /**

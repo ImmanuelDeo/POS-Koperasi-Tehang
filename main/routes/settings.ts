@@ -168,6 +168,23 @@ router.put('/loyalty', (req: Request, res: Response) => {
   }
 });
 
+router.put('/payment-methods', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { qris_merchant_name, qris_image_url, bank_name, bank_account_number, bank_account_holder } = req.body;
+    const db = getDatabase();
+    upsertSettings(db, {
+      qris_merchant_name,
+      qris_image_url,
+      bank_name,
+      bank_account_number,
+      bank_account_holder,
+    });
+    res.json({ success: true, settings: getAllSettings(db) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ── Generic key-value routes ───────────────────────────────────────────────
 
 router.get('/', (req: Request, res: Response) => {

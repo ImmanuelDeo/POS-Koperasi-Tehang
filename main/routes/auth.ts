@@ -28,6 +28,7 @@ function buildLocalTenant(db: ReturnType<typeof getDatabase>, userRole: string) 
     currency:       s.currency       || 'IDR',
     currency_symbol: s.currency_symbol || 'Rp',
     timezone:       s.timezone       || 'Asia/Jakarta',
+    language:       s.language       || 'id',
     plan:           'desktop',
     status:         'active',
     role:           userRole,  // user's role — AuthGuard uses this for routing

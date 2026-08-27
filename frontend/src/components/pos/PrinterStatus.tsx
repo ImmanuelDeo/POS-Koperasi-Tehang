@@ -71,12 +71,16 @@ export default function PrinterStatus() {
   } = usePrinterStore();
   const { t } = useI18n();
 
-  const effectiveStatus: PrinterStatus = hardwarePrinter ? 'connected' : status;
+  const isHwOnline = hardwarePrinter ? Boolean(hardwarePrinter.is_online) : false;
+  const effectiveStatus: PrinterStatus = hardwarePrinter
+    ? (isHwOnline ? 'connected' : (hardwarePrinter.status === 'error' ? 'error' : 'disconnected'))
+    : status;
   const cfg = STATUS_CONFIG[effectiveStatus];
   const Icon = cfg.Icon;
 
   const handleConnect = async () => {
     clearError();
+    await usePrinterStore.getState().refreshHardwarePrinter();
     await connect();
     if (usePrinterStore.getState().status === 'connected') {
       toast.success(t('pos.printerConnected'));
@@ -90,7 +94,7 @@ export default function PrinterStatus() {
     toast(t('pos.printerDisconnected'));
   };
 
-  const isConnected = status === 'connected';
+  const isConnected = status === 'connected' || isHwOnline;
   const isConnecting = status === 'connecting';
 
   return (
@@ -105,25 +109,37 @@ export default function PrinterStatus() {
             size={16}
             className={isConnecting ? 'animate-spin' : undefined}
           />
-          <span className="hidden sm:inline text-xs font-medium truncate max-w-[140px]">
-            {hardwarePrinter ? hardwarePrinter.name : t(cfg.labelKey)}
+          <span className="hidden sm:inline text-xs font-medium truncate max-w-[150px]">
+            {hardwarePrinter
+              ? (isHwOnline ? hardwarePrinter.name : `${hardwarePrinter.name} (Offline)`)
+              : t(cfg.labelKey)}
           </span>
           <ChevronDown size={12} className="text-gray-400" />
         </Button>
       </DropdownMenuTrigger>
 
-      <DropdownMenuContent align="end" className="w-52">
+      <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuLabel className="text-xs text-gray-500">
           {t('pos.printerSectionLabel')}
         </DropdownMenuLabel>
 
         {hardwarePrinter && (
           <div className="px-2 py-1.5 text-xs text-gray-500 border-b border-gray-100">
-            <p className="font-medium text-gray-700 truncate flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+            <p className="font-medium text-gray-800 truncate flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${isHwOnline ? 'bg-green-500' : 'bg-red-500'}`} />
               {hardwarePrinter.name}
             </p>
-            <p className="capitalize">
+            <p className="mt-0.5 text-[11px] text-gray-500">
+              Status: <span className={`font-semibold ${isHwOnline ? 'text-green-700' : 'text-red-600'}`}>
+                {isHwOnline ? 'Terhubung (Online)' : 'Offline / Terputus'}
+              </span>
+            </p>
+            {hardwarePrinter.message && !isHwOnline && (
+              <p className="mt-1 text-[11px] text-amber-700 bg-amber-50 p-1 rounded border border-amber-200">
+                {hardwarePrinter.message}
+              </p>
+            )}
+            <p className="capitalize text-[11px] text-gray-400 mt-0.5">
               {hardwarePrinter.connection_type}
               {hardwarePrinter.connection_type === 'network' && hardwarePrinter.ip_address
                 ? ` · ${hardwarePrinter.ip_address}${hardwarePrinter.port ? ':' + hardwarePrinter.port : ''}`
@@ -149,6 +165,14 @@ export default function PrinterStatus() {
         )}
 
         <DropdownMenuSeparator />
+
+        <DropdownMenuItem
+          onClick={() => usePrinterStore.getState().refreshHardwarePrinter()}
+          className="text-sm cursor-pointer"
+        >
+          <Printer size={14} className="mr-2" />
+          Periksa Status Koneksi
+        </DropdownMenuItem>
 
         {printMethod === 'escpos' && (
           <>

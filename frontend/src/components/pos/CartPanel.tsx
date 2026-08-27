@@ -10,6 +10,7 @@ import {
   CreditCard,
   Building2,
   Sparkles,
+  AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCartStore } from '@/store/cart';
@@ -54,39 +55,73 @@ export default function CartPanel({
       {/* ── Member / Customer Card Header ───────────────────────────────────── */}
       <div className="p-3.5 border-b border-gray-100 bg-gradient-to-br from-gray-50 to-white">
         {member ? (
-          <div className="p-3 rounded-xl bg-emerald-50/80 border border-emerald-200/80 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
-                  <UserCheck size={15} />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-bold text-gray-900 truncate">{member.name}</p>
-                  <p className="text-[11px] font-mono text-emerald-800">
-                    {member.member_no} {member.employee_id ? `• NIK: ${member.employee_id}` : ''}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={onOpenMemberSelector}
-                className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-white px-2 py-1 rounded-md border border-emerald-300 hover:bg-emerald-100 transition-colors shrink-0"
-              >
-                Ganti (F2)
-              </button>
-            </div>
+          (() => {
+            const monthlyLimit = Number(member.monthly_deduction_limit || 0);
+            const monthlyUsage = Number(member.current_monthly_usage || 0);
+            const totalHistory = Number(member.total_accumulated_deductions || 0);
+            const remainingLimit = monthlyLimit > 0 ? Math.max(0, monthlyLimit - monthlyUsage) : Infinity;
+            const isCartOverLimit = monthlyLimit > 0 && cart.subtotal() > remainingLimit;
 
-            <div className="pt-1.5 border-t border-emerald-200/60 flex items-center justify-between text-[11px] text-gray-600">
-              <span className="flex items-center gap-1">
-                <Building2 size={12} className="text-gray-400" />
-                {member.department || 'Umum'}
-              </span>
-              <span className="flex items-center gap-1 font-medium">
-                <CreditCard size={12} className="text-emerald-700" />
-                Sisa Limit: <strong className="text-emerald-900">{fmt(member.remaining_monthly_limit)}</strong>
-              </span>
-            </div>
-          </div>
+            return (
+              <div className="p-3 rounded-xl bg-emerald-50/80 border border-emerald-200/80 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                      <UserCheck size={15} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-gray-900 truncate">{member.name}</p>
+                      <p className="text-[11px] font-mono text-emerald-800">
+                        {member.member_no} {member.employee_id ? `• NIK: ${member.employee_id}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => cart.setMember(null)}
+                      title="Ganti transaksi ke Pembeli Umum / Non-Member"
+                      className="text-[11px] font-semibold text-gray-600 hover:text-red-700 bg-white px-2 py-1 rounded-md border border-gray-200 hover:bg-red-50 hover:border-red-200 transition-colors"
+                    >
+                      Non-Member
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onOpenMemberSelector}
+                      className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-white px-2 py-1 rounded-md border border-emerald-300 hover:bg-emerald-100 transition-colors"
+                    >
+                      Ganti (F2)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-1.5 border-t border-emerald-200/60 grid grid-cols-2 gap-1.5 text-[11px] text-gray-600">
+                  <span className="flex items-center gap-1">
+                    <Building2 size={12} className="text-gray-400 shrink-0" />
+                    <span className="truncate">{member.department || 'Umum'}</span>
+                  </span>
+                  <span className="flex items-center gap-1 justify-end font-medium">
+                    <CreditCard size={12} className="text-emerald-700 shrink-0" />
+                    Sisa: <strong className={`font-bold ${isCartOverLimit ? 'text-red-600' : 'text-emerald-900'}`}>
+                      {monthlyLimit > 0 ? fmt(remainingLimit) : 'Bebas Limit'}
+                    </strong>
+                  </span>
+                </div>
+
+                <div className="pt-1 border-t border-emerald-200/40 flex items-center justify-between text-[10px] text-gray-500">
+                  <span>Terpakai Bulan Ini: <strong className="text-amber-800 font-semibold">{fmt(monthlyUsage)}</strong></span>
+                  <span>Total Riwayat Bon: <strong className="text-slate-800 font-semibold">{fmt(totalHistory)}</strong></span>
+                </div>
+
+                {isCartOverLimit && (
+                  <div className="p-1.5 bg-red-100 text-red-800 text-[10px] rounded-lg font-semibold flex items-center gap-1">
+                    <AlertTriangle size={12} className="text-red-600 shrink-0" />
+                    <span>Total keranjang melebihi sisa limit potong gaji!</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()
         ) : (
           <div className="flex items-center justify-between p-2.5 rounded-xl bg-gray-50 border border-gray-200">
             <div className="flex items-center gap-2 min-w-0">

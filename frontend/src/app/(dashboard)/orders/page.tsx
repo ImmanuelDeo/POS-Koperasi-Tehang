@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { Button } from '@/components/ui/button';
-import { CreditCard, Trash2, RotateCcw, Clock, MessageCircle, Printer, XCircle, Lock, Percent, Banknote, Search, Plus, ChevronDown, ChevronRight, ChevronLeft, UserPlus, User, ShoppingBag, Send, Loader2, RefreshCw, FileText, FileSpreadsheet, Download, Building2, UserCheck, AlertTriangle, Coins, CheckCircle2 } from 'lucide-react';
+import { CreditCard, Trash2, RotateCcw, Clock, MessageCircle, Printer, XCircle, Lock, Percent, Banknote, Search, Plus, ChevronDown, ChevronRight, ChevronLeft, UserPlus, User, ShoppingBag, Send, Loader2, RefreshCw, FileText, FileSpreadsheet, Download, Building2, UserCheck, AlertTriangle, Coins, CheckCircle2, AlertCircle, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { shareBillViaWhatsApp, sendBillViaFlo } from '@/lib/whatsapp-share';
 import { useConfirm } from '@/hooks/use-confirm';
@@ -80,7 +80,7 @@ interface DiscountModal {
 }
 
 export default function OrdersPage() {
-  const { currentTenant } = useAuthStore();
+  const { currentTenant, user } = useAuthStore();
   const { printBill } = usePrinterStore();
   const heldOrdersStore = useHeldOrdersStore();
   const router = useRouter();
@@ -149,7 +149,28 @@ export default function OrdersPage() {
 
   const currency = getCurrencySymbol(currentTenant?.currency || 'IDR', getCountryByCode(currentTenant?.country ?? 'ID')?.locale);
   const fmt = useFormatCurrency();
-  const isOwnerOrManager = currentTenant?.role === 'owner' || currentTenant?.role === 'manager';
+  const isSuperAdmin = user?.role === 'owner' || currentTenant?.role === 'owner';
+  const isOwnerOrManager = isSuperAdmin || currentTenant?.role === 'manager' || user?.role === 'manager' || user?.role === 'admin';
+
+  // Super Admin Delete Order State
+  const [orderToDelete, setOrderToDelete] = useState<Order | null>(null);
+  const [deletingOrderId, setDeletingOrderId] = useState<number | null>(null);
+
+  const handleDeleteOrder = async () => {
+    if (!orderToDelete) return;
+    setDeletingOrderId(orderToDelete.id);
+    try {
+      const res = await api.delete(`/orders/${orderToDelete.id}`);
+      toast.success(res.data?.message || `Order #${orderToDelete.order_number} berhasil dihapus.`);
+      setOrderToDelete(null);
+      fetchOrders(pagination.page);
+    } catch (err: any) {
+      const msg = err.response?.data?.error || 'Gagal menghapus order';
+      toast.error(msg);
+    } finally {
+      setDeletingOrderId(null);
+    }
+  };
 
   const [periodFilter, setPeriodFilter] = useState<PeriodFilterState>(() => {
     let today = new Date().toISOString().slice(0, 10);
@@ -253,6 +274,11 @@ export default function OrdersPage() {
       setIsRefreshing(false);
     }
   }, [periodFilter, filters, pagination.page, t]);
+
+  // ── Auto-fetch immediately whenever period filter or table/type/status/search changes ──
+  useEffect(() => {
+    fetchOrders(1, false);
+  }, [periodFilter, filters.search, filters.table, filters.type, filters.status]);
 
   useEffect(() => {
     api.get('/settings/kds_enabled')
@@ -786,7 +812,7 @@ export default function OrdersPage() {
     if (!addItemsOrder) return;
     const fetchProducts = async () => {
       try {
-        const { data } = await api.get('/products', { params: { per_page: 200 } });
+        const { data } = await api.get('/products/search', { params: { limit: 30, active: true } });
         setProducts(data.products || []);
       } catch {
         toast.error(t('orders.menuLoadFailed'));
@@ -1159,6 +1185,16 @@ export default function OrdersPage() {
                         <Printer size={14} />
                       </button>
                     )}
+                    {isSuperAdmin && (
+                      <button
+                        onClick={() => setOrderToDelete(order)}
+                        disabled={deletingOrderId === order.id}
+                        className="p-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300 disabled:opacity-50 transition-colors"
+                        title="Hapus Order & Transaksi (Khusus Super Admin)"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1425,6 +1461,19 @@ export default function OrdersPage() {
                           <Lock size={14} className="mr-1.5" />
                         )}
                         {cancellingOrderId === order.id ? t('orders.cancelling') : t('common.cancel')}
+                      </Button>
+                    )}
+                    {isSuperAdmin && (
+                      <Button
+                        variant="outline"
+                        onClick={() => setOrderToDelete(order)}
+                        disabled={deletingOrderId === order.id}
+                        size="sm"
+                        className="border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300 transition-colors shrink-0"
+                        title="Hapus Order Log (Khusus Super Admin)"
+                      >
+                        <Trash2 size={14} className="mr-1" />
+                        Hapus
                       </Button>
                     )}
                   </div>
@@ -2128,6 +2177,96 @@ placeholder={t('orders.managerPin')}
                   <>
                     <CheckCircle2 size={14} className="mr-1.5" />
                     Selesaikan Pembayaran
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Super Admin Delete Order Confirmation Modal */}
+      {orderToDelete && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-red-100 flex flex-col space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                <Trash2 size={20} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base font-bold text-gray-900">
+                  Hapus Order Log Permanen
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Khusus Hak Akses Admin Utama / Super Admin
+                </p>
+              </div>
+              <button
+                onClick={() => setOrderToDelete(null)}
+                disabled={deletingOrderId !== null}
+                className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-gray-50 rounded-xl border border-gray-200/80 space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">No. Order:</span>
+                <span className="font-bold text-gray-900 font-mono">#{orderToDelete.order_number}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">Total Transaksi:</span>
+                <span className="font-bold text-emerald-700">{fmt(orderToDelete.total)}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">Pelanggan / Member:</span>
+                <span className="font-medium text-gray-800">{orderToDelete.customer?.name || 'Pelanggan Umum'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">Waktu Order:</span>
+                <span className="text-gray-700">{formatDateTime(orderToDelete.created_at)}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">Status:</span>
+                <span className="capitalize font-semibold text-gray-800">{orderToDelete.status}</span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 flex items-start gap-2.5">
+              <AlertCircle size={16} className="text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <strong className="block font-semibold">Peringatan Penghapusan Data:</strong>
+                <p className="mt-0.5 text-red-700">
+                  Data pesanan ini, seluruh rincian item, bukti pembayaran (bill), dan catatan potong gaji terkait akan dihapus secara permanen dari database. Tindakan ini tidak dapat dibatalkan.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-gray-100">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setOrderToDelete(null)}
+                disabled={deletingOrderId !== null}
+              >
+                Batal
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleDeleteOrder}
+                disabled={deletingOrderId !== null}
+                className="bg-red-600 hover:bg-red-700 text-white font-bold px-4 shadow-xs"
+              >
+                {deletingOrderId !== null ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin mr-1.5" />
+                    Menghapus...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={14} className="mr-1.5" />
+                    Hapus Permanen
                   </>
                 )}
               </Button>

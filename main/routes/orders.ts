@@ -802,4 +802,83 @@ router.patch('/:id/status', (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
+// DELETE /api/orders/:id - Permanently delete an order and associated records (Super Admin / Owner only)
+router.delete('/:id', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const orderId = req.params.id;
+    const authUser = (req as AuthenticatedRequest).user;
+
+    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId) as any;
+    if (!order) {
+      return res.status(404).json({ error: 'Order tidak ditemukan' });
+    }
+
+    const deleteOrderTx = db.transaction(() => {
+      // 1. Delete associated salary deductions
+      db.prepare('DELETE FROM salary_deductions WHERE order_id = ?').run(orderId);
+
+      // 2. Delete loyalty ledger records for any bills belonging to this order
+      db.prepare(`
+        DELETE FROM loyalty_ledger
+        WHERE bill_id IN (SELECT id FROM bills WHERE order_id = ?)
+      `).run(orderId);
+
+      // 3. Delete associated bills
+      db.prepare('DELETE FROM bills WHERE order_id = ?').run(orderId);
+
+      // 4. Delete associated order items
+      db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderId);
+
+      // 5. Delete order record
+      db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+
+      // 6. Free table if applicable
+      if (order.table_id) {
+        const remainingActive = db.prepare(`
+          SELECT COUNT(*) as count FROM orders
+          WHERE table_id = ? AND status NOT IN ('completed', 'cancelled')
+        `).get(order.table_id) as any;
+        if (!remainingActive || remainingActive.count === 0) {
+          db.prepare("UPDATE tables SET status = 'available', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .run(order.table_id);
+        }
+      }
+
+      // 7. Record immutable audit log
+      createAuditLog(db, {
+        actor_user_id: authUser?.id || null,
+        actor_role: authUser?.role || 'owner',
+        action: 'DELETE_ORDER_TRANSACTION',
+        target_type: 'order',
+        target_id: String(order.id),
+        details: {
+          order_id: order.id,
+          order_number: order.order_number,
+          total: order.total,
+          status: order.status,
+          customer_id: order.customer_id,
+          created_at: order.created_at,
+          deleted_by: authUser?.name || 'Super Admin',
+        },
+        ip_address: req.ip || null,
+      });
+
+      return true;
+    });
+
+    deleteOrderTx();
+    notifyKdsUpdate();
+
+    res.json({
+      success: true,
+      message: `Order #${order.order_number} berhasil dihapus permanen dari database.`,
+      orderId: order.id,
+    });
+  } catch (error: any) {
+    console.error('[Orders] Delete order error:', error);
+    res.status(500).json({ error: error.message || 'Gagal menghapus order' });
+  }
+});
+
 export const orderRoutes = router;

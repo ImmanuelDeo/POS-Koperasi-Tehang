@@ -37,7 +37,20 @@ router.get('/:id', (req: Request, res: Response) => {
 
 router.post('/', (req: Request, res: Response) => {
   try {
-    const { name, description, is_required, min_selection, max_selection, sort_order, addons } = req.body;
+    const {
+      name,
+      category_name,
+      description,
+      promo_start_date,
+      promo_end_date,
+      is_forever,
+      bundle_price,
+      is_required,
+      min_selection,
+      max_selection,
+      sort_order,
+      addons,
+    } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Name is required' });
@@ -46,10 +59,26 @@ router.post('/', (req: Request, res: Response) => {
     const db = getDatabase();
     const groupId = randomUUID();
     db.prepare(`
-      INSERT INTO addon_groups (id, name, description, is_required, min_selection, max_selection, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO addon_groups (
+        id, name, category_name, description, promo_start_date, promo_end_date,
+        is_forever, bundle_price, is_required, min_selection, max_selection, sort_order, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      groupId, name, description || null, is_required ? 1 : 0, min_selection || 0, max_selection || 1, sort_order || 0, now(), now()
+      groupId,
+      name,
+      category_name || 'Paket Sembako',
+      description || null,
+      promo_start_date || null,
+      promo_end_date || null,
+      is_forever !== undefined ? (is_forever ? 1 : 0) : 1,
+      bundle_price !== undefined && bundle_price !== null ? Number(bundle_price) : null,
+      is_required ? 1 : 0,
+      min_selection || 0,
+      max_selection || 1,
+      sort_order || 0,
+      now(),
+      now()
     );
 
     // Insert addons if provided
@@ -77,15 +106,53 @@ router.put('/:id', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Addon group not found' });
     }
 
-    const { name, description, is_required, min_selection, max_selection, sort_order, is_active } = req.body;
+    const {
+      name,
+      category_name,
+      description,
+      promo_start_date,
+      promo_end_date,
+      is_forever,
+      bundle_price,
+      is_required,
+      min_selection,
+      max_selection,
+      sort_order,
+      is_active,
+    } = req.body;
 
     db.prepare(`
-      UPDATE addon_groups SET name = COALESCE(?, name), description = COALESCE(?, description),
-        is_required = COALESCE(?, is_required), min_selection = COALESCE(?, min_selection),
-        max_selection = COALESCE(?, max_selection), sort_order = COALESCE(?, sort_order),
-        is_active = COALESCE(?, is_active), updated_at = ?
+      UPDATE addon_groups SET
+        name = COALESCE(?, name),
+        category_name = COALESCE(?, category_name),
+        description = COALESCE(?, description),
+        promo_start_date = ?,
+        promo_end_date = ?,
+        is_forever = COALESCE(?, is_forever),
+        bundle_price = ?,
+        is_required = COALESCE(?, is_required),
+        min_selection = COALESCE(?, min_selection),
+        max_selection = COALESCE(?, max_selection),
+        sort_order = COALESCE(?, sort_order),
+        is_active = COALESCE(?, is_active),
+        updated_at = ?
       WHERE id = ?
-    `).run(name, description, is_required, min_selection, max_selection, sort_order, is_active, now(), req.params.id);
+    `).run(
+      name !== undefined ? name : null,
+      category_name !== undefined ? category_name : null,
+      description !== undefined ? description : null,
+      promo_start_date !== undefined ? promo_start_date : (group as any).promo_start_date,
+      promo_end_date !== undefined ? promo_end_date : (group as any).promo_end_date,
+      is_forever !== undefined ? (is_forever ? 1 : 0) : null,
+      bundle_price !== undefined ? (bundle_price !== null ? Number(bundle_price) : null) : (group as any).bundle_price,
+      is_required !== undefined ? (is_required ? 1 : 0) : null,
+      min_selection !== undefined ? min_selection : null,
+      max_selection !== undefined ? max_selection : null,
+      sort_order !== undefined ? sort_order : null,
+      is_active !== undefined ? (is_active ? 1 : 0) : null,
+      now(),
+      req.params.id
+    );
 
     const updated = db.prepare('SELECT * FROM addon_groups WHERE id = ?').get(req.params.id);
     const addons = db.prepare('SELECT * FROM addons WHERE addon_group_id = ?').all(req.params.id);

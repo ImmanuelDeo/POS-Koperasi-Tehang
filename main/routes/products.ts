@@ -42,9 +42,41 @@ export function formatProductResponse(product: any, db: any, catMap?: Map<string
   };
 }
 
+export interface CursorPayload {
+  sort: string;
+  lastName: string;
+  lastId: string;
+}
+
+export function encodeCursor(payload: CursorPayload): string {
+  return Buffer.from(JSON.stringify(payload)).toString('base64url');
+}
+
+export function decodeCursor(cursorStr: string): CursorPayload | null {
+  try {
+    const raw = Buffer.from(cursorStr, 'base64url').toString('utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.lastName === 'string' && typeof parsed.lastId === 'string') {
+      return {
+        sort: parsed.sort || 'name',
+        lastName: parsed.lastName,
+        lastId: parsed.lastId,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ── GET /api/products (Keyset Cursor Pagination) ─────────────────────────────
 router.get('/', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 50, 1), 100);
+    const cursorParam = req.query.cursor as string | undefined;
+    const includeTotal = req.query.include_total === 'true' || !cursorParam;
+
     let query = 'SELECT * FROM products WHERE deleted_at IS NULL';
     const params: any[] = [];
 
@@ -55,24 +87,156 @@ router.get('/', (req: Request, res: Response) => {
     if (req.query.active === 'true' || req.query.active === '1') {
       query += ' AND is_active = 1';
     }
-    if (req.query.search) {
-      query += ' AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ?)';
-      const searchTerm = `%${req.query.search}%`;
-      params.push(searchTerm, searchTerm, searchTerm);
-    }
     if (req.query.low_stock === 'true') {
       query += ' AND track_inventory = 1 AND stock_quantity <= low_stock_threshold';
     }
 
-    query += ' ORDER BY sort_order, name';
+    // Keyset pagination cursor based on (name ASC, id ASC)
+    if (cursorParam) {
+      const decoded = decodeCursor(cursorParam);
+      if (decoded) {
+        query += ' AND (name > ? OR (name = ? AND id > ?))';
+        params.push(decoded.lastName, decoded.lastName, decoded.lastId);
+      }
+    }
+
+    query += ' ORDER BY name ASC, id ASC LIMIT ?';
+    params.push(limit + 1);
 
     const categories = db.prepare('SELECT * FROM categories').all();
     const catMap = new Map<string, any>(categories.map((c: any) => [c.id, c]));
 
-    const products = db.prepare(query).all(...params);
-    const productsWithRelations = products.map((product: any) => formatProductResponse(product, db, catMap));
+    const rawRows = db.prepare(query).all(...params) as any[];
+    const hasMore = rawRows.length > limit;
+    const items = hasMore ? rawRows.slice(0, limit) : rawRows;
 
-    res.json({ products: productsWithRelations });
+    let nextCursor: string | null = null;
+    if (hasMore && items.length > 0) {
+      const lastItem = items[items.length - 1];
+      nextCursor = encodeCursor({
+        sort: 'name',
+        lastName: lastItem.name,
+        lastId: lastItem.id,
+      });
+    }
+
+    let totalCount: number | undefined = undefined;
+    if (includeTotal) {
+      let countQuery = 'SELECT COUNT(*) as count FROM products WHERE deleted_at IS NULL';
+      const countParams: any[] = [];
+      if (req.query.category_id) {
+        countQuery += ' AND category_id = ?';
+        countParams.push(req.query.category_id);
+      }
+      if (req.query.active === 'true' || req.query.active === '1') {
+        countQuery += ' AND is_active = 1';
+        countParams.push(1);
+      }
+      if (req.query.low_stock === 'true') {
+        countQuery += ' AND track_inventory = 1 AND stock_quantity <= low_stock_threshold';
+      }
+      const countRow = db.prepare(countQuery).get(...countParams) as { count: number };
+      totalCount = countRow?.count || 0;
+    }
+
+    const productsWithRelations = items.map((product: any) => formatProductResponse(product, db, catMap));
+
+    res.json({
+      products: productsWithRelations,
+      next_cursor: nextCursor,
+      has_more: hasMore,
+      total_count: totalCount,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /api/products/search (Server-Side Debounced Search) ────────────────────
+router.get('/search', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const categoryId = typeof req.query.categoryId === 'string' ? req.query.categoryId : undefined;
+    const activeOnly = req.query.active !== 'false' && req.query.active !== '0';
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 30, 1), 50);
+
+    let query = `
+      SELECT id, category_id, name, description, unit, allow_decimal, price, member_price,
+             cost, sku, barcode, is_active, stock_quantity, low_stock_threshold,
+             track_inventory, image_url, tags, updated_at
+      FROM products
+      WHERE deleted_at IS NULL
+    `;
+    const params: any[] = [];
+
+    if (activeOnly) {
+      query += ' AND is_active = 1';
+    }
+
+    if (categoryId) {
+      query += ' AND category_id = ?';
+      params.push(categoryId);
+    }
+
+    if (q) {
+      const cleanQ = q.trim();
+      const words = cleanQ.split(/\s+/).filter(Boolean);
+
+      if (words.length <= 1) {
+        query += ' AND (barcode = ? OR sku = ? OR name LIKE ? OR description LIKE ?)';
+        params.push(cleanQ, cleanQ, `%${cleanQ}%`, `%${cleanQ}%`);
+      } else {
+        // Multi-word keyword search: all keywords must match in the product fields
+        // Example: "paseo aloe" matches "PASEO BOX ALOE VERA 100'S"
+        // Example: "indomie goreng" matches "INDOMIE MI INSTAN GORENG SPESIAL"
+        const wordClauses = words.map(() => '(name LIKE ? OR description LIKE ? OR sku LIKE ? OR barcode LIKE ?)').join(' AND ');
+        query += ` AND (barcode = ? OR sku = ? OR (${wordClauses}))`;
+        params.push(cleanQ, cleanQ);
+        for (const w of words) {
+          params.push(`%${w}%`, `%${w}%`, `%${w}%`, `%${w}%`);
+        }
+      }
+    }
+
+    query += ' ORDER BY name ASC, id ASC LIMIT ?';
+    params.push(limit);
+
+    const categories = db.prepare('SELECT * FROM categories').all();
+    const catMap = new Map<string, any>(categories.map((c: any) => [c.id, c]));
+
+    const products = db.prepare(query).all(...params) as any[];
+    const formatted = products.map((p) => formatProductResponse(p, db, catMap));
+
+    res.json({
+      products: formatted,
+      count: formatted.length,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── POST /api/products/stock-snapshot ─────────────────────────────────────────
+// Returns live stock numbers for specific IDs without transferring entire catalog
+router.post('/stock-snapshot', (req: Request, res: Response) => {
+  try {
+    const { product_ids } = req.body;
+    if (!Array.isArray(product_ids) || product_ids.length === 0) {
+      return res.json({ stocks: [] });
+    }
+
+    const cleanIds = product_ids.slice(0, 500).map(String);
+    const db = getDatabase();
+
+    const placeholders = cleanIds.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT id, name, barcode, sku, price, member_price, stock_quantity, track_inventory, is_active
+      FROM products
+      WHERE id IN (${placeholders}) AND deleted_at IS NULL
+    `).all(...cleanIds) as any[];
+
+    res.json({ stocks: rows });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -80,7 +244,6 @@ router.get('/', (req: Request, res: Response) => {
 
 // ── GET /api/products/lookup-barcode ─────────────────────────────────────────
 // Exact-match barcode lookup for POS Scanner and Stock Flow (registered before /:id)
-
 router.get('/lookup-barcode', (req: Request, res: Response) => {
   try {
     const { code } = req.query;
@@ -99,13 +262,13 @@ router.get('/lookup-barcode', (req: Request, res: Response) => {
 
     const db = getDatabase();
 
-    // Exact match on barcode prioritized
+    // 1. Exact match on barcode prioritized
     let matchingProducts = db.prepare(`
       SELECT * FROM products
       WHERE deleted_at IS NULL AND barcode = ?
     `).all(cleanCode) as any[];
 
-    // Fallback to SKU exact match if not matched by barcode
+    // 2. Fallback to SKU exact match if not matched by barcode
     if (matchingProducts.length === 0) {
       matchingProducts = db.prepare(`
         SELECT * FROM products
@@ -118,7 +281,7 @@ router.get('/lookup-barcode', (req: Request, res: Response) => {
     }
 
     if (matchingProducts.length > 1) {
-      return res.status(409).json({ error: 'Barcode bermasalah. Hubungi admin.' });
+      return res.status(409).json({ error: 'Barcode/SKU ambigu atau duplikat. Hubungi admin.' });
     }
 
     const product = matchingProducts[0];

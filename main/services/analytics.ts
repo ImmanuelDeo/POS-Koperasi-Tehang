@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 
 export interface PeriodRange {
-  period: 'daily' | 'weekly' | 'monthly' | 'custom' | 'all';
+  period: 'daily' | 'weekly' | 'monthly' | 'yearly' | 'custom' | 'all';
   startDate: string; // YYYY-MM-DD in Asia/Jakarta
   endDate: string;   // YYYY-MM-DD in Asia/Jakarta
   startUtcIso: string; // UTC ISO string
@@ -181,6 +181,23 @@ export function calculatePeriodRange(
       startUtcIso: wibToUtcIso(startWib, '00:00:00.000'),
       endUtcIso: wibToUtcIso(endWib, '23:59:59.999'),
       label: monthName,
+      timezone: 'Asia/Jakarta',
+    };
+  }
+
+  if (period === 'yearly') {
+    const refDate = dateParam || todayWib;
+    const [year] = refDate.split('-').map(Number);
+    const startWib = `${year}-01-01`;
+    const endWib = `${year}-12-31`;
+
+    return {
+      period: 'yearly',
+      startDate: startWib,
+      endDate: endWib,
+      startUtcIso: wibToUtcIso(startWib, '00:00:00.000'),
+      endUtcIso: wibToUtcIso(endWib, '23:59:59.999'),
+      label: `Tahun ${year}`,
       timezone: 'Asia/Jakarta',
     };
   }
