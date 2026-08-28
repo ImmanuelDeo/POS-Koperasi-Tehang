@@ -6,7 +6,21 @@ import { useAuthStore } from '@/store/auth';
 import api from '@/lib/api';
 import { useI18n } from '@/hooks/useI18n';
 
-export function getLandingPage(): string {
+import type { User, Tenant } from '@/lib/types';
+
+export function getLandingPage(tenant?: Tenant | null, user?: User | null): string {
+  const role = tenant?.role || user?.role || 'cashier';
+  const permissions = tenant?.permissions || user?.permissions || [];
+
+  if (role === 'owner' || role === 'admin' || role === 'manager') {
+    return '/dashboard';
+  }
+  if (permissions.includes('dashboard')) {
+    return '/dashboard';
+  }
+  if (permissions.includes('pos') || role === 'cashier') {
+    return '/pos';
+  }
   return '/pos';
 }
 

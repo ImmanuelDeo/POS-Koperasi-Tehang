@@ -24,8 +24,11 @@ import { databaseRoutes } from './database';
 import { catalogCsvRoutes } from './catalog-csv';
 import { memberCsvRoutes } from './member-csv';
 import { dbToolsRoutes } from './db-tools';
+import whatsappCampaignRoutes from './whatsapp-campaigns';
+import { processInboundWebhookEvent } from '../services/whatsapp-webhook';
 import { getDatabase, now, parseItemJson } from '../db';
 import { authenticateToken, requireRole, requireMethodRoles, AuthenticatedRequest } from '../middleware/auth';
+import { Request, Response } from 'express';
 
 export function registerRoutes(app: Express): void {
   // ── Public Auth routes (with internal public/protected routing) ───────────
@@ -201,24 +204,40 @@ export function registerRoutes(app: Express): void {
   app.use(
     '/api/staff',
     authenticateToken,
-    requireMethodRoles({
-      GET: ['owner', 'admin'],
-      POST: ['owner', 'admin'],
-      PUT: ['owner', 'admin'],
-      DELETE: ['owner'],
-    }),
+    requireMethodRoles(
+      {
+        GET: ['owner', 'admin', 'manager'],
+        POST: ['owner', 'admin', 'manager'],
+        PUT: ['owner', 'admin', 'manager'],
+        DELETE: ['owner'],
+      },
+      {
+        GET: 'staff',
+        POST: 'staff',
+        PUT: 'staff',
+        DELETE: 'staff',
+      }
+    ),
     staffRoutes
   );
 
   app.use(
     '/api/users',
     authenticateToken,
-    requireMethodRoles({
-      GET: ['owner', 'admin'],
-      POST: ['owner', 'admin'],
-      PUT: ['owner', 'admin'],
-      DELETE: ['owner'],
-    }),
+    requireMethodRoles(
+      {
+        GET: ['owner', 'admin', 'manager'],
+        POST: ['owner', 'admin', 'manager'],
+        PUT: ['owner', 'admin', 'manager'],
+        DELETE: ['owner'],
+      },
+      {
+        GET: 'staff',
+        POST: 'staff',
+        PUT: 'staff',
+        DELETE: 'staff',
+      }
+    ),
     staffRoutes
   );
 
@@ -245,19 +264,19 @@ export function registerRoutes(app: Express): void {
     serveCooperativeLogo(res);
   });
 
-  // Settings are restricted to owner and admin only
+  // Settings are restricted to owner and admin or granted settings permission
   app.use(
     '/api/settings',
     authenticateToken,
-    requireRole(['owner', 'admin']),
+    requireRole(['owner', 'admin'], 'settings'),
     settingsRoutes
   );
 
-  app.use('/api/reports', authenticateToken, requireRole(['owner', 'admin', 'cashier']), reportRoutes);
+  app.use('/api/reports', authenticateToken, requireRole(['owner', 'admin', 'cashier'], 'reports'), reportRoutes);
   app.use(
     '/api/dashboard',
     authenticateToken,
-    requireRole(['owner', 'admin', 'office_hr', 'manager', 'cashier']),
+    requireRole(['owner', 'admin', 'office_hr', 'manager', 'cashier'], 'dashboard'),
     dashboardRoutes
   );
   app.use('/api/kds', authenticateToken, requireRole(['owner', 'admin', 'chef']), kdsRoutes);
@@ -274,6 +293,44 @@ export function registerRoutes(app: Express): void {
   // Database backups, exports & maintenance are STRICTLY owner-only
   app.use('/api/db', authenticateToken, requireRole(['owner']), databaseRoutes);
   app.use('/api/db-tools', authenticateToken, requireRole(['owner', 'admin']), dbToolsRoutes);
+
+  // WhatsApp Campaigns & Marketing Promos
+  app.use(
+    '/api/whatsapp-campaigns',
+    authenticateToken,
+    requireRole(['owner', 'admin', 'manager']),
+    whatsappCampaignRoutes
+  );
+
+  // Inbound WhatsApp Webhook (Official Provider Signature Verified)
+  app.post('/api/webhooks/whatsapp', async (req: Request, res: Response) => {
+    try {
+      const signature = (req.headers['x-hub-signature-256'] as string) || (req.headers['x-signature'] as string) || '';
+      const rawBody = (req as any).rawBody || JSON.stringify(req.body);
+      const result = await processInboundWebhookEvent(signature, rawBody, req.body);
+      if (!result.success && result.error === 'Invalid webhook signature') {
+        return res.status(401).json({ error: result.error });
+      }
+      return res.status(200).json({ status: 'EVENT_RECEIVED', result });
+    } catch (err: any) {
+      console.error('[WhatsApp Webhook Error]', err.message);
+      return res.status(500).json({ error: 'Webhook processing failed' });
+    }
+  });
+
+  // Meta Webhook Verification challenge (GET /api/webhooks/whatsapp)
+  app.get('/api/webhooks/whatsapp', (req: Request, res: Response) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    const expectedToken = process.env.WA_WEBHOOK_VERIFY_TOKEN || 'koperasi_tehang_wa_verify_token';
+
+    if (mode === 'subscribe' && token === expectedToken) {
+      console.log('[WhatsApp Webhook] Webhook verified by Meta.');
+      return res.status(200).send(challenge);
+    }
+    return res.status(403).send('Forbidden');
+  });
 
   // Tax preview
   app.post('/api/tax/preview', authenticateToken, requireRole(['owner', 'admin', 'cashier']), async (req, res) => {

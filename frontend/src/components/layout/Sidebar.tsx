@@ -42,19 +42,29 @@ import {
 // POS Koperasi: Restaurant-specific features (Tables, KDS) are hidden in cooperative mode
 const SHOW_RESTAURANT_FEATURES = false;
 
+interface NavItem {
+  href: string;
+  labelKey: string;
+  icon: any;
+  roles: string[];
+  section?: string | null;
+  businessTypes: string[] | null;
+}
+
 // null = show for all business types
-const ALL_NAV_ITEMS = [
-  { href: '/pos', labelKey: 'nav.pos', icon: ShoppingCart, roles: ['owner', 'manager', 'cashier'], businessTypes: null },
-  { href: '/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard, roles: ['owner'], businessTypes: null },
-  { href: '/orders', labelKey: 'nav.orders', icon: ClipboardList, roles: ['owner', 'manager', 'cashier'], businessTypes: null },
-  { href: '/whatsapp', labelKey: 'nav.whatsapp', icon: MessageCircle, roles: ['owner', 'manager', 'cashier'], businessTypes: null },
-  { href: '/products', labelKey: 'nav.products', icon: Package, roles: ['owner', 'manager'], businessTypes: null },
-  { href: '/addon-groups', labelKey: 'nav.addonGroups', icon: Layers, roles: ['owner', 'manager'], businessTypes: null },
-  { href: '/tables', labelKey: 'nav.tables', icon: Grid3X3, roles: ['owner', 'manager'], businessTypes: ['restaurant'] },
-  { href: '/settings?tab=kds', labelKey: 'nav.kds', icon: ChefHat, roles: ['owner', 'manager'], businessTypes: ['restaurant'] },
-  { href: '/customers', labelKey: 'nav.customers', icon: Users, roles: ['owner', 'admin', 'manager', 'office_hr', 'cashier'], businessTypes: null },
-  { href: '/staff', labelKey: 'nav.staff', icon: UserCog, roles: ['owner', 'manager'], businessTypes: null },
-  { href: '/settings', labelKey: 'nav.settings', icon: Settings, roles: ['owner', 'manager'], businessTypes: null },
+// section = the permission key that grants access to this nav item
+const ALL_NAV_ITEMS: NavItem[] = [
+  { href: '/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard, roles: ['owner', 'admin', 'manager', 'office_hr'], section: 'dashboard', businessTypes: null },
+  { href: '/pos', labelKey: 'nav.pos', icon: ShoppingCart, roles: ['owner', 'admin', 'manager', 'cashier'], section: 'pos', businessTypes: null },
+  { href: '/orders', labelKey: 'nav.orders', icon: ClipboardList, roles: ['owner', 'admin', 'manager', 'cashier'], section: 'orders', businessTypes: null },
+  { href: '/whatsapp', labelKey: 'nav.whatsapp', icon: MessageCircle, roles: ['owner', 'admin', 'manager', 'cashier'], section: 'whatsapp', businessTypes: null },
+  { href: '/products', labelKey: 'nav.products', icon: Package, roles: ['owner', 'admin', 'manager', 'office_inventory'], section: 'products', businessTypes: null },
+  { href: '/addon-groups', labelKey: 'nav.addonGroups', icon: Layers, roles: ['owner', 'admin', 'manager', 'office_inventory'], section: 'addon_groups', businessTypes: null },
+  { href: '/tables', labelKey: 'nav.tables', icon: Grid3X3, roles: ['owner', 'admin', 'manager'], section: null, businessTypes: ['restaurant'] },
+  { href: '/settings?tab=kds', labelKey: 'nav.kds', icon: ChefHat, roles: ['owner', 'admin', 'manager'], section: null, businessTypes: ['restaurant'] },
+  { href: '/customers', labelKey: 'nav.customers', icon: Users, roles: ['owner', 'admin', 'manager', 'office_hr', 'cashier'], section: 'customers', businessTypes: null },
+  { href: '/staff', labelKey: 'nav.staff', icon: UserCog, roles: ['owner', 'admin', 'manager'], section: 'staff', businessTypes: null },
+  { href: '/settings', labelKey: 'nav.settings', icon: Settings, roles: ['owner', 'admin', 'manager'], section: 'settings', businessTypes: null },
 ];
 
 export default function AppSidebar() {
@@ -66,7 +76,8 @@ export default function AppSidebar() {
   const { confirm, ConfirmDialog } = useConfirm();
   const closeMobile = () => { if (isMobile) setOpenMobile(false); };
 
-  const role = currentTenant?.role || 'cashier';
+  const role = currentTenant?.role || user?.role || 'cashier';
+  const userPermissions = currentTenant?.permissions || user?.permissions || [];
   const businessType = currentTenant?.business_type || 'restaurant';
   const navItems = ALL_NAV_ITEMS.filter((item) => {
     // Hide restaurant-specific items in POS Koperasi mode
@@ -78,10 +89,22 @@ export default function AppSidebar() {
     if (item.href === '/settings?tab=kds' && !kdsEnabled) return false;
     // WhatsApp integration not enabled on this tenant → hide the nav entry.
     if (item.href === '/whatsapp' && !whatsappEnabled) return false;
+
+    // Owner always has full access
+    if (role === 'owner') {
+      return item.businessTypes === null || item.businessTypes.includes(businessType);
+    }
+
+    // Check granular permission grant first
+    if (item.section && userPermissions.includes(item.section)) {
+      return item.businessTypes === null || item.businessTypes.includes(businessType);
+    }
+
+    // Fallback to role-based check
     return item.roles.includes(role)
       && (item.businessTypes === null || item.businessTypes.includes(businessType));
   });
-  const homeHref = getLandingPage();
+  const homeHref = getLandingPage(currentTenant, user);
 
   useEffect(() => {
     if (!currentTenant) return;

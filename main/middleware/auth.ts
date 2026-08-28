@@ -8,6 +8,7 @@ export interface AuthenticatedUser {
   name: string;
   email: string;
   role: string;
+  permissions: string[];
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -36,11 +37,18 @@ export function authenticateToken(req: AuthenticatedRequest, res: Response, next
 
     const db = getDatabase();
     const user = db.prepare(
-      'SELECT id, name, email, role, is_active FROM users WHERE id = ?'
+      'SELECT id, name, email, role, permissions, is_active FROM users WHERE id = ?'
     ).get(userId) as any;
 
     if (!user || user.is_active !== 1) {
       return res.status(401).json({ error: 'User account is inactive or no longer exists' });
+    }
+
+    let permissions: string[] = [];
+    try {
+      permissions = user.permissions ? JSON.parse(user.permissions) : [];
+    } catch {
+      permissions = [];
     }
 
     // Attach latest authenticated user from database
@@ -49,6 +57,7 @@ export function authenticateToken(req: AuthenticatedRequest, res: Response, next
       name: String(user.name),
       email: String(user.email),
       role: String(user.role),
+      permissions,
     };
 
     next();
@@ -58,11 +67,12 @@ export function authenticateToken(req: AuthenticatedRequest, res: Response, next
 }
 
 /**
- * Middleware to enforce role-based access control (RBAC).
- * Owner role always bypasses all restrictions.
- * Legacy roles 'manager' and 'waiter' are mapped to 'admin' and 'cashier' respectively.
+ * Middleware to enforce role-based access control (RBAC) with granular permission grants.
+ * - Owner role always bypasses all restrictions.
+ * - If requiredPermission is provided and granted in user.permissions, access is allowed.
+ * - Legacy roles 'manager' and 'waiter' are mapped to 'admin' and 'cashier' respectively.
  */
-export function requireRole(allowedRoles: string[]) {
+export function requireRole(allowedRoles: string[], requiredPermission?: string) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Authentication required' });
@@ -72,6 +82,11 @@ export function requireRole(allowedRoles: string[]) {
 
     // Owner always has full access
     if (userRole === 'owner') {
+      return next();
+    }
+
+    // Check if user has explicit granted permission for this section/feature
+    if (requiredPermission && req.user.permissions?.includes(requiredPermission)) {
       return next();
     }
 
@@ -95,7 +110,7 @@ export function requireRole(allowedRoles: string[]) {
 /**
  * Middleware to enforce method-specific RBAC within a single route mount.
  */
-export function requireMethodRoles(methodMap: Record<string, string[]>) {
+export function requireMethodRoles(methodMap: Record<string, string[]>, permissionMap?: Record<string, string>) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Authentication required' });
@@ -107,6 +122,12 @@ export function requireMethodRoles(methodMap: Record<string, string[]>) {
     }
 
     const method = req.method.toUpperCase();
+    const requiredPermission = permissionMap ? (permissionMap[method] || permissionMap['ALL']) : undefined;
+
+    if (requiredPermission && req.user.permissions?.includes(requiredPermission)) {
+      return next();
+    }
+
     const allowedRoles = methodMap[method] || methodMap['ALL'] || ['owner', 'admin'];
 
     const effectiveRoles = [userRole];

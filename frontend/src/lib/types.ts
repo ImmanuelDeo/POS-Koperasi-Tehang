@@ -5,6 +5,7 @@ export interface User {
   phone: string | null;
   country_code: string;
   role?: string;
+  permissions?: string[];
   is_active: boolean;
 }
 
@@ -26,6 +27,7 @@ export interface Tenant {
   logo_url?: string;
   logo_path?: string;
   role?: string;
+  permissions?: string[];
   language?: 'id' | 'en' | 'es';
 }
 
@@ -263,7 +265,9 @@ export interface Staff {
   name: string;
   email: string | null;
   role: string;
+  permissions?: string[];
   pin_hash: string | null;
+  pin?: string | null;
   is_active: number;
   created_at: string;
   updated_at: string;

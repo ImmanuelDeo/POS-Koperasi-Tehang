@@ -14,7 +14,7 @@ const JWT_EXPIRES_IN = '24h';
  * FloDesktop is single-tenant — there is always exactly one "business".
  * The frontend expects this shape to determine routing (chef → KDS, others → POS).
  */
-function buildLocalTenant(db: ReturnType<typeof getDatabase>, userRole: string) {
+function buildLocalTenant(db: ReturnType<typeof getDatabase>, userRole: string, permissions: string[] = []) {
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   const s: Record<string, string> = Object.fromEntries(rows.map(r => [r.key, r.value]));
 
@@ -37,6 +37,7 @@ function buildLocalTenant(db: ReturnType<typeof getDatabase>, userRole: string) 
     plan:            'desktop',
     status:          'active',
     role:            userRole,  // user's role — AuthGuard uses this for routing
+    permissions,
   };
 }
 
@@ -63,7 +64,14 @@ router.post('/login', (req: Request, res: Response) => {
       { expiresIn: JWT_EXPIRES_IN }
     );
 
-    const tenant = buildLocalTenant(db, user.role);
+    let permissions: string[] = [];
+    try {
+      permissions = user.permissions ? JSON.parse(user.permissions) : [];
+    } catch {
+      permissions = [];
+    }
+
+    const tenant = buildLocalTenant(db, user.role, permissions);
 
     res.json({
       access_token: token,
@@ -74,6 +82,7 @@ router.post('/login', (req: Request, res: Response) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        permissions,
         category_ids: user.category_ids ? JSON.parse(user.category_ids) : [],
       },
       // Single tenant — frontend auto-selects when tenants.length === 1
@@ -92,7 +101,7 @@ router.post('/tenants/select', authenticateToken, (req: AuthenticatedRequest, re
   try {
     const user = req.user!;
     const db = getDatabase();
-    const tenant = buildLocalTenant(db, user.role);
+    const tenant = buildLocalTenant(db, user.role, user.permissions || []);
 
     // Re-issue token with tenant context embedded
     const newToken = jwt.sign(
@@ -143,13 +152,26 @@ router.post('/refresh', authenticateToken, (req: AuthenticatedRequest, res: Resp
 router.get('/me', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   try {
     const db = getDatabase();
-    const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(req.user!.id) as any;
+    const user = db.prepare('SELECT id, name, email, role, permissions FROM users WHERE id = ?').get(req.user!.id) as any;
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const tenant = buildLocalTenant(db, user.role);
+    let permissions: string[] = [];
+    try {
+      permissions = user.permissions ? JSON.parse(user.permissions) : [];
+    } catch {
+      permissions = [];
+    }
+
+    const tenant = buildLocalTenant(db, user.role, permissions);
 
     res.json({
-      user,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        permissions,
+      },
       tenants: [tenant],
     });
   } catch {

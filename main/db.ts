@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 16;
 
 let db: Database.Database;
 
@@ -788,6 +788,219 @@ function runIncrementalMigrations(fromVersion: number): void {
     console.log('[DB] Migration to v14 complete');
   }
 
+  // Migration to version 15 (WhatsApp Official Campaign, Opt-in Consent & Templates)
+  if (fromVersion < 15) {
+    console.log('[DB] Applying migration to v15 (WhatsApp Campaign & Consent Schema)...');
+    const migrationV15 = db.transaction(() => {
+      // 1. Add marketing consent columns to customers table
+      if (!columnExists('customers', 'whatsapp_marketing_opt_in')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN whatsapp_marketing_opt_in INTEGER NOT NULL DEFAULT 0 CHECK(whatsapp_marketing_opt_in IN (0, 1))`);
+      }
+      if (!columnExists('customers', 'whatsapp_marketing_opt_in_at')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN whatsapp_marketing_opt_in_at TEXT NULL`);
+      }
+      if (!columnExists('customers', 'whatsapp_marketing_opt_in_source')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN whatsapp_marketing_opt_in_source TEXT NULL`);
+      }
+      if (!columnExists('customers', 'whatsapp_marketing_policy_version')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN whatsapp_marketing_policy_version TEXT NULL`);
+      }
+      if (!columnExists('customers', 'whatsapp_marketing_opt_out_at')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN whatsapp_marketing_opt_out_at TEXT NULL`);
+      }
+      if (!columnExists('customers', 'whatsapp_marketing_opt_out_reason')) {
+        db.exec(`ALTER TABLE customers ADD COLUMN whatsapp_marketing_opt_out_reason TEXT NULL`);
+      }
+
+      // 2. Index for fast opt-in segment filtering
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_customers_wa_optin ON customers(whatsapp_marketing_opt_in, is_active)`);
+
+      // 3. Consent logs table
+      db.exec(`CREATE TABLE IF NOT EXISTS customer_consent_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK(event_type IN ('OPT_IN', 'OPT_OUT')),
+        source TEXT NOT NULL,
+        policy_version TEXT,
+        actor_user_id TEXT NULL,
+        reason TEXT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (customer_id) REFERENCES customers(id),
+        FOREIGN KEY (actor_user_id) REFERENCES users(id)
+      )`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_consent_logs_customer ON customer_consent_logs(customer_id, created_at)`);
+
+      // 4. WhatsApp Templates table
+      db.exec(`CREATE TABLE IF NOT EXISTS whatsapp_templates (
+        id TEXT PRIMARY KEY,
+        provider_template_id TEXT NULL,
+        template_name TEXT NOT NULL UNIQUE,
+        category TEXT NOT NULL CHECK(category IN ('MARKETING', 'UTILITY', 'AUTHENTICATION')),
+        language TEXT NOT NULL DEFAULT 'id',
+        status TEXT NOT NULL CHECK(status IN ('draft', 'submitted', 'approved', 'rejected', 'paused')),
+        header_type TEXT NULL CHECK(header_type IN ('TEXT', 'IMAGE', 'DOCUMENT', 'NONE')),
+        header_content TEXT NULL,
+        body_text TEXT NOT NULL,
+        footer_text TEXT NULL,
+        buttons_json TEXT NULL,
+        variable_schema_json TEXT NULL,
+        rejection_reason TEXT NULL,
+        synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_wa_templates_status ON whatsapp_templates(status)`);
+
+      // 5. WhatsApp Campaigns table
+      db.exec(`CREATE TABLE IF NOT EXISTS whatsapp_campaigns (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        template_variables_json TEXT NOT NULL DEFAULT '{}',
+        target_criteria_json TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'scheduled', 'running', 'paused', 'completed', 'cancelled', 'failed')),
+        scheduled_at_utc TEXT NULL,
+        scheduled_at_wib_label TEXT NULL,
+        started_at TEXT NULL,
+        completed_at TEXT NULL,
+        created_by TEXT NOT NULL,
+        approved_by TEXT NULL,
+        cancelled_by TEXT NULL,
+        recipient_count_estimate INTEGER NOT NULL DEFAULT 0,
+        sent_count INTEGER NOT NULL DEFAULT 0,
+        delivered_count INTEGER NOT NULL DEFAULT 0,
+        read_count INTEGER NOT NULL DEFAULT 0,
+        failed_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (template_id) REFERENCES whatsapp_templates(id),
+        FOREIGN KEY (created_by) REFERENCES users(id),
+        FOREIGN KEY (approved_by) REFERENCES users(id),
+        FOREIGN KEY (cancelled_by) REFERENCES users(id)
+      )`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_wa_campaigns_status_sched ON whatsapp_campaigns(status, scheduled_at_utc)`);
+
+      // 6. WhatsApp Campaign Recipients table
+      db.exec(`CREATE TABLE IF NOT EXISTS whatsapp_campaign_recipients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id TEXT NOT NULL,
+        customer_id TEXT NOT NULL,
+        phone_e164 TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'sending', 'sent', 'delivered', 'read', 'failed', 'skipped', 'opted_out')),
+        provider_message_id TEXT NULL,
+        error_code TEXT NULL,
+        error_category TEXT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        sent_at TEXT NULL,
+        delivered_at TEXT NULL,
+        read_at TEXT NULL,
+        failed_at TEXT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (campaign_id) REFERENCES whatsapp_campaigns(id),
+        FOREIGN KEY (customer_id) REFERENCES customers(id),
+        UNIQUE(campaign_id, customer_id)
+      )`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_wa_recipients_camp_status ON whatsapp_campaign_recipients(campaign_id, status)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_wa_recipients_prov_msg ON whatsapp_campaign_recipients(provider_message_id)`);
+
+      // 7. Seed standard approved cooperative marketing templates
+      const seedTemplate = db.prepare(`
+        INSERT OR IGNORE INTO whatsapp_templates (
+          id, template_name, category, language, status, header_type, body_text, footer_text, buttons_json, variable_schema_json, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `);
+
+      seedTemplate.run(
+        'tpl-promo-sembako-1',
+        'koperasi_promo_sembako',
+        'MARKETING',
+        'id',
+        'approved',
+        'TEXT',
+        'Halo {{1}}, ada kabar gembira dari {{2}}! Nikmati promo {{3}} khusus anggota aktif. Promo berlaku hingga {{4}}. Kunjungi toko koperasi kami atau hubungi pengurus.',
+        'Balas STOP untuk berhenti menerima info promo.',
+        JSON.stringify([{ type: 'QUICK_REPLY', text: 'Lihat Promo' }, { type: 'QUICK_REPLY', text: 'STOP' }]),
+        JSON.stringify(['recipient_name', 'business_name', 'promo_title', 'valid_until'])
+      );
+
+      seedTemplate.run(
+        'tpl-bazar-hemat-2',
+        'koperasi_bazar_hemat',
+        'MARKETING',
+        'id',
+        'approved',
+        'TEXT',
+        'Salam hangat {{1}}, {{2}} mengadakan program {{3}} dengan penawaran spesial untuk kebutuhan harian Anda. Berlaku sampai {{4}}. Jangan lewatkan kesempatan ini!',
+        'Balas STOP untuk berhenti berlangganan.',
+        JSON.stringify([{ type: 'QUICK_REPLY', text: 'Info Lengkap' }, { type: 'QUICK_REPLY', text: 'STOP' }]),
+        JSON.stringify(['recipient_name', 'business_name', 'promo_title', 'valid_until'])
+      );
+
+      seedTemplate.run(
+        'tpl-voucher-spesial-3',
+        'koperasi_voucher_belanja',
+        'MARKETING',
+        'id',
+        'approved',
+        'TEXT',
+        'Yth. {{1}}, dapatkan keuntungan belanja di {{2}} dengan kode voucher {{3}} untuk {{4}}. Berlaku sampai {{5}} di gerai Koperasi.',
+        'Balas STOP untuk berhenti menerima pesan promo.',
+        JSON.stringify([{ type: 'QUICK_REPLY', text: 'Gunakan Voucher' }, { type: 'QUICK_REPLY', text: 'STOP' }]),
+        JSON.stringify(['recipient_name', 'business_name', 'promo_code', 'promo_title', 'valid_until'])
+      );
+    });
+
+    migrationV15();
+    console.log('[DB] Migration to v15 complete');
+  }
+
+  if (fromVersion < 16) {
+    console.log('[DB] Applying migration to v16 (Staff Granular Section Access Permissions)...');
+    const migrationV16 = db.transaction(() => {
+      // 1. Add permissions column to users table if not exists
+      if (!columnExists('users', 'permissions')) {
+        db.exec(`ALTER TABLE users ADD COLUMN permissions TEXT NOT NULL DEFAULT '[]'`);
+      }
+
+      // 2. Initialize default permissions for existing users
+      const allUsers = db.prepare(`SELECT id, role, permissions FROM users`).all() as any[];
+      const updatePerms = db.prepare(`UPDATE users SET permissions = ? WHERE id = ?`);
+
+      for (const u of allUsers) {
+        let perms: string[] = [];
+        try {
+          perms = JSON.parse(u.permissions || '[]');
+        } catch {
+          perms = [];
+        }
+
+        if (perms.length === 0) {
+          if (u.role === 'owner') {
+            perms = ['pos', 'dashboard', 'orders', 'products', 'addon_groups', 'customers', 'reports', 'whatsapp', 'staff', 'settings', 'salary_deductions', 'stock_movements', 'db_backup'];
+          } else if (u.role === 'manager' || u.role === 'admin') {
+            perms = ['pos', 'dashboard', 'orders', 'products', 'addon_groups', 'customers', 'reports', 'whatsapp', 'staff', 'salary_deductions', 'stock_movements'];
+          } else if (u.role === 'office_hr') {
+            perms = ['dashboard', 'customers', 'salary_deductions', 'reports'];
+          } else if (u.role === 'office_inventory') {
+            perms = ['products', 'stock_movements', 'reports'];
+          } else if (u.role === 'cashier' || u.role === 'waiter') {
+            perms = ['pos', 'orders', 'customers'];
+          } else if (u.role === 'chef') {
+            perms = ['pos', 'orders'];
+          } else {
+            perms = ['pos'];
+          }
+          updatePerms.run(JSON.stringify(perms), u.id);
+        }
+      }
+    });
+
+    migrationV16();
+    console.log('[DB] Migration to v16 complete');
+  }
+
   // Update schema version
   db.prepare(`
     INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, CURRENT_TIMESTAMP)
@@ -934,6 +1147,12 @@ function createSchema(): void {
       outstanding_deduction_limit INTEGER NOT NULL DEFAULT 0
         CHECK(outstanding_deduction_limit >= 0),
       notes TEXT,
+      whatsapp_marketing_opt_in INTEGER NOT NULL DEFAULT 0 CHECK(whatsapp_marketing_opt_in IN (0, 1)),
+      whatsapp_marketing_opt_in_at TEXT NULL,
+      whatsapp_marketing_opt_in_source TEXT NULL,
+      whatsapp_marketing_policy_version TEXT NULL,
+      whatsapp_marketing_opt_out_at TEXT NULL,
+      whatsapp_marketing_opt_out_reason TEXT NULL,
       is_active INTEGER DEFAULT 1,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -1012,7 +1231,8 @@ function createSchema(): void {
       email TEXT UNIQUE,
       password TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'cashier'
-        CHECK (role IN ('owner', 'manager', 'cashier', 'waiter', 'chef')),
+        CHECK (role IN ('owner', 'admin', 'manager', 'cashier', 'office_hr', 'office_inventory', 'waiter', 'chef')),
+      permissions TEXT NOT NULL DEFAULT '[]',
       pin TEXT,
       category_ids TEXT,
       is_active INTEGER DEFAULT 1,
@@ -1206,6 +1426,94 @@ function createSchema(): void {
       ON products(barcode) WHERE barcode IS NOT NULL AND trim(barcode) != '';
     CREATE INDEX IF NOT EXISTS idx_products_sku
       ON products(sku);
+
+    -- ── Schema v15 (WhatsApp Official Campaign & Consent) ─────────────────
+    CREATE TABLE IF NOT EXISTS customer_consent_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id TEXT NOT NULL,
+      event_type TEXT NOT NULL CHECK(event_type IN ('OPT_IN', 'OPT_OUT')),
+      source TEXT NOT NULL,
+      policy_version TEXT,
+      actor_user_id TEXT NULL,
+      reason TEXT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id),
+      FOREIGN KEY (actor_user_id) REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_consent_logs_customer ON customer_consent_logs(customer_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS whatsapp_templates (
+      id TEXT PRIMARY KEY,
+      provider_template_id TEXT NULL,
+      template_name TEXT NOT NULL UNIQUE,
+      category TEXT NOT NULL CHECK(category IN ('MARKETING', 'UTILITY', 'AUTHENTICATION')),
+      language TEXT NOT NULL DEFAULT 'id',
+      status TEXT NOT NULL CHECK(status IN ('draft', 'submitted', 'approved', 'rejected', 'paused')),
+      header_type TEXT NULL CHECK(header_type IN ('TEXT', 'IMAGE', 'DOCUMENT', 'NONE')),
+      header_content TEXT NULL,
+      body_text TEXT NOT NULL,
+      footer_text TEXT NULL,
+      buttons_json TEXT NULL,
+      variable_schema_json TEXT NULL,
+      rejection_reason TEXT NULL,
+      synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_wa_templates_status ON whatsapp_templates(status);
+
+    CREATE TABLE IF NOT EXISTS whatsapp_campaigns (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      template_id TEXT NOT NULL,
+      template_variables_json TEXT NOT NULL DEFAULT '{}',
+      target_criteria_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'scheduled', 'running', 'paused', 'completed', 'cancelled', 'failed')),
+      scheduled_at_utc TEXT NULL,
+      scheduled_at_wib_label TEXT NULL,
+      started_at TEXT NULL,
+      completed_at TEXT NULL,
+      created_by TEXT NOT NULL,
+      approved_by TEXT NULL,
+      cancelled_by TEXT NULL,
+      recipient_count_estimate INTEGER NOT NULL DEFAULT 0,
+      sent_count INTEGER NOT NULL DEFAULT 0,
+      delivered_count INTEGER NOT NULL DEFAULT 0,
+      read_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      skipped_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (template_id) REFERENCES whatsapp_templates(id),
+      FOREIGN KEY (created_by) REFERENCES users(id),
+      FOREIGN KEY (approved_by) REFERENCES users(id),
+      FOREIGN KEY (cancelled_by) REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wa_campaigns_status_sched ON whatsapp_campaigns(status, scheduled_at_utc);
+
+    CREATE TABLE IF NOT EXISTS whatsapp_campaign_recipients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id TEXT NOT NULL,
+      customer_id TEXT NOT NULL,
+      phone_e164 TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'sending', 'sent', 'delivered', 'read', 'failed', 'skipped', 'opted_out')),
+      provider_message_id TEXT NULL,
+      error_code TEXT NULL,
+      error_category TEXT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      sent_at TEXT NULL,
+      delivered_at TEXT NULL,
+      read_at TEXT NULL,
+      failed_at TEXT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (campaign_id) REFERENCES whatsapp_campaigns(id),
+      FOREIGN KEY (customer_id) REFERENCES customers(id),
+      UNIQUE(campaign_id, customer_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wa_recipients_camp_status ON whatsapp_campaign_recipients(campaign_id, status);
+    CREATE INDEX IF NOT EXISTS idx_wa_recipients_prov_msg ON whatsapp_campaign_recipients(provider_message_id);
+    CREATE INDEX IF NOT EXISTS idx_customers_wa_optin ON customers(whatsapp_marketing_opt_in, is_active);
   `);
 }
 
@@ -1233,22 +1541,25 @@ function seedData(): void {
 
   // Default owner account
   const hashedPassword = bcrypt.hashSync('admin123', 10);
+  const ownerPerms = JSON.stringify(['pos', 'dashboard', 'orders', 'products', 'addon_groups', 'customers', 'reports', 'whatsapp', 'staff', 'settings', 'salary_deductions', 'stock_movements', 'db_backup']);
   db.prepare(`
-    INSERT OR IGNORE INTO users (id, name, email, password, role)
-    VALUES (?, ?, ?, ?, ?)
-  `).run('user-1', 'Pengelola Koperasi', 'admin@flo.local', hashedPassword, 'owner');
+    INSERT OR IGNORE INTO users (id, name, email, password, role, permissions)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('user-1', 'Pengelola Koperasi', 'admin@flo.local', hashedPassword, 'owner', ownerPerms);
 
   // Default staff accounts (Koperasi roles)
   const chefPassword = bcrypt.hashSync('chef123', 10);
+  const cashierPerms = JSON.stringify(['pos', 'orders', 'customers']);
   db.prepare(`
-    INSERT OR IGNORE INTO users (id, name, email, password, role)
-    VALUES (?, ?, ?, ?, ?)
-  `).run('user-2', 'Kasir Koperasi', 'chef@flo.local', chefPassword, 'chef');
+    INSERT OR IGNORE INTO users (id, name, email, password, role, permissions)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('user-2', 'Kasir Koperasi', 'chef@flo.local', chefPassword, 'cashier', cashierPerms);
 
+  const managerPerms = JSON.stringify(['pos', 'dashboard', 'orders', 'products', 'addon_groups', 'customers', 'reports', 'whatsapp', 'staff', 'salary_deductions', 'stock_movements']);
   db.prepare(`
-    INSERT OR IGNORE INTO users (id, name, email, password, role)
-    VALUES (?, ?, ?, ?, ?)
-  `).run('user-3', 'Staf Operasional', 'kitchen@flo.local', chefPassword, 'manager');
+    INSERT OR IGNORE INTO users (id, name, email, password, role, permissions)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('user-3', 'Staf Operasional', 'kitchen@flo.local', chefPassword, 'manager', managerPerms);
 
   // Default printer (will be detected on first run)
   db.prepare(`

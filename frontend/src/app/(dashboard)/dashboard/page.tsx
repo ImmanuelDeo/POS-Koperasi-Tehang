@@ -64,15 +64,19 @@ function getTodayLocal(): string {
 }
 
 export default function DashboardPage() {
-  const { currentTenant } = useAuthStore();
+  const { currentTenant, user } = useAuthStore();
   const router = useRouter();
   const fmt = useFormatCurrency();
 
+  const userRole = currentTenant?.role || user?.role || 'cashier';
+  const userPermissions = currentTenant?.permissions || user?.permissions || [];
+
   const isAuthorized =
-    currentTenant?.role === 'owner' ||
-    currentTenant?.role === 'admin' ||
-    currentTenant?.role === 'office_hr' ||
-    currentTenant?.role === 'manager';
+    userRole === 'owner' ||
+    userRole === 'admin' ||
+    userRole === 'office_hr' ||
+    userRole === 'manager' ||
+    userPermissions.includes('dashboard');
 
   const [filterState, setFilterState] = useState<PeriodFilterState>({
     period: 'daily',

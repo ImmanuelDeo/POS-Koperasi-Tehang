@@ -1,13 +1,53 @@
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 let runtimeDevSecret: string | null = null;
 let securityValidated = false;
+
+/**
+ * Automatically loads .env file into process.env if present.
+ */
+export function loadEnv(): void {
+  const possiblePaths = [
+    path.resolve(process.cwd(), '.env'),
+    path.resolve(__dirname, '../../.env'),
+    path.resolve(__dirname, '../.env'),
+  ];
+  for (const envFile of possiblePaths) {
+    if (fs.existsSync(envFile)) {
+      try {
+        const content = fs.readFileSync(envFile, 'utf-8');
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith('#')) {
+            const eqIdx = trimmed.indexOf('=');
+            if (eqIdx !== -1) {
+              const key = trimmed.slice(0, eqIdx).trim();
+              const val = trimmed.slice(eqIdx + 1).trim();
+              if (process.env[key] === undefined) {
+                process.env[key] = val;
+              }
+            }
+          }
+        }
+        break;
+      } catch {
+        // Ignore read errors
+      }
+    }
+  }
+}
+
+// Ensure .env is loaded early
+loadEnv();
 
 /**
  * Validate security configuration on application startup.
  * Must be called once before server starts accepting requests or issuing tokens.
  */
 export function validateSecurityConfig(): void {
+  loadEnv();
   const isProduction = process.env.NODE_ENV === 'production';
   const secret = process.env.JWT_SECRET?.trim();
 
