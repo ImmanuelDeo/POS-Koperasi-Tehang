@@ -12,6 +12,7 @@ import TagBadge, { tagLabel } from '@/components/pos/DietaryBadge';
 import ImageUploader from '@/components/products/ImageUploader';
 import BulkStockWorkspace from '@/components/products/BulkStockWorkspace';
 import StockHistoryTable from '@/components/products/StockHistoryTable';
+import MonthlyStockReportTab from '@/components/products/MonthlyStockReportTab';
 import { getCurrencySymbol, getCountryByCode } from '@/lib/countries';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
 import { useConfirm } from '@/hooks/use-confirm';
@@ -78,7 +79,7 @@ function parseTagsArray(tags: any): string[] {
   return [];
 }
 
-type TabType = 'products' | 'categories' | 'stock_management' | 'stock_history' | 'addons';
+type TabType = 'products' | 'categories' | 'stock_management' | 'stock_history' | 'stock_report' | 'addons';
 
 export default function ProductsPage() {
   const { t } = useI18n();
@@ -570,6 +571,9 @@ export default function ProductsPage() {
         </button>
         <button onClick={() => setActiveTab('stock_history')} className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${activeTab === 'stock_history' ? 'border-brand text-brand' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <History size={16} /> Riwayat Mutasi
+        </button>
+        <button onClick={() => setActiveTab('stock_report')} className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border-b-2 -mb-px transition-colors ${activeTab === 'stock_report' ? 'border-emerald-600 text-emerald-700 bg-emerald-50/40' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          <FileSpreadsheet size={16} /> Laporan Stok Bulanan
         </button>
         <Link
           href="/addon-groups"
@@ -1371,6 +1375,10 @@ export default function ProductsPage() {
 
       {activeTab === 'stock_history' && (
         <StockHistoryTable />
+      )}
+
+      {activeTab === 'stock_report' && (
+        <MonthlyStockReportTab />
       )}
 
       {showCsvModal && (

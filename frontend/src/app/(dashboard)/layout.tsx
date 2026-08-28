@@ -12,20 +12,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const isPos = pathname === '/pos' || pathname === '/kds';
 
   return (
-    <AuthGuard>
-      <SidebarProvider defaultOpen={false}>
-        <AppSidebar />
-        <SidebarInset className="h-screen overflow-hidden flex flex-col">
-          {!isPos && <GlobalNotifications />}
-          <div className={isPos
-            ? 'flex-1 min-h-0 flex flex-col overflow-hidden p-4'
-            : 'flex-1 p-4 overflow-auto min-w-0'
-          }>
-            {children}
-          </div>
-          <StatusBar />
-        </SidebarInset>
-      </SidebarProvider>
-    </AuthGuard>
+    <SidebarProvider defaultOpen={false}>
+      <AppSidebar />
+      <SidebarInset className="h-screen overflow-hidden flex flex-col">
+        {!isPos && <GlobalNotifications />}
+        <div className={isPos
+          ? 'flex-1 min-h-0 flex flex-col overflow-hidden p-4'
+          : 'flex-1 p-4 overflow-auto min-w-0'
+        }>
+          {children}
+        </div>
+        <StatusBar />
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

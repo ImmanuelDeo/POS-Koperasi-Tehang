@@ -23,6 +23,7 @@ import { printerRoutes } from './printers';
 import { databaseRoutes } from './database';
 import { catalogCsvRoutes } from './catalog-csv';
 import { memberCsvRoutes } from './member-csv';
+import { dbToolsRoutes } from './db-tools';
 import { getDatabase, now, parseItemJson } from '../db';
 import { authenticateToken, requireRole, requireMethodRoles, AuthenticatedRequest } from '../middleware/auth';
 
@@ -272,6 +273,7 @@ export function registerRoutes(app: Express): void {
 
   // Database backups, exports & maintenance are STRICTLY owner-only
   app.use('/api/db', authenticateToken, requireRole(['owner']), databaseRoutes);
+  app.use('/api/db-tools', authenticateToken, requireRole(['owner', 'admin']), dbToolsRoutes);
 
   // Tax preview
   app.post('/api/tax/preview', authenticateToken, requireRole(['owner', 'admin', 'cashier']), async (req, res) => {
@@ -279,13 +281,38 @@ export function registerRoutes(app: Express): void {
     calculateTaxPreview(req, res);
   });
 
-  // Mobile pairing code
+  // Mobile pairing & devices
   app.get('/api/mobile/pairing-code', authenticateToken, requireRole(['owner', 'admin']), (_req, res) => {
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const expiresAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
     res.json({
       pairing_code: today,
+      expires_at: expiresAt,
       rotated_at: new Date().toISOString(),
     });
+  });
+
+  app.post('/api/mobile/rotate-code', authenticateToken, requireRole(['owner', 'admin']), (_req, res) => {
+    const code = Math.floor(10000000 + Math.random() * 90000000).toString();
+    const expiresAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    res.json({
+      pairing_code: code,
+      expires_at: expiresAt,
+      rotated_at: new Date().toISOString(),
+    });
+  });
+
+  app.get('/api/mobile/devices', authenticateToken, requireRole(['owner', 'admin']), (_req, res) => {
+    res.json({ devices: [] });
+  });
+
+  // More apps endpoints
+  app.get('/api/more-apps', authenticateToken, requireRole(['owner', 'admin']), (_req, res) => {
+    res.json({ apps: [] });
+  });
+
+  app.get('/api/more-apps/revflo', authenticateToken, requireRole(['owner', 'admin']), (_req, res) => {
+    res.json({ app: null });
   });
 
   // Customer search endpoint

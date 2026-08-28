@@ -913,3 +913,328 @@ export function generateOrdersTransactionReportCsv(orders: TransactionReportOrde
   return [headers.join(','), ...rows].join('\r\n');
 }
 
+export interface MonthlyStockPdfReportData {
+  businessName: string;
+  businessAddress?: string;
+  businessPhone?: string;
+  reportHeaderTitle?: string;
+  periodDescription: string;
+  generatedAtWib: string;
+  printedByName: string;
+  printedByRole: string;
+  summary: {
+    total_products_tracked: number;
+    total_starting_stock: number;
+    total_in: number;
+    total_out: number;
+    total_ending_stock: number;
+  };
+  items: Array<{
+    barcode?: string | null;
+    sku?: string | null;
+    product_name: string;
+    unit: string;
+    category_name: string | null;
+    starting_stock: number;
+    total_in: number;
+    total_out: number;
+    ending_stock: number;
+    stock_status: 'safe' | 'low' | 'out_of_stock';
+  }>;
+}
+
+/**
+ * Generates official Monthly Stock In/Out Report PDF (A4 Landscape).
+ */
+export async function generateMonthlyStockReportPdf(data: MonthlyStockPdfReportData): Promise<Buffer> {
+  const tableBody: TableCell[][] = [
+    [
+      { text: 'No.', style: 'tableHeader', alignment: 'center' },
+      { text: 'Kode / Barcode', style: 'tableHeader' },
+      { text: 'Nama Produk', style: 'tableHeader' },
+      { text: 'Satuan', style: 'tableHeader', alignment: 'center' },
+      { text: 'Kategori', style: 'tableHeader' },
+      { text: 'Stok Awal', style: 'tableHeader', alignment: 'right' },
+      { text: 'Masuk (+)', style: 'tableHeader', alignment: 'right' },
+      { text: 'Keluar (-)', style: 'tableHeader', alignment: 'right' },
+      { text: 'Saldo Akhir', style: 'tableHeader', alignment: 'right' },
+      { text: 'Status', style: 'tableHeader', alignment: 'center' },
+    ],
+  ];
+
+  if (data.items.length === 0) {
+    tableBody.push([
+      {
+        text: 'Tidak ada data pergerakan stok untuk filter dan periode yang dipilih.',
+        colSpan: 10,
+        alignment: 'center',
+        italics: true,
+        color: '#6B7280',
+        margin: [0, 8, 0, 8],
+      },
+      ...new Array(9).fill({ text: '' }),
+    ]);
+  } else {
+    data.items.forEach((item, idx) => {
+      const isEven = idx % 2 === 0;
+      const rowBg = isEven ? '#FFFFFF' : '#F9FAFB';
+
+      let statusBadgeText = 'Aman';
+      let statusColor = '#059669';
+      if (item.stock_status === 'out_of_stock') {
+        statusBadgeText = 'Habis';
+        statusColor = '#DC2626';
+      } else if (item.stock_status === 'low') {
+        statusBadgeText = 'Menipis';
+        statusColor = '#D97706';
+      }
+
+      tableBody.push([
+        { text: String(idx + 1), alignment: 'center', fontSize: 7, fillColor: rowBg },
+        { text: item.barcode || item.sku || '—', fontSize: 7, color: '#374151', fillColor: rowBg },
+        { text: item.product_name, fontSize: 7.5, bold: true, color: '#111827', fillColor: rowBg },
+        { text: item.unit || 'pcs', fontSize: 7, alignment: 'center', fillColor: rowBg },
+        { text: item.category_name || '—', fontSize: 7, color: '#4B5563', fillColor: rowBg },
+        {
+          text: item.starting_stock.toLocaleString('id-ID'),
+          alignment: 'right',
+          fontSize: 7,
+          color: '#374151',
+          fillColor: rowBg,
+        },
+        {
+          text: item.total_in > 0 ? `+${item.total_in.toLocaleString('id-ID')}` : '0',
+          alignment: 'right',
+          fontSize: 7,
+          bold: item.total_in > 0,
+          color: item.total_in > 0 ? '#059669' : '#9CA3AF',
+          fillColor: rowBg,
+        },
+        {
+          text: item.total_out > 0 ? `-${item.total_out.toLocaleString('id-ID')}` : '0',
+          alignment: 'right',
+          fontSize: 7,
+          bold: item.total_out > 0,
+          color: item.total_out > 0 ? '#DC2626' : '#9CA3AF',
+          fillColor: rowBg,
+        },
+        {
+          text: item.ending_stock.toLocaleString('id-ID'),
+          alignment: 'right',
+          fontSize: 7.5,
+          bold: true,
+          color: '#111827',
+          fillColor: rowBg,
+        },
+        {
+          text: statusBadgeText,
+          alignment: 'center',
+          fontSize: 6.5,
+          bold: true,
+          color: statusColor,
+          fillColor: rowBg,
+        },
+      ]);
+    });
+  }
+
+  const docDefinition: TDocumentDefinitions = {
+    pageSize: 'A4',
+    pageOrientation: 'landscape',
+    pageMargins: [25, 25, 25, 30],
+    defaultStyle: {
+      font: 'Helvetica',
+      fontSize: 8,
+      color: '#1F2937',
+    },
+    footer: (currentPage, pageCount) => ({
+      margin: [25, 0, 25, 0],
+      columns: [
+        {
+          text: `Dicetak: ${data.generatedAtWib} oleh ${data.printedByName} (${data.printedByRole})`,
+          fontSize: 7,
+          color: '#6B7280',
+        },
+        {
+          text: `Halaman ${currentPage} dari ${pageCount}`,
+          alignment: 'right',
+          fontSize: 7,
+          color: '#6B7280',
+        },
+      ],
+    }),
+    content: [
+      // Header Kop Koperasi Dinamis
+      {
+        columns: [
+          {
+            width: '*',
+            stack: [
+              {
+                text: (data.businessName || 'POS KOPERASI').toUpperCase(),
+                fontSize: 13,
+                bold: true,
+                color: '#065F46',
+              },
+              data.businessAddress
+                ? { text: data.businessAddress, fontSize: 8, color: '#4B5563', margin: [0, 1.5, 0, 0] }
+                : { text: '' },
+              data.businessPhone
+                ? { text: `Telp/WA: ${data.businessPhone}`, fontSize: 7.5, color: '#6B7280', margin: [0, 1, 0, 0] }
+                : { text: '' },
+            ],
+          },
+          {
+            width: 'auto',
+            alignment: 'right',
+            stack: [
+              {
+                text: 'LAPORAN STOK BULANAN',
+                fontSize: 11,
+                bold: true,
+                color: '#111827',
+              },
+              {
+                text: 'BARANG MASUK & KELUAR',
+                fontSize: 8.5,
+                bold: true,
+                color: '#059669',
+                margin: [0, 1, 0, 0],
+              },
+              {
+                text: data.periodDescription,
+                fontSize: 8,
+                italics: true,
+                color: '#374151',
+                margin: [0, 2, 0, 0],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        canvas: [
+          {
+            type: 'line',
+            x1: 0,
+            y1: 6,
+            x2: 792,
+            y2: 6,
+            lineWidth: 1.5,
+            lineColor: '#059669',
+          },
+        ],
+      },
+      { text: '', margin: [0, 5] },
+
+      // Summary Cards Row
+      {
+        table: {
+          widths: ['*', '*', '*', '*', '*'],
+          body: [
+            [
+              {
+                stack: [
+                  { text: 'TOTAL PRODUK', fontSize: 7, color: '#6B7280', bold: true },
+                  { text: `${data.summary.total_products_tracked.toLocaleString('id-ID')} Item`, fontSize: 10, bold: true, color: '#1F2937' },
+                ],
+                fillColor: '#F3F4F6',
+                margin: [4, 4, 4, 4],
+              },
+              {
+                stack: [
+                  { text: 'TOTAL STOK AWAL', fontSize: 7, color: '#6B7280', bold: true },
+                  { text: `${data.summary.total_starting_stock.toLocaleString('id-ID')}`, fontSize: 10, bold: true, color: '#374151' },
+                ],
+                fillColor: '#F3F4F6',
+                margin: [4, 4, 4, 4],
+              },
+              {
+                stack: [
+                  { text: 'TOTAL MASUK (+)', fontSize: 7, color: '#047857', bold: true },
+                  { text: `+${data.summary.total_in.toLocaleString('id-ID')}`, fontSize: 10, bold: true, color: '#059669' },
+                ],
+                fillColor: '#ECFDF5',
+                margin: [4, 4, 4, 4],
+              },
+              {
+                stack: [
+                  { text: 'TOTAL KELUAR (-)', fontSize: 7, color: '#B91C1C', bold: true },
+                  { text: `-${data.summary.total_out.toLocaleString('id-ID')}`, fontSize: 10, bold: true, color: '#DC2626' },
+                ],
+                fillColor: '#FEF2F2',
+                margin: [4, 4, 4, 4],
+              },
+              {
+                stack: [
+                  { text: 'TOTAL SALDO AKHIR', fontSize: 7, color: '#1E40AF', bold: true },
+                  { text: `${data.summary.total_ending_stock.toLocaleString('id-ID')}`, fontSize: 10, bold: true, color: '#1D4ED8' },
+                ],
+                fillColor: '#EFF6FF',
+                margin: [4, 4, 4, 4],
+              },
+            ],
+          ],
+        },
+        layout: 'noBorders',
+      },
+      { text: '', margin: [0, 4] },
+
+      // Main Table
+      {
+        table: {
+          headerRows: 1,
+          widths: [20, 70, '*', 32, 65, 52, 52, 52, 54, 40],
+          body: tableBody,
+        },
+        layout: {
+          fillColor: (rowIndex: number) => (rowIndex === 0 ? '#065F46' : null),
+          hLineWidth: (i: number, node: any) =>
+            i === 0 || i === 1 || i === node.table.body.length ? 0.75 : 0.4,
+          vLineWidth: () => 0,
+          hLineColor: (i: number) => (i === 1 ? '#065F46' : '#E5E7EB'),
+          paddingLeft: () => 3,
+          paddingRight: () => 3,
+          paddingTop: () => 3,
+          paddingBottom: () => 3,
+        },
+      },
+      { text: '', margin: [0, 10] },
+
+      // Signature Block for Physical Verification
+      {
+        columns: [
+          {
+            width: '*',
+            alignment: 'center',
+            stack: [
+              { text: 'Disiapkan oleh,', fontSize: 8 },
+              { text: '', margin: [0, 16] },
+              { text: `( ${data.printedByName} )`, bold: true, fontSize: 8 },
+              { text: `Jabatan: ${data.printedByRole}`, fontSize: 7, color: '#6B7280' },
+            ],
+          },
+          {
+            width: '*',
+            alignment: 'center',
+            stack: [
+              { text: 'Diperiksa oleh,', fontSize: 8 },
+              { text: '', margin: [0, 16] },
+              { text: '( ___________________________ )', bold: true, fontSize: 8 },
+              { text: 'Pengurus / Pengawas Koperasi', fontSize: 7, color: '#6B7280' },
+            ],
+          },
+        ],
+      },
+    ],
+    styles: {
+      tableHeader: {
+        fontSize: 7,
+        bold: true,
+        color: '#FFFFFF',
+      },
+    },
+  };
+
+  return createPdfBuffer(docDefinition);
+}

@@ -49,9 +49,10 @@ function FindingRow({ finding }: { finding: HealthFinding }) {
 
 export function HealthCheckDialog({ open, onOpenChange, report, applying, onApplySafeFixes }: HealthCheckDialogProps) {
   const { t } = useI18n();
-  const safeFindings = (report?.findings ?? []).filter((f) => f.risk === 'safe');
-  const reviewFindings = (report?.findings ?? []).filter((f) => f.risk === 'manual_review');
-  const isClean = report && report.findings.length === 0;
+  const findings = report?.findings ?? [];
+  const safeFindings = findings.filter((f) => f.risk === 'safe');
+  const reviewFindings = findings.filter((f) => f.risk === 'manual_review');
+  const isClean = Boolean(report && findings.length === 0);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

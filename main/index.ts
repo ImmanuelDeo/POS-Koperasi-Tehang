@@ -486,11 +486,22 @@ async function initialize(): Promise<void> {
       },
     });
 
-    ipcMain.handle('get-update-status', () => ({
-      updateAvailable,
-      updateDownloaded,
-      version: app.getVersion(),
-    }));
+    ipcMain.handle('get-update-status', () => {
+      let status: 'available' | 'ready-to-install' | 'up-to-date' | 'dev-mode' = 'up-to-date';
+      if (!isAutoUpdaterEnabled()) {
+        status = 'dev-mode';
+      } else if (updateDownloaded) {
+        status = 'ready-to-install';
+      } else if (updateAvailable) {
+        status = 'available';
+      }
+      return {
+        status,
+        updateAvailable,
+        updateDownloaded,
+        version: app.getVersion(),
+      };
+    });
 
     ipcMain.handle('check-for-updates', () => {
       checkForUpdates();

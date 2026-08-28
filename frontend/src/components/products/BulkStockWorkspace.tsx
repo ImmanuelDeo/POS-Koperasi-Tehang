@@ -219,7 +219,7 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
 
   // Calculate delta and new stock for an item
   const calculateItemDelta = (item: DraftStockItem): { delta: number; newStock: number; isValid: boolean } => {
-    const rawVal = parseFloat(item.quantity_input.replace(/,/g, '.'));
+    const rawVal = parseFloat((item.quantity_input || '').replace(/,/g, '.'));
     if (isNaN(rawVal) || !Number.isFinite(rawVal)) {
       return { delta: 0, newStock: item.system_stock, isValid: false };
     }
@@ -353,7 +353,7 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
 
     try {
       const payloadItems = draftItems.map((item) => {
-        const val = parseFloat(item.quantity_input.replace(/,/g, '.'));
+        const val = parseFloat((item.quantity_input || '').replace(/,/g, '.'));
         const costVal = parseFloat(item.unit_cost) || 0;
         return {
           product_id: item.product_id,

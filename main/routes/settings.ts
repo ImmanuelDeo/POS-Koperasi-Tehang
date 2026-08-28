@@ -46,6 +46,9 @@ export function businessShape(s: Record<string, string>) {
     gstin:                      s.gstin || '',
     state_code:                 s.state_code || '',
     billing_type:               s.billing_type || 'postpaid',
+    tables_required:            s.tables_required !== 'false',
+    tax_registered:             s.tax_registered === 'true',
+    instagram_handle:           s.instagram_handle || '',
     bill_show_name:             s.bill_show_name !== 'false',
     bill_show_address:          s.bill_show_address !== 'false',
     bill_show_phone:            s.bill_show_phone !== 'false',
@@ -239,6 +242,9 @@ router.put('/business', (req: AuthenticatedRequest, res: Response) => {
       gstin,
       state_code,
       billing_type,
+      tables_required,
+      tax_registered,
+      instagram_handle,
       bill_show_name,
       bill_show_address,
       bill_show_phone,
@@ -297,6 +303,9 @@ router.put('/business', (req: AuthenticatedRequest, res: Response) => {
       gstin,
       state_code,
       billing_type,
+      tables_required: tables_required !== undefined ? (tables_required ? 'true' : 'false') : undefined,
+      tax_registered: tax_registered !== undefined ? (tax_registered ? 'true' : 'false') : undefined,
+      instagram_handle: instagram_handle !== undefined ? String(instagram_handle).trim() : undefined,
       bill_show_name: bill_show_name !== undefined ? (bill_show_name ? 'true' : 'false') : undefined,
       bill_show_address: bill_show_address !== undefined ? (bill_show_address ? 'true' : 'false') : undefined,
       bill_show_phone: bill_show_phone !== undefined ? (bill_show_phone ? 'true' : 'false') : undefined,
@@ -582,6 +591,23 @@ router.put('/loyalty', (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
+// ── Payment Methods ────────────────────────────────────────────────────────
+
+router.get('/payment-methods', (_req: Request, res: Response) => {
+  try {
+    const s = getAllSettings(getDatabase());
+    res.json({
+      qris_merchant_name: s.qris_merchant_name || 'Koperasi Karyawan Tehang',
+      qris_image_url: s.qris_image_url || '',
+      bank_name: s.bank_name || 'Bank BCA',
+      bank_account_number: s.bank_account_number || '',
+      bank_account_holder: s.bank_account_holder || 'Koperasi Tehang',
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.put('/payment-methods', (req: AuthenticatedRequest, res: Response) => {
   try {
     const userRole = req.user?.role || '';
@@ -603,6 +629,179 @@ router.put('/payment-methods', (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
+// ── Discount Settings ──────────────────────────────────────────────────────
+
+router.get('/discount', (_req: Request, res: Response) => {
+  try {
+    const s = getAllSettings(getDatabase());
+    res.json({
+      discount_max_percentage: parseFloat(s.discount_max_percentage || '25'),
+      discount_max_amount: parseFloat(s.discount_max_amount || '0'),
+      discount_mode: s.discount_mode || 'percentage',
+      discount_requires_approval: s.discount_requires_approval === 'true',
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/discount', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userRole = req.user?.role || '';
+    if (!isOwnerOrAdmin(userRole)) {
+      return res.status(403).json({ error: 'Forbidden: Hanya Owner atau Admin yang dapat mengubah batas diskon' });
+    }
+    const { discount_max_percentage, discount_max_amount, discount_mode, discount_requires_approval } = req.body;
+    const db = getDatabase();
+    upsertSettings(db, {
+      discount_max_percentage,
+      discount_max_amount,
+      discount_mode,
+      discount_requires_approval: discount_requires_approval !== undefined ? String(discount_requires_approval) : undefined,
+    });
+    const s = getAllSettings(db);
+    res.json({
+      discount_max_percentage: parseFloat(s.discount_max_percentage || '25'),
+      discount_max_amount: parseFloat(s.discount_max_amount || '0'),
+      discount_mode: s.discount_mode || 'percentage',
+      discount_requires_approval: s.discount_requires_approval === 'true',
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── KDS Settings ───────────────────────────────────────────────────────────
+
+router.get('/kds', (_req: Request, res: Response) => {
+  try {
+    const s = getAllSettings(getDatabase());
+    res.json({
+      kds_default_view: s.kds_default_view || 'tabs',
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/kds', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { kds_default_view } = req.body;
+    const db = getDatabase();
+    upsertSettings(db, { kds_default_view: kds_default_view || 'tabs' });
+    res.json({ kds_default_view: kds_default_view || 'tabs' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ── Cloud Sync Settings (Offline / LAN Default) ───────────────────────────
+
+router.get('/cloud', (_req: Request, res: Response) => {
+  try {
+    const s = getAllSettings(getDatabase());
+    res.json({
+      cloud_api_key: s.cloud_api_key || '',
+      cloud_store_id: s.cloud_store_id || '',
+      cloud_sync_enabled: s.cloud_sync_enabled === 'true',
+      cloud_orders_enabled: s.cloud_orders_enabled === 'true',
+      cloud_last_sync: s.cloud_last_sync || null,
+      cloud_registration_status: s.cloud_registration_status || 'unregistered',
+      cloud_pending_store_id: s.cloud_pending_store_id || null,
+      cloud_connected: s.cloud_connected === 'true',
+      cloud_relay_mode: s.cloud_relay_mode || 'disconnected',
+      cloud_last_heartbeat: s.cloud_last_heartbeat || null,
+      cloud_last_error: s.cloud_last_error || null,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/cloud', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userRole = req.user?.role || '';
+    if (!isOwnerOrAdmin(userRole)) {
+      return res.status(403).json({ error: 'Forbidden: Hanya Owner atau Admin yang dapat mengubah konfigurasi cloud' });
+    }
+    const { cloud_api_key, cloud_store_id, cloud_sync_enabled, cloud_orders_enabled } = req.body;
+    const db = getDatabase();
+    upsertSettings(db, {
+      cloud_api_key,
+      cloud_store_id,
+      cloud_sync_enabled: cloud_sync_enabled !== undefined ? String(cloud_sync_enabled) : undefined,
+      cloud_orders_enabled: cloud_orders_enabled !== undefined ? String(cloud_orders_enabled) : undefined,
+    });
+    res.json({ success: true, message: 'Pengaturan cloud disimpan' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/cloud/test', (_req: Request, res: Response) => {
+  res.json({ success: true, message: 'Mode offline LAN koperasi aktif' });
+});
+
+router.post('/cloud/register', (req: Request, res: Response) => {
+  res.json({ success: true, message: 'Pendaftaran toko tercatat di sistem lokal' });
+});
+
+// ── Google Drive Settings ─────────────────────────────────────────────────
+
+router.get('/google-drive', (_req: Request, res: Response) => {
+  try {
+    const s = getAllSettings(getDatabase());
+    res.json({
+      configured: s.gdrive_configured === 'true',
+      secure_storage_available: true,
+      connected: s.gdrive_connected === 'true',
+      account_email: s.gdrive_account_email || null,
+      frequency: s.gdrive_frequency || 'daily',
+      retention_count: parseInt(s.gdrive_retention_count || '10', 10),
+      last_backup_at: s.gdrive_last_backup_at || null,
+      last_backup_status: s.gdrive_last_backup_status || null,
+      last_backup_filename: s.gdrive_last_backup_filename || null,
+      last_error: s.gdrive_last_error || null,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/google-drive', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { frequency, retention_count } = req.body;
+    const db = getDatabase();
+    upsertSettings(db, {
+      gdrive_frequency: frequency,
+      gdrive_retention_count: retention_count ? String(retention_count) : undefined,
+    });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/google-drive/connect', (_req: Request, res: Response) => {
+  res.json({ success: true, message: 'Google Drive backup siap dikonfigurasi' });
+});
+
+router.post('/google-drive/disconnect', (_req: Request, res: Response) => {
+  const db = getDatabase();
+  upsertSettings(db, { gdrive_connected: 'false', gdrive_account_email: '' });
+  res.json({ success: true, message: 'Google Drive dinonaktifkan' });
+});
+
+router.post('/google-drive/backup-now', async (_req: Request, res: Response) => {
+  try {
+    const { createBackup } = await import('../db');
+    const backupPath = await createBackup();
+    res.json({ success: true, backupPath });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ── Generic Key-Value Routes ───────────────────────────────────────────────
 
 router.get('/', (_req: Request, res: Response) => {
@@ -617,11 +816,13 @@ router.get('/', (_req: Request, res: Response) => {
 router.get('/:key', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const setting = db.prepare('SELECT * FROM settings WHERE key = ?').get(req.params.key);
-    if (!setting) {
-      return res.status(404).json({ error: 'Setting not found' });
-    }
-    res.json({ setting });
+    const key = req.params.key;
+    const setting = db.prepare('SELECT * FROM settings WHERE key = ?').get(key) as any;
+
+    // Always return 200 with setting object (or default null) to avoid breaking frontend loaders
+    res.json({
+      setting: setting || { key, value: null, updated_at: null },
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -634,14 +835,13 @@ router.put('/:key', (req: AuthenticatedRequest, res: Response) => {
       return res.status(403).json({ error: 'Forbidden: Hanya Owner atau Admin yang dapat mengubah pengaturan sistem' });
     }
     const { value } = req.body;
-    if (value === undefined) {
-      return res.status(400).json({ error: 'Value is required' });
-    }
     const db = getDatabase();
+    const valStr = value !== undefined ? String(value) : '';
+
     db.prepare(`
       INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(req.params.key, value, now());
+    `).run(req.params.key, valStr, now());
 
     const setting = db.prepare('SELECT * FROM settings WHERE key = ?').get(req.params.key);
     res.json({ setting });

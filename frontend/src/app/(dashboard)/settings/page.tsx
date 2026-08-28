@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
 import { useAuthStore } from '@/store/auth';
 import { usePosSettingsStore, type PaperSize, type BillTemplate } from '@/store/pos-settings';
 import { usePrinterStore, usePrinterStatusSync } from '@/hooks/usePrinter';
@@ -250,9 +249,8 @@ export default function SettingsPage() {
   const [tableInfoOpen, setTableInfoOpen] = useState(false);
   const [tableInfo, setTableInfo] = useState<{ name: string; rows: number }[]>([]);
 
-  const searchParams = useSearchParams();
   // ── DB tools: master PIN, health check, initialize ──────────────────────
-  const [activeTab, setActiveTab] = useState(() => searchParams?.get('tab') || 'store');
+  const [activeTab, setActiveTab] = useState('store');
   const [masterPinStatus, setMasterPinStatus] = useState<{ available: boolean; isSet: boolean }>({ available: false, isSet: false });
   const [healthCheckOpen, setHealthCheckOpen] = useState(false);
   const [healthReport, setHealthReport] = useState<HealthCheckReport | null>(null);
@@ -606,13 +604,25 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.electronAPI) {
-      window.electronAPI.getAppInfo().then(info => setAppVersion(info.version));
-      const unsubscribe = window.electronAPI.onUpdateStatus((status) => {
-        setUpdateStatus(status as UpdateStatus);
+      window.electronAPI.getAppInfo().then(info => {
+        if (info?.version) setAppVersion(info.version);
+      }).catch(() => {});
+      const unsubscribe = window.electronAPI.onUpdateStatus((status: any) => {
+        if (status) {
+          const s = (typeof status === 'string' ? status : status.status) || 'up-to-date';
+          const ver = typeof status === 'object' ? (status.version || status.info?.version) : undefined;
+          const pct = typeof status === 'object' ? (status.percent ?? status.progress) : undefined;
+          const err = typeof status === 'object' ? status.error : undefined;
+          setUpdateStatus({ status: s as UpdateStatus['status'], version: ver, error: err, percent: pct });
+        }
       });
-      window.electronAPI.getUpdateStatus().then((status) => {
-        if (status) setUpdateStatus({ status: status.status as UpdateStatus['status'], version: status.info?.version });
-      });
+      window.electronAPI.getUpdateStatus().then((status: any) => {
+        if (status) {
+          const s = (typeof status === 'string' ? status : status.status) || (status.updateAvailable ? 'available' : status.updateDownloaded ? 'ready-to-install' : 'up-to-date');
+          const ver = typeof status === 'object' ? (status.version || status.info?.version) : undefined;
+          setUpdateStatus({ status: s as UpdateStatus['status'], version: ver });
+        }
+      }).catch(() => {});
       return () => { unsubscribe?.(); };
     }
   }, []);
@@ -1105,8 +1115,8 @@ export default function SettingsPage() {
         api.get('/settings/discount')
       ]);
 
-      const d = businessRes.data;
-      const matchedCountry = COUNTRIES.find(c => c.currency === d.currency && c.timezone === d.timezone);
+      const d = businessRes?.data || {};
+      const matchedCountry = COUNTRIES.find(c => c && c.currency === d.currency && c.timezone === d.timezone);
       const loaded: BusinessForm = {
         businessName: d.business_name || '',
         countryCode: matchedCountry?.code || '',
@@ -1254,8 +1264,8 @@ export default function SettingsPage() {
     }).catch(() => {});
 
     api.get('/settings/business').then((res) => {
-      const d = res.data;
-      const matchedCountry = COUNTRIES.find(c => c.currency === d.currency && c.timezone === d.timezone);
+      const d = res?.data || {};
+      const matchedCountry = COUNTRIES.find(c => c && c.currency === d.currency && c.timezone === d.timezone);
       const loaded: BusinessForm = {
         businessName: d.business_name || '',
         countryCode: matchedCountry?.code || '',
@@ -1295,6 +1305,18 @@ export default function SettingsPage() {
       if (d.business_phone) posSettings.setBillPhone(d.business_phone);
       posSettings.setBillingType(d.billing_type === 'prepaid' ? 'prepaid' : 'postpaid');
       posSettings.setTablesRequired(typeof d.tables_required === 'boolean' ? d.tables_required : true);
+    }).catch(() => {});
+
+    api.get('/settings/payment-methods').then((res) => {
+      if (res.data) {
+        setPaymentSettings({
+          qris_merchant_name: res.data.qris_merchant_name || 'Koperasi Karyawan Tehang',
+          qris_image_url: res.data.qris_image_url || '',
+          bank_name: res.data.bank_name || 'Bank BCA',
+          bank_account_number: res.data.bank_account_number || '',
+          bank_account_holder: res.data.bank_account_holder || 'Koperasi Tehang',
+        });
+      }
     }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1540,38 +1562,38 @@ export default function SettingsPage() {
   };
 
   const saveBusinessInfo = async (silent = false) => {
-    const phone = form.businessPhone.trim();
+    const phone = (form.businessPhone || '').trim();
     if (phone && !/^\+?[\d\s\-().]{7,25}$/.test(phone)) {
       toast.error('Format nomor telepon tidak valid');
       return;
     }
 
-    if (form.businessName.trim().length > 60) {
+    if ((form.businessName || '').trim().length > 60) {
       toast.error('Nama koperasi maksimal 60 karakter');
       return;
     }
 
-    if (form.businessAddress.trim().length > 150) {
+    if ((form.businessAddress || '').trim().length > 150) {
       toast.error('Alamat koperasi maksimal 150 karakter');
       return;
     }
 
-    if (form.businessEmail.trim().length > 50) {
+    if ((form.businessEmail || '').trim().length > 50) {
       toast.error('Email koperasi maksimal 50 karakter');
       return;
     }
 
-    if (form.receiptFooterText.trim().length > 100) {
+    if ((form.receiptFooterText || '').trim().length > 100) {
       toast.error('Teks ucapan terima kasih maksimal 100 karakter');
       return;
     }
 
-    if (form.receiptReturnPolicyText.trim().length > 120) {
+    if ((form.receiptReturnPolicyText || '').trim().length > 120) {
       toast.error('Teks kebijakan retur maksimal 120 karakter');
       return;
     }
 
-    if (form.reportHeaderTitle.trim().length > 80) {
+    if ((form.reportHeaderTitle || '').trim().length > 80) {
       toast.error('Judul laporan PDF maksimal 80 karakter');
       return;
     }
@@ -1967,13 +1989,13 @@ export default function SettingsPage() {
                 <div className="md:col-span-2">
                   <div className="flex justify-between items-center mb-1">
                     <label className="block text-sm text-gray-700 font-medium">{t('settings.businessName')}</label>
-                    <span className="text-xs text-gray-400">{form.businessName.length}/60</span>
+                    <span className="text-xs text-gray-400">{(form.businessName || '').length}/60</span>
                   </div>
                   {isAdmin ? (
                     <input
                       type="text"
                       maxLength={60}
-                      value={form.businessName}
+                      value={form.businessName || ''}
                       onChange={(e) => setForm((p) => ({ ...p, businessName: e.target.value }))}
                       placeholder="Contoh: Koperasi Karyawan Sejahtera"
                       className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand font-medium"
@@ -1986,13 +2008,13 @@ export default function SettingsPage() {
                 <div className="md:col-span-2">
                   <div className="flex justify-between items-center mb-1">
                     <label className="block text-sm text-gray-700 font-medium">{t('settings.address')}</label>
-                    <span className="text-xs text-gray-400">{form.businessAddress.length}/150</span>
+                    <span className="text-xs text-gray-400">{(form.businessAddress || '').length}/150</span>
                   </div>
                   {isAdmin ? (
                     <textarea
                       maxLength={150}
                       rows={2}
-                      value={form.businessAddress}
+                      value={form.businessAddress || ''}
                       onChange={(e) => setForm((p) => ({ ...p, businessAddress: e.target.value }))}
                       placeholder="Contoh: Jl. Raya Perkebunan No. 1, Desa Tehang"
                       className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand resize-none"
@@ -2005,13 +2027,13 @@ export default function SettingsPage() {
                 <div>
                   <div className="flex justify-between items-center mb-1">
                     <label className="block text-sm text-gray-700 font-medium">{t('settings.phone')}</label>
-                    <span className="text-xs text-gray-400">{form.businessPhone.length}/25</span>
+                    <span className="text-xs text-gray-400">{(form.businessPhone || '').length}/25</span>
                   </div>
                   {isAdmin ? (
                     <input
                       type="text"
                       maxLength={25}
-                      value={form.businessPhone}
+                      value={form.businessPhone || ''}
                       onChange={(e) => setForm((p) => ({ ...p, businessPhone: e.target.value }))}
                       placeholder="Contoh: +62 812-3456-7890"
                       className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
@@ -2024,13 +2046,13 @@ export default function SettingsPage() {
                 <div>
                   <div className="flex justify-between items-center mb-1">
                     <label className="block text-sm text-gray-700 font-medium">Email Kontak</label>
-                    <span className="text-xs text-gray-400">{form.businessEmail.length}/50</span>
+                    <span className="text-xs text-gray-400">{(form.businessEmail || '').length}/50</span>
                   </div>
                   {isAdmin ? (
                     <input
                       type="email"
                       maxLength={50}
-                      value={form.businessEmail}
+                      value={form.businessEmail || ''}
                       onChange={(e) => setForm((p) => ({ ...p, businessEmail: e.target.value }))}
                       placeholder="Contoh: koperasi@perusahaan.com"
                       className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
@@ -2121,57 +2143,57 @@ export default function SettingsPage() {
                 <div className="md:col-span-2">
                   <div className="flex justify-between items-center mb-1">
                     <label className="block text-sm text-gray-700 font-medium">Teks Ucapan Terima Kasih (Footer Struk)</label>
-                    <span className="text-xs text-gray-400">{form.receiptFooterText.length}/100</span>
+                    <span className="text-xs text-gray-400">{(form.receiptFooterText || '').length}/100</span>
                   </div>
                   {isAdmin ? (
                     <input
                       type="text"
                       maxLength={100}
-                      value={form.receiptFooterText}
+                      value={form.receiptFooterText || ''}
                       onChange={(e) => setForm((p) => ({ ...p, receiptFooterText: e.target.value }))}
                       placeholder="Contoh: Terima kasih atas kunjungan anda di Koperasi"
                       className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                     />
                   ) : (
-                    <p className="font-medium text-gray-900">{form.receiptFooterText}</p>
+                    <p className="font-medium text-gray-900">{form.receiptFooterText || '—'}</p>
                   )}
                 </div>
 
                 <div className="md:col-span-2">
                   <div className="flex justify-between items-center mb-1">
                     <label className="block text-sm text-gray-700 font-medium">Kebijakan Retur / Pengembalian Barang</label>
-                    <span className="text-xs text-gray-400">{form.receiptReturnPolicyText.length}/120</span>
+                    <span className="text-xs text-gray-400">{(form.receiptReturnPolicyText || '').length}/120</span>
                   </div>
                   {isAdmin ? (
                     <input
                       type="text"
                       maxLength={120}
-                      value={form.receiptReturnPolicyText}
+                      value={form.receiptReturnPolicyText || ''}
                       onChange={(e) => setForm((p) => ({ ...p, receiptReturnPolicyText: e.target.value }))}
                       placeholder="Contoh: Barang yang dibeli tidak dapat ditukar/dikembalikan"
                       className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand"
                     />
                   ) : (
-                    <p className="font-medium text-gray-900">{form.receiptReturnPolicyText}</p>
+                    <p className="font-medium text-gray-900">{form.receiptReturnPolicyText || '—'}</p>
                   )}
                 </div>
 
                 <div className="md:col-span-2">
                   <div className="flex justify-between items-center mb-1">
                     <label className="block text-sm text-gray-700 font-medium">Judul Kop Laporan Rekapitulasi PDF</label>
-                    <span className="text-xs text-gray-400">{form.reportHeaderTitle.length}/80</span>
+                    <span className="text-xs text-gray-400">{(form.reportHeaderTitle || '').length}/80</span>
                   </div>
                   {isAdmin ? (
                     <input
                       type="text"
                       maxLength={80}
-                      value={form.reportHeaderTitle}
+                      value={form.reportHeaderTitle || ''}
                       onChange={(e) => setForm((p) => ({ ...p, reportHeaderTitle: e.target.value }))}
                       placeholder="Contoh: Laporan Rekapitulasi Potong Gaji"
                       className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-brand font-medium"
                     />
                   ) : (
-                    <p className="font-medium text-gray-900">{form.reportHeaderTitle}</p>
+                    <p className="font-medium text-gray-900">{form.reportHeaderTitle || '—'}</p>
                   )}
                 </div>
               </div>
@@ -2243,7 +2265,7 @@ export default function SettingsPage() {
                     <input
                       type="text"
                       disabled={!isAdmin}
-                      value={paymentSettings.qris_merchant_name}
+                      value={paymentSettings.qris_merchant_name || ''}
                       onChange={(e) => setPaymentSettings({ ...paymentSettings, qris_merchant_name: e.target.value })}
                       placeholder="Contoh: Koperasi Karyawan Tehang"
                       className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
@@ -2256,7 +2278,7 @@ export default function SettingsPage() {
                     <input
                       type="text"
                       disabled={!isAdmin}
-                      value={paymentSettings.qris_image_url}
+                      value={paymentSettings.qris_image_url || ''}
                       onChange={(e) => setPaymentSettings({ ...paymentSettings, qris_image_url: e.target.value })}
                       placeholder="Contoh: /qris.png atau URL gambar QR"
                       className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-emerald-500"
@@ -2279,7 +2301,7 @@ export default function SettingsPage() {
                     <input
                       type="text"
                       disabled={!isAdmin}
-                      value={paymentSettings.bank_name}
+                      value={paymentSettings.bank_name || ''}
                       onChange={(e) => setPaymentSettings({ ...paymentSettings, bank_name: e.target.value })}
                       placeholder="Contoh: Bank BCA / Mandiri / BRI"
                       className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
@@ -2292,7 +2314,7 @@ export default function SettingsPage() {
                     <input
                       type="text"
                       disabled={!isAdmin}
-                      value={paymentSettings.bank_account_number}
+                      value={paymentSettings.bank_account_number || ''}
                       onChange={(e) => setPaymentSettings({ ...paymentSettings, bank_account_number: e.target.value })}
                       placeholder="Contoh: 1234567890"
                       className="w-full px-3 py-2 text-sm font-mono bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
@@ -2305,7 +2327,7 @@ export default function SettingsPage() {
                     <input
                       type="text"
                       disabled={!isAdmin}
-                      value={paymentSettings.bank_account_holder}
+                      value={paymentSettings.bank_account_holder || ''}
                       onChange={(e) => setPaymentSettings({ ...paymentSettings, bank_account_holder: e.target.value })}
                       placeholder="Contoh: Koperasi Tehang"
                       className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
@@ -3605,7 +3627,7 @@ export default function SettingsPage() {
                       {(cloudStatus.cloud_registration_status === 'unregistered' || cloudStatus.cloud_registration_status === 'registration_failed') && t('settings.notRegistered')}
                     </p>
                     <p className="text-xs text-gray-500">
-                      {cloudStatus.cloud_registration_status === 'registered' && (cloudStatus.cloud_last_heartbeat ? t('settings.liveChannelHeartbeat', { mode: cloudStatus.cloud_relay_mode.replace('_', ' '), time: formatTime(cloudStatus.cloud_last_heartbeat) }) : t('settings.liveChannel', { mode: cloudStatus.cloud_relay_mode.replace('_', ' ') }))}
+                      {cloudStatus.cloud_registration_status === 'registered' && (cloudStatus.cloud_last_heartbeat ? t('settings.liveChannelHeartbeat', { mode: (cloudStatus.cloud_relay_mode || 'direct').replace('_', ' '), time: formatTime(cloudStatus.cloud_last_heartbeat) }) : t('settings.liveChannel', { mode: (cloudStatus.cloud_relay_mode || 'direct').replace('_', ' ') }))}
                       {cloudStatus.cloud_registration_status === 'pending' && t('settings.storeIdPending', { id: cloudStatus.cloud_pending_store_id || '—' })}
                       {cloudStatus.cloud_registration_status === 'rejected' && t('settings.registrationContactSupport')}
                       {cloudStatus.cloud_registration_status === 'registration_failed' && (cloudStatus.cloud_last_error ? t('settings.registrationLastError', { error: cloudStatus.cloud_last_error }) : t('settings.registrationLastFailed'))}
@@ -4108,7 +4130,7 @@ export default function SettingsPage() {
                     {updateStatus.status === 'available' ? t('settings.updateStatusAvailable')
                      : updateStatus.status === 'up-to-date' ? t('settings.updateStatusUpToDate')
                      : updateStatus.status === 'ready-to-install' ? t('settings.updateStatusReadyToInstall')
-                     : updateStatus.status.replace(/-/g, ' ')}
+                     : String(updateStatus.status || 'up-to-date').replace(/-/g, ' ')}
                   </span>
                 </div>
                 {appVersion && (

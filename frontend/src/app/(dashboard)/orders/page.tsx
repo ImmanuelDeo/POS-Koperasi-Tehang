@@ -233,7 +233,8 @@ export default function OrdersPage() {
     }
   };
 
-  const fetchOrders = useCallback(async (targetPage = pagination.page, showSpinner = false) => {
+  const fetchOrders = useCallback(async (targetPage?: number, showSpinner = false) => {
+    const pageToFetch = targetPage !== undefined ? targetPage : pagination.page;
     if (showSpinner) setLoading(true);
     else setIsRefreshing(true);
 
@@ -244,7 +245,7 @@ export default function OrdersPage() {
           date: periodFilter.date,
           startDate: periodFilter.startDate,
           endDate: periodFilter.endDate,
-          page: targetPage,
+          page: pageToFetch,
           pageSize: 25,
           search: filters.search || undefined,
           table_id: filters.table || undefined,
@@ -275,6 +276,9 @@ export default function OrdersPage() {
     }
   }, [periodFilter, filters, pagination.page, t]);
 
+  const fetchOrdersRef = useRef(fetchOrders);
+  fetchOrdersRef.current = fetchOrders;
+
   // ── Auto-fetch immediately whenever period filter or table/type/status/search changes ──
   useEffect(() => {
     fetchOrders(1, false);
@@ -297,7 +301,7 @@ export default function OrdersPage() {
         // Ignore and fallback to default (true)
       }
 
-      fetchOrders();
+      fetchOrdersRef.current(1, false);
 
       if (isTablesRequired) {
         heldOrdersStore.fetchHeldOrders();
@@ -313,8 +317,10 @@ export default function OrdersPage() {
 
     initPage();
 
-    // 10-second backup polling interval (WebSocket handles real-time updates)
-    const interval = setInterval(fetchOrders, 10000);
+    // 10-second backup polling interval (uses latest ref to preserve active period filter)
+    const interval = setInterval(() => {
+      fetchOrdersRef.current(undefined, false);
+    }, 10000);
 
     // Live WebSocket connection to trigger immediate updates
     let ws: globalThis.WebSocket | null = null;
@@ -338,7 +344,7 @@ export default function OrdersPage() {
           try {
             const data = JSON.parse(event.data);
             if (data.type === 'order_updated' || data.type === 'orders' || data.type === 'initial_data') {
-              fetchOrders();
+              fetchOrdersRef.current(undefined, false);
             }
           } catch {
             // Ignore parse errors

@@ -6,8 +6,13 @@ import { maskNik } from '../services/privacy';
 import {
   generateSalaryDeductionsRekapPdf,
   generateMemberSalaryDeductionPdf,
+  generateMonthlyStockReportPdf,
   SalaryDeductionReportItem,
 } from '../services/reports-pdf';
+import {
+  getMonthlyStockReportData,
+  generateStockReportCsv,
+} from '../services/stock-reports';
 
 const router = Router();
 
@@ -632,6 +637,192 @@ router.get(
     } catch (error: any) {
       console.error('[Reports] Error generating member salary deduction PDF:', error);
       res.status(500).json({ error: error.message || 'Gagal membuat dokumen PDF bon anggota' });
+    }
+  }
+);
+
+// ── GET /api/reports/stock-movements/monthly ─────────────────────────────────
+// Laporan Stok Bulanan (Barang Masuk & Keluar) - Data JSON Paginasi & Summary
+// RBAC: Restricted to owner, admin, and manager (Cashier gets 403)
+router.get(
+  '/stock-movements/monthly',
+  authenticateToken,
+  requireRole(['owner', 'admin', 'manager']),
+  (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const db = getDatabase();
+      const { month, category_id, search, include_zero_balance, page, per_page } = req.query;
+
+      const reportData = getMonthlyStockReportData(db, {
+        month: month ? String(month) : undefined,
+        categoryId: category_id ? String(category_id) : undefined,
+        search: search ? String(search) : undefined,
+        includeZeroBalance: include_zero_balance === 'true' || include_zero_balance === '1',
+        page: page ? Number(page) : 1,
+        perPage: per_page ? Number(per_page) : 50,
+      });
+
+      res.json(reportData);
+    } catch (error: any) {
+      console.error('[Reports] Error fetching monthly stock report:', error);
+      res.status(500).json({ error: error.message || 'Gagal memuat laporan stok bulanan' });
+    }
+  }
+);
+
+// ── GET /api/reports/stock-movements/monthly/summary ─────────────────────────
+// Summary KPI Cepat untuk Dashboard / Header Laporan Stok
+// RBAC: Restricted to owner, admin, and manager (Cashier gets 403)
+router.get(
+  '/stock-movements/monthly/summary',
+  authenticateToken,
+  requireRole(['owner', 'admin', 'manager']),
+  (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const db = getDatabase();
+      const { month, category_id, search, include_zero_balance } = req.query;
+
+      const reportData = getMonthlyStockReportData(db, {
+        month: month ? String(month) : undefined,
+        categoryId: category_id ? String(category_id) : undefined,
+        search: search ? String(search) : undefined,
+        includeZeroBalance: include_zero_balance === 'true' || include_zero_balance === '1',
+        page: 1,
+        perPage: 1, // Only need summary calculation
+      });
+
+      res.json({
+        period: reportData.period,
+        summary: reportData.summary,
+      });
+    } catch (error: any) {
+      console.error('[Reports] Error fetching monthly stock summary:', error);
+      res.status(500).json({ error: error.message || 'Gagal memuat ringkasan stok bulanan' });
+    }
+  }
+);
+
+// ── GET /api/reports/stock-movements/monthly/pdf ─────────────────────────────
+// Unduh Dokumen Resmi PDF Laporan Stok Bulanan (A4 Landscape)
+// RBAC: Restricted to owner, admin, and manager (Cashier gets 403)
+router.get(
+  '/stock-movements/monthly/pdf',
+  authenticateToken,
+  requireRole(['owner', 'admin', 'manager']),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const db = getDatabase();
+      const { month, category_id, search, include_zero_balance } = req.query;
+
+      const settingsRows = db
+        .prepare("SELECT key, value FROM settings WHERE key IN ('business_name', 'business_address', 'business_phone', 'report_header_title')")
+        .all() as { key: string; value: string }[];
+      const sMap: Record<string, string> = Object.fromEntries(settingsRows.map((r) => [r.key, r.value]));
+      const businessName = sMap.business_name || 'POS Koperasi';
+      const businessAddress = sMap.business_address || '';
+      const businessPhone = sMap.business_phone || '';
+
+      const reportData = getMonthlyStockReportData(db, {
+        month: month ? String(month) : undefined,
+        categoryId: category_id ? String(category_id) : undefined,
+        search: search ? String(search) : undefined,
+        includeZeroBalance: include_zero_balance === 'true' || include_zero_balance === '1',
+        fetchAll: true,
+      });
+
+      const pdfBuffer = await generateMonthlyStockReportPdf({
+        businessName,
+        businessAddress,
+        businessPhone,
+        periodDescription: reportData.period.periodDescription,
+        generatedAtWib: reportData.period.generatedAtWib,
+        printedByName: req.user?.name || 'Petugas',
+        printedByRole: req.user?.role || 'Staff',
+        summary: reportData.summary,
+        items: reportData.items,
+      });
+
+      // Audit Log recording
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'stock.monthly_report.pdf_downloaded',
+        target_type: 'report',
+        target_id: reportData.period.monthStr,
+        details: {
+          month: reportData.period.monthStr,
+          category_id: category_id || 'all',
+          total_products: reportData.items.length,
+          total_in: reportData.summary.total_in,
+          total_out: reportData.summary.total_out,
+          total_ending_stock: reportData.summary.total_ending_stock,
+        },
+        ip_address: req.ip,
+      });
+
+      const filename = `laporan-stok-${reportData.period.monthStr}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+      res.send(pdfBuffer);
+    } catch (error: any) {
+      console.error('[Reports] Error generating monthly stock PDF:', error);
+      res.status(500).json({ error: error.message || 'Gagal membuat dokumen PDF laporan stok' });
+    }
+  }
+);
+
+// ── GET /api/reports/stock-movements/monthly/csv ─────────────────────────────
+// Unduh Spreadsheet CSV Laporan Stok Bulanan (UTF-8 BOM untuk Excel)
+// RBAC: Restricted to owner, admin, and manager (Cashier gets 403)
+router.get(
+  '/stock-movements/monthly/csv',
+  authenticateToken,
+  requireRole(['owner', 'admin', 'manager']),
+  (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const db = getDatabase();
+      const { month, category_id, search, include_zero_balance } = req.query;
+
+      const s = db.prepare("SELECT value FROM settings WHERE key = 'business_name'").get() as any;
+      const businessName = s?.value || 'POS Koperasi';
+
+      const reportData = getMonthlyStockReportData(db, {
+        month: month ? String(month) : undefined,
+        categoryId: category_id ? String(category_id) : undefined,
+        search: search ? String(search) : undefined,
+        includeZeroBalance: include_zero_balance === 'true' || include_zero_balance === '1',
+        fetchAll: true,
+      });
+
+      const csvBuffer = generateStockReportCsv(reportData, businessName);
+
+      // Audit Log recording
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'stock.monthly_report.csv_downloaded',
+        target_type: 'report',
+        target_id: reportData.period.monthStr,
+        details: {
+          month: reportData.period.monthStr,
+          category_id: category_id || 'all',
+          total_products: reportData.items.length,
+          total_in: reportData.summary.total_in,
+          total_out: reportData.summary.total_out,
+          total_ending_stock: reportData.summary.total_ending_stock,
+        },
+        ip_address: req.ip,
+      });
+
+      const filename = `laporan-stok-${reportData.period.monthStr}.csv`;
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Length', csvBuffer.length);
+      res.send(csvBuffer);
+    } catch (error: any) {
+      console.error('[Reports] Error generating monthly stock CSV:', error);
+      res.status(500).json({ error: error.message || 'Gagal membuat file CSV laporan stok' });
     }
   }
 );
