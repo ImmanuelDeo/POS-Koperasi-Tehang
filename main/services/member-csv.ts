@@ -17,6 +17,7 @@ export interface ValidatedMemberRow {
   address: string | null;
   monthly_deduction_limit: number;
   salary_deduction_enabled: number;
+  whatsapp_marketing_opt_in: number;
   notes: string | null;
 }
 
@@ -56,6 +57,7 @@ export function generateMemberCsvTemplate(): string {
     'alamat',
     'limit_bulanan',
     'potong_gaji_aktif',
+    'opt_in_whatsapp_promo',
     'catatan',
   ];
 
@@ -71,6 +73,7 @@ export function generateMemberCsvTemplate(): string {
       'Perumahan Karyawan Blok A1',
       '500000',
       '1',
+      '1',
       'Staff Senior Pabrik',
     ],
     [
@@ -83,6 +86,7 @@ export function generateMemberCsvTemplate(): string {
       'siti@koperasi.local',
       'Perumahan Karyawan Blok B4',
       '750000',
+      '1',
       '1',
       'Supervisor Logistik',
     ],
@@ -97,6 +101,7 @@ export function generateMemberCsvTemplate(): string {
       'Jl. Melati No. 12',
       '1000000',
       '1',
+      '0',
       'Staff HRD',
     ],
     [
@@ -110,7 +115,8 @@ export function generateMemberCsvTemplate(): string {
       '',
       '0',
       '1',
-      'Limit 0 = Bebas Limit',
+      '1',
+      'Member Toko Sembako',
     ],
   ];
 
@@ -204,6 +210,7 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
     else if (['alamat', 'address'].includes(h)) colMap.address = idx;
     else if (['limitbulanan', 'monthlydeductionlimit', 'limit', 'limitpotongangaji', 'limitgaji'].includes(h)) colMap.limit = idx;
     else if (['potonggajiaktif', 'salarydeductionenabled', 'potonggaji', 'statusbon', 'bonaktif'].includes(h)) colMap.salary_deduction_enabled = idx;
+    else if (['optinwhatsapp', 'optinwa', 'whatsapppromo', 'promowa', 'optinpromowa', 'optin'].includes(h)) colMap.whatsapp_optin = idx;
     else if (['catatan', 'notes', 'keterangan'].includes(h)) colMap.notes = idx;
   });
 
@@ -258,6 +265,7 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
     const rawAddress = colMap.address !== undefined ? (row[colMap.address] || '').trim() : '';
     const rawLimit = colMap.limit !== undefined ? (row[colMap.limit] || '').trim() : '';
     const rawDeductEnabled = colMap.salary_deduction_enabled !== undefined ? (row[colMap.salary_deduction_enabled] || '').trim() : '';
+    const rawWhatsappOptin = colMap.whatsapp_optin !== undefined ? (row[colMap.whatsapp_optin] || '').trim() : '';
     const rawNotes = colMap.notes !== undefined ? (row[colMap.notes] || '').trim() : '';
 
     let rowHasError = false;
@@ -346,6 +354,15 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
       }
     }
 
+    // 7. Parse WhatsApp Marketing Opt-In (default 0)
+    let waOptIn = 0;
+    if (rawWhatsappOptin) {
+      const val = rawWhatsappOptin.toLowerCase();
+      if (['1', 'true', 'ya', 'yes', 'setuju', 'aktif', 'optin'].includes(val)) {
+        waOptIn = 1;
+      }
+    }
+
     if (!rowHasError) {
       validatedRows.push({
         row_number: rowNum,
@@ -360,6 +377,7 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
         address: rawAddress || null,
         monthly_deduction_limit: monthlyLimit,
         salary_deduction_enabled: deductEnabled,
+        whatsapp_marketing_opt_in: waOptIn,
         notes: rawNotes || null,
       });
     }
@@ -389,15 +407,27 @@ export function executeMemberImport(
       id, nik, name, phone, email, address, notes,
       is_member, member_no, employee_id, department,
       salary_deduction_enabled, monthly_deduction_limit, outstanding_deduction_limit,
+      whatsapp_marketing_opt_in, whatsapp_marketing_opt_in_at, whatsapp_marketing_opt_in_source, whatsapp_marketing_policy_version,
       is_active, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 0, 1, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1, ?, ?)
+  `);
+
+  const insertConsentLog = db.prepare(`
+    INSERT INTO customer_consent_logs (
+      customer_id, event_type, source, policy_version, actor_user_id, reason, created_at
+    ) VALUES (?, 'OPT_IN', 'csv_import', 'v1.0-2026', ?, 'Explicit opt-in recorded during member CSV import', ?)
   `);
 
   const importTx = db.transaction(() => {
     let createdCount = 0;
+    const currentTime = now();
+
     for (const row of rows) {
       const id = uuidv4();
       const memberNo = row.member_no || `MBR-${Math.floor(1000 + Math.random() * 9000)}`;
+      const optInAt = row.whatsapp_marketing_opt_in === 1 ? currentTime : null;
+      const optInSource = row.whatsapp_marketing_opt_in === 1 ? 'csv_import' : null;
+      const policyVer = row.whatsapp_marketing_opt_in === 1 ? 'v1.0-2026' : null;
 
       insertMember.run(
         id,
@@ -412,9 +442,17 @@ export function executeMemberImport(
         row.department,
         row.salary_deduction_enabled,
         row.monthly_deduction_limit,
-        now(),
-        now()
+        row.whatsapp_marketing_opt_in,
+        optInAt,
+        optInSource,
+        policyVer,
+        currentTime,
+        currentTime
       );
+
+      if (row.whatsapp_marketing_opt_in === 1) {
+        insertConsentLog.run(id, actorUserId || null, currentTime);
+      }
       createdCount++;
     }
 

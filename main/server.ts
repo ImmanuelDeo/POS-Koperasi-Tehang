@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import { registerRoutes } from './routes';
 import { setupKdsWebSocket } from './services/kds';
 import { validateSecurityConfig, isOriginAllowed } from './config/security';
+import { WhatsAppCampaignScheduler } from './services/whatsapp-scheduler';
 
 let server: http.Server | null = null;
 let app: Express;
@@ -141,6 +142,9 @@ export function startServer(): Promise<void> {
         console.log(`[Server] KDS WebSocket running on ws://localhost:${PORT}/kds`);
       }
 
+      // Initialize background WhatsApp campaign scheduler
+      WhatsAppCampaignScheduler.init();
+
       resolve();
     });
 
@@ -156,6 +160,7 @@ export function startServer(): Promise<void> {
 }
 
 export function stopServer(): void {
+  WhatsAppCampaignScheduler.stop();
   if (wss) wss.close();
   if (server) server.close();
   console.log('[Server] HTTP server stopped');
