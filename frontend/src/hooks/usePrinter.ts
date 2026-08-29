@@ -121,16 +121,6 @@ export const usePrinterStore = create<PrinterState>()(
           const isReprint = opts?.isReprint ?? false;
 
           const hw = get().hardwarePrinter;
-          if (hw && get().printMethod === 'escpos') {
-            try {
-              await api.post('/printers/print-bill', { billId: bill.id, useUnicode: printerUseUnicode, isReprint });
-              return;
-            } catch (err: unknown) {
-              const e = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
-              throw new Error(e.response?.data?.message || e.response?.data?.error || e.message || 'Print failed');
-            }
-          }
-
           if (get().printMethod === 'browser') {
             // Browser / A4 print path
             const { printWebBill } = await import('@/lib/printer/web-print');
@@ -148,7 +138,18 @@ export const usePrinterStore = create<PrinterState>()(
             return;
           }
 
-          // ESC/POS thermal path
+          // Primary thermal path: always try server-side direct ESC/POS spooler if hardwarePrinter or Electron or escpos mode
+          if (hw || get().printMethod === 'escpos' || (typeof window !== 'undefined' && (window as any).electronAPI)) {
+            try {
+              await api.post('/printers/print-bill', { billId: bill.id, useUnicode: printerUseUnicode, isReprint });
+              return;
+            } catch (err: unknown) {
+              const e = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
+              throw new Error(e.response?.data?.message || e.response?.data?.error || e.message || 'Print failed');
+            }
+          }
+
+          // Fallback WebUSB thermal path
           const { paperWidth } = get();
           const builderOpts: ReceiptOptions = {
             ...opts,
@@ -202,10 +203,6 @@ export const usePrinterStore = create<PrinterState>()(
 
       printKot: async (order, opts) => {
         set({ lastError: null });
-        // Single choke point for every KOT print path (auto + manual): when
-        // kot_printing_enabled is off, no KOT print command may ever go out
-        // (issue #133) — coarser than auto_print_kot, which only gates
-        // automatic printing on order placement.
         const { kotPrintingEnabled, printerUseUnicode } = usePosSettingsStore.getState();
         if (!kotPrintingEnabled) {
           const err = new Error('KOT printing is disabled for this business');
@@ -214,7 +211,7 @@ export const usePrinterStore = create<PrinterState>()(
         }
         try {
           const hw = get().hardwarePrinter;
-          if (hw && get().printMethod === 'escpos') {
+          if (hw || get().printMethod === 'escpos' || (typeof window !== 'undefined' && (window as any).electronAPI)) {
             try {
               await api.post('/printers/print-kot', { orderId: order.id, useUnicode: printerUseUnicode });
               return;
@@ -289,6 +286,11 @@ export function usePrinterStatusSync(): void {
 
     store.refreshHardwarePrinter();
 
+    // Auto-refresh printer status periodically every 15s to keep UI status live
+    const interval = setInterval(() => {
+      store.refreshHardwarePrinter();
+    }, 15000);
+
     const unsub = printerService.onStatusChange((status, info) => {
       usePrinterStore.setState({
         status,
@@ -296,7 +298,10 @@ export function usePrinterStatusSync(): void {
       });
     });
 
-    return unsub;
+    return () => {
+      clearInterval(interval);
+      unsub();
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }

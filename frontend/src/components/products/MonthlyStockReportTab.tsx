@@ -106,6 +106,7 @@ export default function MonthlyStockReportTab() {
   const [loading, setLoading] = useState<boolean>(true);
   const [exportingPdf, setExportingPdf] = useState<boolean>(false);
   const [exportingCsv, setExportingCsv] = useState<boolean>(false);
+  const [exportingExcel, setExportingExcel] = useState<boolean>(false);
 
   const [period, setPeriod] = useState<StockReportPeriod | null>(null);
   const [summary, setSummary] = useState<StockReportSummary | null>(null);
@@ -213,6 +214,45 @@ export default function MonthlyStockReportTab() {
       toast.error(err?.response?.data?.error || 'Gagal mengunduh dokumen PDF');
     } finally {
       setExportingPdf(false);
+    }
+  };
+
+  // Download Excel Handler (.xlsx)
+  const handleDownloadExcel = async () => {
+    if (!hideZeroBalance && pagination.total_records > 5000 && !showLargeExportWarning) {
+      setShowLargeExportWarning(true);
+      return;
+    }
+
+    setExportingExcel(true);
+    setShowLargeExportWarning(false);
+    try {
+      const res = await api.get('/reports/stock-movements/monthly/xlsx', {
+        params: {
+          month,
+          category_id: selectedCategory || undefined,
+          search: committedSearch || undefined,
+          include_zero_balance: !hideZeroBalance,
+        },
+        responseType: 'blob',
+      });
+
+      const blob = new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `laporan-stok-${month}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success('Spreadsheet Excel (.xlsx) berhasil diunduh');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Gagal mengunduh file Excel');
+    } finally {
+      setExportingExcel(false);
     }
   };
 
@@ -347,6 +387,19 @@ export default function MonthlyStockReportTab() {
             >
               {exportingPdf ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               <span>Cetak / PDF</span>
+            </Button>
+
+            {/* Download Excel Button */}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleDownloadExcel}
+              disabled={exportingExcel || loading}
+              className="bg-green-50/80 border-green-300 hover:bg-green-100 text-green-800 font-semibold text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all"
+              title="Unduh Laporan Stok Format Microsoft Excel (.xlsx)"
+            >
+              {exportingExcel ? <Loader2 size={14} className="animate-spin text-green-700" /> : <FileSpreadsheet size={14} className="text-green-700" />}
+              <span>Unduh Excel (.xlsx)</span>
             </Button>
 
             {/* Download CSV Button */}

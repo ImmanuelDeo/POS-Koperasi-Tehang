@@ -101,11 +101,12 @@ export default function CustomersPage() {
     country_code: dialCode,
   });
 
-  // PDF Report Modal State
+  // PDF & Excel Report Modal State
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportPeriodMonth, setReportPeriodMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
   const [reportStatus, setReportStatus] = useState('all');
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [downloadingExcel, setDownloadingExcel] = useState(false);
 
   // CSV Import Modal State
   const [showImportModal, setShowImportModal] = useState(false);
@@ -236,6 +237,36 @@ export default function CustomersPage() {
     }
   };
 
+  const handleDownloadRekapExcel = async () => {
+    setDownloadingExcel(true);
+    try {
+      const res = await api.get('/reports/salary-deductions/xlsx', {
+        params: {
+          period_month: reportPeriodMonth,
+          status: reportStatus,
+        },
+        responseType: 'blob',
+      });
+      const blob = new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = `laporan-rekap-potong-gaji-${reportPeriodMonth}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+      toast.success('Laporan Excel (.xlsx) rekap berhasil diunduh');
+      setShowReportModal(false);
+    } catch {
+      toast.error('Gagal mengunduh laporan Excel potong gaji');
+    } finally {
+      setDownloadingExcel(false);
+    }
+  };
+
   const handleDownloadMemberPdf = async (c: Customer) => {
     try {
       const todayMonth = new Date().toISOString().slice(0, 7);
@@ -258,6 +289,33 @@ export default function CustomersPage() {
       toast.success(`Bon PDF untuk ${c.name} berhasil diunduh`);
     } catch {
       toast.error('Gagal mengunduh bon potong gaji anggota');
+    }
+  };
+
+  const handleDownloadMemberExcel = async (c: Customer) => {
+    try {
+      const todayMonth = new Date().toISOString().slice(0, 7);
+      const res = await api.get(`/reports/salary-deductions/members/${c.id}/xlsx`, {
+        params: {
+          period_month: todayMonth,
+        },
+        responseType: 'blob',
+      });
+      const blob = new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      const safeId = (c.member_no || c.employee_id || String(c.id)).replace(/[^a-zA-Z0-9_-]/g, '_');
+      link.download = `bon-potong-gaji-${safeId}-${todayMonth}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+      toast.success(`Bon Excel (.xlsx) untuk ${c.name} berhasil diunduh`);
+    } catch {
+      toast.error('Gagal mengunduh bon Excel anggota');
     }
   };
 
@@ -591,6 +649,9 @@ export default function CustomersPage() {
                   </td>
 
                   <td className="p-4 text-right space-x-1 whitespace-nowrap">
+                    <Button variant="ghost" size="sm" onClick={() => handleDownloadMemberExcel(c)} title="Unduh Bon Potong Gaji Anggota (Excel .xlsx)">
+                      <FileSpreadsheet size={14} className="text-emerald-700" />
+                    </Button>
                     <Button variant="ghost" size="sm" onClick={() => handleDownloadMemberPdf(c)} title="Unduh Bon Potong Gaji Anggota (PDF)">
                       <FileDown size={14} className="text-teal-700" />
                     </Button>
@@ -833,17 +894,25 @@ export default function CustomersPage() {
                 </select>
               </div>
 
-              <div className="flex gap-3 pt-3 border-t border-gray-100">
-                <Button variant="outline" onClick={() => setShowReportModal(false)} className="flex-1">
+              <div className="flex flex-col sm:flex-row gap-2.5 pt-3 border-t border-gray-100">
+                <Button variant="outline" onClick={() => setShowReportModal(false)} className="sm:w-24">
                   Batal
                 </Button>
                 <Button
+                  onClick={handleDownloadRekapExcel}
+                  disabled={downloadingExcel || downloadingPdf}
+                  className="flex-1 bg-green-700 hover:bg-green-800 text-white rounded-xl shadow-md flex items-center justify-center gap-2 font-semibold text-xs"
+                >
+                  <FileSpreadsheet size={15} />
+                  {downloadingExcel ? 'Membuat Excel...' : 'Unduh Excel (.xlsx)'}
+                </Button>
+                <Button
                   onClick={handleDownloadRekapPdf}
-                  disabled={downloadingPdf}
-                  className="flex-1 bg-teal-700 hover:bg-teal-800 text-white rounded-xl shadow-md flex items-center justify-center gap-2"
+                  disabled={downloadingPdf || downloadingExcel}
+                  className="flex-1 bg-teal-700 hover:bg-teal-800 text-white rounded-xl shadow-md flex items-center justify-center gap-2 font-semibold text-xs"
                 >
                   <Download size={15} />
-                  {downloadingPdf ? 'Membuat PDF...' : 'Unduh Laporan PDF'}
+                  {downloadingPdf ? 'Membuat PDF...' : 'Unduh PDF'}
                 </Button>
               </div>
             </div>

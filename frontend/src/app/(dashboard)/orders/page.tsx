@@ -192,12 +192,18 @@ export default function OrdersPage() {
     totalPages: 1,
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [downloadingFormat, setDownloadingFormat] = useState<'pdf' | 'csv' | null>(null);
+  const [downloadingFormat, setDownloadingFormat] = useState<'pdf' | 'csv' | 'xlsx' | null>(null);
 
-  const handleDownloadReport = async (format: 'pdf' | 'csv') => {
+  const handleDownloadReport = async (format: 'pdf' | 'csv' | 'xlsx') => {
     setDownloadingFormat(format);
     try {
-      const endpoint = format === 'pdf' ? '/orders/export-pdf' : '/orders/export-csv';
+      const endpoint =
+        format === 'pdf'
+          ? '/orders/export-pdf'
+          : format === 'xlsx'
+          ? '/orders/export-xlsx'
+          : '/orders/export-csv';
+
       const response = await api.get(endpoint, {
         params: {
           period: periodFilter.period,
@@ -212,7 +218,13 @@ export default function OrdersPage() {
         responseType: 'blob',
       });
 
-      const contentType = format === 'pdf' ? 'application/pdf' : 'text/csv;charset=utf-8';
+      const contentType =
+        format === 'pdf'
+          ? 'application/pdf'
+          : format === 'xlsx'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'text/csv;charset=utf-8';
+
       const blob = new Blob([response.data], { type: contentType });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -956,6 +968,22 @@ export default function OrdersPage() {
           </Button>
 
           <div className="flex items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleDownloadReport('xlsx')}
+              disabled={downloadingFormat !== null}
+              className="flex items-center gap-1.5 bg-green-50/80 hover:bg-green-100 text-green-800 border-green-300 h-9 rounded-xl shadow-xs text-xs font-semibold px-3 transition-colors"
+              title="Unduh Laporan Transaksi Excel (.xlsx)"
+            >
+              {downloadingFormat === 'xlsx' ? (
+                <Loader2 size={13} className="animate-spin text-green-700" />
+              ) : (
+                <FileSpreadsheet size={14} className="text-green-700" />
+              )}
+              <span>Excel (.xlsx)</span>
+            </Button>
+
             <Button
               variant="outline"
               size="sm"

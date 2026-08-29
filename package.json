@@ -47,6 +47,7 @@
     "cors": "^2.8.5",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.8.3",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "node-thermal-printer": "^4.2.1",
@@ -76,6 +77,10 @@
       {
         "from": "frontend/out",
         "to": "frontend-out"
+      },
+      {
+        "from": "flo.db",
+        "to": "initial-flo.db"
       }
     ],
     "win": {

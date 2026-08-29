@@ -8,6 +8,7 @@ import {
   generateOrdersTransactionReportCsv,
   TransactionReportOrderItem,
 } from '../services/reports-pdf';
+import { generateOrdersTransactionReportExcel } from '../services/reports-excel';
 import { maskNik } from '../services/privacy';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { createAuditLog } from '../services/audit';
@@ -343,7 +344,48 @@ router.get('/export-csv', (req: AuthenticatedRequest, res: Response) => {
     res.send('\uFEFF' + csvContent); // Add UTF-8 BOM for Excel compatibility
   } catch (error: any) {
     console.error('[Orders Export CSV Error]', error);
-    res.status(500).json({ error: error.message || 'Gagal membuat laporan CSV' });
+    res.status(500).json({ error: error.message || 'Gagal membuat file CSV' });
+  }
+});
+
+/**
+ * GET /api/orders/export-xlsx
+ * Download Excel (.xlsx) report of filtered transactions.
+ */
+router.get('/export-xlsx', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const data = buildFilteredOrdersForExport(req);
+    const excelBuffer = await generateOrdersTransactionReportExcel({
+      businessName: data.businessName,
+      periodLabel: data.activeRange.label,
+      startDate: data.activeRange.startDate,
+      endDate: data.activeRange.endDate,
+      printedAt: data.printedAt,
+      printedByName: req.user?.name || 'Petugas Kasir',
+      printedByRole: req.user?.role || 'cashier',
+      summary: data.summary,
+      orders: data.orders,
+    });
+
+    const filename = `Laporan_Transaksi_Koperasi_${data.activeRange.startDate}_sd_${data.activeRange.endDate}.xlsx`;
+
+    const db = getDatabase();
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'EXPORT_ORDERS_REPORT_XLSX',
+      target_type: 'orders',
+      details: { period: data.activeRange.period, totalCount: data.orders.length, netSales: data.summary.netSales },
+      ip_address: req.ip,
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', excelBuffer.length);
+    res.end(excelBuffer);
+  } catch (error: any) {
+    console.error('[Orders Export XLSX Error]', error);
+    res.status(500).json({ error: error.message || 'Gagal membuat laporan Excel' });
   }
 });
 

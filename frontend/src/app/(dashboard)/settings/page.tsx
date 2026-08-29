@@ -683,6 +683,27 @@ export default function SettingsPage() {
     }
   };
 
+  const [autoConnecting, setAutoConnecting] = useState(false);
+
+  const handleAutoConnect = async () => {
+    setAutoConnecting(true);
+    try {
+      const res = await api.post('/printers/auto-connect');
+      if (res.data.success) {
+        toast.success(res.data.message || 'Printer berhasil dihubungkan!');
+        fetchPrinters();
+        fetchDetectedPrinters();
+        refreshHardwarePrinter();
+      } else {
+        toast.error(res.data.message || 'Tidak ada printer yang terdeteksi.');
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.message || 'Gagal auto-connect printer.');
+    } finally {
+      setAutoConnecting(false);
+    }
+  };
+
   const quickAddDetected = async (p: DetectedPrinter) => {
     setAddingDetectedName(p.name);
     try {
@@ -2847,14 +2868,20 @@ export default function SettingsPage() {
                   <h2 className="font-semibold text-gray-900">{t('settings.printers')}</h2>
                 </div>
                 {!showPrinterForm && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
+                    <button onClick={handleAutoConnect} disabled={autoConnecting}
+                      title="Auto scan dan jadikan printer thermal terdeteksi sebagai printer utama"
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium disabled:opacity-50 shadow-sm">
+                      <Printer size={14} className={autoConnecting ? 'animate-spin' : ''} />
+                      {autoConnecting ? 'Mendeteksi USB...' : 'Auto-Hubungkan (Scan OS)'}
+                    </button>
                     <button onClick={fetchDetectedPrinters} disabled={detectingPrinters}
                       title={t('settings.refreshList')}
-                      className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 font-medium disabled:opacity-50">
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 font-medium disabled:opacity-50">
                       <RefreshCw size={14} className={detectingPrinters ? 'animate-spin' : ''} /> {t('settings.refresh')}
                     </button>
                     <button onClick={openAddPrinter}
-                      className="flex items-center gap-2 px-4 py-2 text-sm border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 font-medium">
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 font-medium">
                       <Plus size={14} /> {t('settings.addPrinterManually')}
                     </button>
                   </div>

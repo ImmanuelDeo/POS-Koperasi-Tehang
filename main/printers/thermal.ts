@@ -157,6 +157,16 @@ export async function detectConnectedPrinters(): Promise<PrinterInfo[]> {
 export function detectWindowsPrinters(): PrinterInfo[] {
   const printers: PrinterInfo[] = [];
 
+  // 1. Detect physical USB port from active PnP devices and auto-heal printer port
+  try {
+    const healCmd = `$pnp = @(Get-PnpDevice -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like '*USBPRINT*' -or $_.FriendlyName -like '*ECO58*' -or $_.FriendlyName -like '*HaoYin*' -or $_.FriendlyName -like '*Blueprint*' -or $_.FriendlyName -like '*POS*' }); $p = $pnp | Where-Object { $_.InstanceId -match '(USB\\d{3})' } | Select-Object -First 1; if ($p -and $p.InstanceId -match '(USB\\d{3})') { $activePort = $matches[1]; $target = Get-Printer -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*Blueprint*' -or $_.Name -like '*ECO58*' -or $_.Name -like '*POS*' -or $_.Name -like '*HaoYin*' } | Select-Object -First 1; if ($target -and $target.PortName -ne $activePort -and $target.PortName -like 'USB*') { Set-Printer -Name $target.Name -PortName $activePort -ErrorAction SilentlyContinue } }`;
+    execSync(`powershell -NoProfile -NonInteractive -Command "${healCmd}"`, {
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+  } catch {}
+
+  // 2. Fetch all installed printers from Windows
   try {
     const psCmd = `Get-CimInstance Win32_Printer | Select-Object Name, Default, WorkOffline, PrinterStatus, ExtendedPrinterStatus, DetectedErrorState, DriverName, PortName | ConvertTo-Json -Compress`;
     const output = execSync(`powershell -NoProfile -NonInteractive -Command "${psCmd}"`, {
@@ -180,7 +190,8 @@ export function detectWindowsPrinters(): PrinterInfo[] {
         const connectionType: 'usb' | 'network' | 'bluetooth' = isBluetooth ? 'bluetooth' : isNetwork ? 'network' : 'usb';
 
         const makeModel = detectWindowsMakeModel(name, driver);
-        const isOffline = p.WorkOffline === true || p.ExtendedPrinterStatus === 7 || p.PrinterStatus === 7;
+        const isHardError = p.DetectedErrorState === 4 || p.DetectedErrorState === 7 || p.DetectedErrorState === 8;
+        const status = isHardError ? 'offline' : 'idle';
 
         printers.push({
           name,
@@ -189,7 +200,7 @@ export function detectWindowsPrinters(): PrinterInfo[] {
           connectionType,
           deviceUri: name,
           driver,
-          status: isOffline ? 'offline' : 'idle',
+          status,
           isDefault,
         });
       }
@@ -198,8 +209,9 @@ export function detectWindowsPrinters(): PrinterInfo[] {
     console.log('[Printer] PowerShell printer detection fallback:', err?.message || err);
   }
 
+  // 3. Check for any PnP USB thermal device that might not have a spooler queue yet
   try {
-    const pnpCmd = `Get-PnpDevice -Class 'Printer','PrintQueue','USB' -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like '*ECO58*' -or $_.FriendlyName -like '*HaoYin*' -or $_.FriendlyName -like '*Blueprint*' } | Select-Object FriendlyName, InstanceId | ConvertTo-Json -Compress`;
+    const pnpCmd = `Get-PnpDevice -Class 'Printer','PrintQueue','USB','SoftwareDevice' -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like '*ECO58*' -or $_.FriendlyName -like '*HaoYin*' -or $_.FriendlyName -like '*Blueprint*' } | Select-Object FriendlyName, InstanceId | ConvertTo-Json -Compress`;
     const pnpOutput = execSync(`powershell -NoProfile -NonInteractive -Command "${pnpCmd}"`, {
       encoding: 'utf8',
       timeout: 5000,
@@ -211,7 +223,12 @@ export function detectWindowsPrinters(): PrinterInfo[] {
       for (const dev of pnpList) {
         if (!dev || !dev.FriendlyName) continue;
         const fName = String(dev.FriendlyName).trim();
-        const exists = printers.some(p => p.name.toLowerCase() === fName.toLowerCase() || p.name.toLowerCase().includes('eco-58'));
+        const exists = printers.some(p => 
+          p.name.toLowerCase() === fName.toLowerCase() || 
+          (p.name.toLowerCase().includes('blueprint') && fName.toLowerCase().includes('blueprint')) ||
+          (p.name.toLowerCase().includes('eco-58') && fName.toLowerCase().includes('eco58')) ||
+          (p.name.toLowerCase().includes('blueprint') && fName.toLowerCase().includes('haoyin'))
+        );
         if (!exists) {
           printers.push({
             name: fName,
@@ -817,77 +834,76 @@ export async function printViaWindowsSpooler(
     const escapedFile = tmpFile.replace(/'/g, "''");
 
     const psScript = `
-$requestedPrinter = '${escapedPrinter}'
-$filePath = '${escapedFile}'
-$bytes = [System.IO.File]::ReadAllBytes($filePath)
+$requested = '${escapedPrinter}'
+$binFile = '${escapedFile}'
+$bytes = [System.IO.File]::ReadAllBytes($binFile)
 
-# 1. Clean any stuck/orphaned print jobs from previous disconnected attempts
-Get-CimInstance Win32_PrintJob -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$requestedPrinter*" -or $_.Name -like "*Blueprint*" -or $_.Name -like "*ECO58*" -or $_.Name -like "*POS*" } | Remove-CimInstance -ErrorAction SilentlyContinue
+# 1. Clean any stuck/orphaned print jobs from previous attempts
+Get-CimInstance Win32_PrintJob -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$requested*" -or $_.Name -like "*Blueprint*" -or $_.Name -like "*ECO58*" -or $_.Name -like "*POS*" } | Remove-CimInstance -ErrorAction SilentlyContinue
 
-$installedPrinters = @(Get-CimInstance Win32_Printer | Select-Object -ExpandProperty Name)
-$targetPrinter = $null
+# 2. Detect physical USB port from active USBPRINT PnP devices
+$pnpDevices = @(Get-PnpDevice -Status OK -ErrorAction SilentlyContinue | Where-Object { 
+    $_.InstanceId -like '*USBPRINT*' -or 
+    $_.FriendlyName -like '*ECO58*' -or 
+    $_.FriendlyName -like '*HaoYin*' -or 
+    $_.FriendlyName -like '*Blueprint*' -or 
+    $_.FriendlyName -like '*POS*'
+})
 
-foreach ($p in $installedPrinters) {
-    if ($p -eq $requestedPrinter -or $p.ToLower() -eq $requestedPrinter.ToLower()) {
-        $targetPrinter = $p
+$activePort = $null
+foreach ($dev in $pnpDevices) {
+    if ($dev.InstanceId -match '(USB\\d{3})') {
+        $activePort = $matches[1]
         break
     }
 }
 
-if (-not $targetPrinter) {
-    $thermalKeywords = @('eco', '58', 'blueprint', 'pos', 'thermal', 'receipt', 'haoyin')
+# 3. Find matching Windows Spooler Queue
+$installedPrinters = @(Get-Printer -ErrorAction SilentlyContinue)
+$target = $null
+
+foreach ($p in $installedPrinters) {
+    if ($p.Name -eq $requested -or $p.Name.ToLower() -eq $requested.ToLower()) {
+        $target = $p
+        break
+    }
+}
+
+if (-not $target) {
+    $keywords = @('eco', '58', 'blueprint', 'pos', 'thermal', 'haoyin', 'receipt')
     foreach ($p in $installedPrinters) {
-        $pLower = $p.ToLower()
-        foreach ($kw in $thermalKeywords) {
-            if ($pLower.Contains($kw)) {
-                $targetPrinter = $p
+        $pNameLower = $p.Name.ToLower()
+        foreach ($kw in $keywords) {
+            if ($pNameLower.Contains($kw)) {
+                $target = $p
                 break
             }
         }
-        if ($targetPrinter) { break }
+        if ($target) { break }
     }
 }
 
-if (-not $targetPrinter) {
-    $defaultP = Get-CimInstance Win32_Printer | Where-Object { $_.Default -eq $true } | Select-Object -ExpandProperty Name -First 1
-    if ($defaultP -and -not ($defaultP -like '*PDF*' -or $defaultP -like '*OneNote*' -or $defaultP -like '*XPS*')) {
-        $targetPrinter = $defaultP
+if (-not $target) {
+    $def = $installedPrinters | Where-Object { $_.Default -eq $true } | Select-Object -First 1
+    if ($def -and -not ($def.Name -like '*PDF*' -or $def.Name -like '*OneNote*' -or $def.Name -like '*XPS*')) {
+        $target = $def
     }
 }
 
-if (-not $targetPrinter) {
-    $pnpDev = Get-PnpDevice -Class 'Printer','PrintQueue','USB' -Status OK -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like '*ECO58*' -or $_.FriendlyName -like '*HaoYin*' -or $_.FriendlyName -like '*Blueprint*' } | Select-Object -ExpandProperty FriendlyName -First 1
-    if ($pnpDev) {
-        Write-Error "Antrean printer '$requestedPrinter' tidak ditemukan di Windows. Perangkat USB fisik ($pnpDev) terdeteksi terhubung, namun antrean printer belum terdaftar pada Windows Printers & Scanners."
-    } else {
-        $namesStr = ($installedPrinters -join ', ')
-        Write-Error "Printer thermal '$requestedPrinter' tidak terdeteksi. Printer yang terpasang di Windows saat ini: [$namesStr]. Periksa kabel USB dan pengaturan printer."
-    }
-    exit 1
+if (-not $target) {
+    Write-Output "ERROR:Antrean printer '$requested' tidak ditemukan di Windows. Pastikan printer telah terinstall di Devices and Printers."
+    exit 0
 }
 
-# 2. Pre-flight Hardware & WorkOffline Verification
-$printerObj = Get-CimInstance Win32_Printer -Filter "Name = '$targetPrinter'" -ErrorAction SilentlyContinue
-if ($printerObj) {
-    if ($printerObj.WorkOffline -eq $true) {
-        Write-Error "Printer '$targetPrinter' sedang OFFLINE / Terputus. Kabel USB belum terhubung ke PC kasir atau tombol daya printer belum dinyalakan."
-        exit 1
-    }
-    if ($printerObj.DetectedErrorState -eq 4) {
-        Write-Error "Kertas thermal pada printer '$targetPrinter' habis (Out of Paper). Silakan pasang gulungan kertas baru."
-        exit 1
-    }
-    if ($printerObj.DetectedErrorState -eq 7) {
-        Write-Error "Penutup roll printer '$targetPrinter' terbuka (Cover Open). Silakan tutup rapat penutup printer."
-        exit 1
-    }
-    if ($printerObj.DetectedErrorState -eq 8) {
-        Write-Error "Kertas pada printer '$targetPrinter' macet / tersangkut (Paper Jam). Silakan rapikan kertas."
-        exit 1
-    }
+# 4. Auto-Heal: If physical USB port moved (e.g. USB002 -> USB003), automatically update PortName
+if ($activePort -and $target.PortName -ne $activePort -and $target.PortName -like 'USB*') {
+    try {
+        Set-Printer -Name $target.Name -PortName $activePort -ErrorAction SilentlyContinue
+        $target = Get-Printer -Name $target.Name -ErrorAction SilentlyContinue
+    } catch {}
 }
 
-# 3. C# Low-Level RawPrinterHelper with Real-Time Attributes & Status Check
+# 5. Low-Level C# Raw Spooler Injection via winspool.drv
 $code = @"
 using System;
 using System.Runtime.InteropServices;
@@ -900,39 +916,11 @@ public class RawPrinterHelper {
         [MarshalAs(UnmanagedType.LPWStr)] public string pDataType;
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct PRINTER_INFO_2 {
-        public string pServerName;
-        public string pPrinterName;
-        public string pShareName;
-        public string pPortName;
-        public string pDriverName;
-        public string pComment;
-        public string pLocation;
-        public IntPtr pDevMode;
-        public string pSepFile;
-        public string pPrintProcessor;
-        public string pDataType;
-        public string pParameters;
-        public IntPtr pSecurityDescriptor;
-        public uint Attributes;
-        public uint Priority;
-        public uint DefaultPriority;
-        public uint StartTime;
-        public uint UntilTime;
-        public uint Status;
-        public uint cJobs;
-        public uint AveragePPM;
-    }
-
     [DllImport("winspool.drv", EntryPoint = "OpenPrinterW", SetLastError = true, CharSet = CharSet.Unicode, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
 
     [DllImport("winspool.drv", EntryPoint = "ClosePrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool ClosePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.drv", EntryPoint = "GetPrinterW", SetLastError = true, CharSet = CharSet.Unicode, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool GetPrinter(IntPtr hPrinter, int dwLevel, IntPtr pPrinter, int cbBuf, out int pcbNeeded);
 
     [DllImport("winspool.drv", EntryPoint = "StartDocPrinterW", SetLastError = true, CharSet = CharSet.Unicode, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool StartDocPrinter(IntPtr hPrinter, int level, [In] DOCINFOW pDocInfo);
@@ -949,7 +937,7 @@ public class RawPrinterHelper {
     [DllImport("winspool.drv", EntryPoint = "WritePrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
     public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, int dwCount, out int dwWritten);
 
-    public static bool SendBytesToPrinter(string szPrinterName, byte[] bytes, out string errorMsg) {
+    public static bool SendBytes(string szPrinterName, byte[] bytes, out string errorMsg) {
         errorMsg = null;
         IntPtr hPrinter = IntPtr.Zero;
         DOCINFOW di = new DOCINFOW();
@@ -958,43 +946,8 @@ public class RawPrinterHelper {
 
         if (!OpenPrinter(szPrinterName, out hPrinter, IntPtr.Zero)) {
             int err = Marshal.GetLastWin32Error();
-            errorMsg = "Gagal mengakses antrean printer " + szPrinterName + " (Win32 Error: " + err + ")";
+            errorMsg = "Gagal membuka antrean printer " + szPrinterName + " (Win32 Error: " + err + ")";
             return false;
-        }
-
-        // Check real-time attributes & offline status before starting doc
-        int needed = 0;
-        GetPrinter(hPrinter, 2, IntPtr.Zero, 0, out needed);
-        if (needed > 0) {
-            IntPtr pBuf = Marshal.AllocHGlobal(needed);
-            try {
-                if (GetPrinter(hPrinter, 2, pBuf, needed, out needed)) {
-                    PRINTER_INFO_2 info = (PRINTER_INFO_2)Marshal.PtrToStructure(pBuf, typeof(PRINTER_INFO_2));
-                    // 1024 = PRINTER_ATTRIBUTE_WORK_OFFLINE
-                    if ((info.Attributes & 1024) != 0) {
-                        ClosePrinter(hPrinter);
-                        errorMsg = "Printer " + szPrinterName + " sedang OFFLINE / Terputus. Pastikan kabel USB printer terhubung ke PC kasir dan tombol daya menyala.";
-                        return false;
-                    }
-                    if ((info.Status & 128) != 0) {
-                        ClosePrinter(hPrinter);
-                        errorMsg = "Printer " + szPrinterName + " dalam kondisi Offline.";
-                        return false;
-                    }
-                    if ((info.Status & 16) != 0) {
-                        ClosePrinter(hPrinter);
-                        errorMsg = "Kertas thermal pada printer " + szPrinterName + " habis.";
-                        return false;
-                    }
-                    if ((info.Status & 4194304) != 0) {
-                        ClosePrinter(hPrinter);
-                        errorMsg = "Penutup roll printer " + szPrinterName + " terbuka.";
-                        return false;
-                    }
-                }
-            } finally {
-                Marshal.FreeHGlobal(pBuf);
-            }
         }
 
         if (!StartDocPrinter(hPrinter, 1, di)) {
@@ -1014,48 +967,57 @@ public class RawPrinterHelper {
         IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
         Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
         int written = 0;
-        bool success = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out written);
+        bool ok = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out written);
         Marshal.FreeCoTaskMem(pUnmanagedBytes);
 
         EndPagePrinter(hPrinter);
         EndDocPrinter(hPrinter);
         ClosePrinter(hPrinter);
 
-        if (!success) {
-            errorMsg = "Gagal menulis data ke printer " + szPrinterName;
+        if (!ok) {
+            errorMsg = "Gagal menulis byte data ke antrean " + szPrinterName;
         }
-        return success;
+        return ok;
     }
 }
 "@
 
 Add-Type -TypeDefinition $code -Language CSharp
 $errOut = ""
-$result = [RawPrinterHelper]::SendBytesToPrinter($targetPrinter, $bytes, [ref]$errOut)
+$result = [RawPrinterHelper]::SendBytes($target.Name, $bytes, [ref]$errOut)
+
 if ($result) {
-    Write-Output "SUCCESS:$targetPrinter"
+    Write-Output "SUCCESS:$($target.Name)|$($target.PortName)"
 } else {
-    # If writing failed or was rejected, ensure no lingering jobs remain queued in spooler
-    Get-CimInstance Win32_PrintJob -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$targetPrinter*" } | Remove-CimInstance -ErrorAction SilentlyContinue
-    Write-Error "$errOut"
+    Write-Output "ERROR:$errOut"
 }
 `;
 
     fs.writeFileSync(psScriptFile, psScript, 'utf8');
 
-    const result = execSync(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${psScriptFile}"`, {
-      encoding: 'utf8',
-      timeout: 10000,
-    });
+    let output = '';
+    try {
+      output = execSync(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${psScriptFile}"`, {
+        encoding: 'utf8',
+        timeout: 15000,
+      }).trim();
+    } catch (execErr: any) {
+      const rawMsg = execErr.stderr || execErr.stdout || execErr.message || '';
+      return { success: false, error: 'Gagal menjalankan spooler cetak: ' + rawMsg.split('\n')[0] };
+    }
 
-    if (result.includes('SUCCESS')) {
+    if (output.includes('SUCCESS')) {
       return { success: true };
     }
-    return { success: false, error: 'Windows Spooler tidak mengonfirmasi cetak' };
+    if (output.includes('ERROR:')) {
+      const err = output.split('ERROR:')[1].trim();
+      return { success: false, error: err };
+    }
+
+    return { success: false, error: output || 'Windows Spooler tidak mengonfirmasi cetak' };
   } catch (err: any) {
     console.error('[Printer] Windows raw spooler error:', err.message);
-    const cleanedErr = err.message ? err.message.split('\n')[0].replace(/^Command failed: .*?\n/, '').trim() : 'Spooler failed';
-    return { success: false, error: cleanedErr };
+    return { success: false, error: err.message || 'Spooler failed' };
   } finally {
     try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
     try { if (fs.existsSync(psScriptFile)) fs.unlinkSync(psScriptFile); } catch {}
@@ -1104,7 +1066,7 @@ export async function printViaUSB(data: Buffer, printerName?: string): Promise<{
   return { success: false, error: 'Platform sistem operasi tidak didukung' };
 }
 
-// ── Unified Print Service Engine ────────────────────────────────────────────
+// ── Printer Initialization & Configuration ──────────────────────────────────
 
 export async function initPrinter(): Promise<void> {
   try {
@@ -1128,21 +1090,33 @@ export async function initPrinter(): Promise<void> {
     if (!defaultPrinter) {
       defaultPrinter = db.prepare('SELECT * FROM printers LIMIT 1').get();
     }
+
     if (defaultPrinter) {
       console.log(`[Printer] Active printer: ${defaultPrinter.name} (${defaultPrinter.connection_type}, ${defaultPrinter.paper_width || '58mm'})`);
+    } else {
+      console.log('[Printer] No printer configured');
     }
   } catch (error) {
-    console.log('[Printer] Initialization deferred (database not ready)');
+    console.error('[Printer] Init error:', error);
   }
 }
 
 export function getPrinterConfig(): any {
-  if (defaultPrinter) return defaultPrinter;
   try {
     const db = getDatabase();
-    return db.prepare('SELECT * FROM printers WHERE is_default = 1').get();
-  } catch {
+    const p = db.prepare('SELECT * FROM printers WHERE is_default = 1').get() as any;
+    if (p) {
+      defaultPrinter = p;
+      return p;
+    }
+    const fallback = db.prepare('SELECT * FROM printers ORDER BY created_at ASC LIMIT 1').get() as any;
+    if (fallback) {
+      defaultPrinter = fallback;
+      return fallback;
+    }
     return null;
+  } catch {
+    return defaultPrinter || null;
   }
 }
 
@@ -1354,65 +1328,34 @@ export function getPrinterHardwareStatus(printer?: any): {
 
   if (process.platform === 'win32') {
     try {
-      const pName = (p.name || 'Blueprint ECO-58D').replace(/'/g, "''");
-      const psCmd = `
-$pName = '${pName}'
-$p = Get-CimInstance Win32_Printer -Filter "Name = '$pName'" -ErrorAction SilentlyContinue
-if (-not $p) {
-    $p = Get-CimInstance Win32_Printer | Where-Object { $_.Name -like '*ECO58*' -or $_.Name -like '*Blueprint*' -or $_.Name -like '*POS*' } | Select-Object -First 1
-}
-if ($p) {
-    [PSCustomObject]@{
-        Name = $p.Name
-        WorkOffline = $p.WorkOffline
-        PrinterStatus = $p.PrinterStatus
-        ExtendedPrinterStatus = $p.ExtendedPrinterStatus
-        DetectedErrorState = $p.DetectedErrorState
-    } | ConvertTo-Json -Compress
-} else {
-    Write-Output "NOT_FOUND"
-}
-`;
-      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${psCmd}"`, {
-        encoding: 'utf8',
-        timeout: 4000,
-      }).trim();
+      const detected = detectWindowsPrinters();
+      const pName = (p.name || 'Blueprint ECO-58D').toLowerCase();
+      
+      const match = detected.find(d => {
+        const dName = d.name.toLowerCase();
+        if (dName === pName || dName.includes(pName) || pName.includes(dName)) return true;
+        if (pName.includes('blueprint') && (dName.includes('blueprint') || dName.includes('eco') || dName.includes('haoyin'))) return true;
+        if (pName.includes('eco') && (dName.includes('blueprint') || dName.includes('eco') || dName.includes('haoyin'))) return true;
+        if (pName.includes('pos') && dName.includes('pos')) return true;
+        return false;
+      });
 
-      if (out && out !== 'NOT_FOUND') {
-        const info = JSON.parse(out);
-        if (info.WorkOffline === true) {
+      if (match) {
+        if (match.status === 'offline') {
           return {
             isConfigured: true,
             isOnline: false,
             status: 'offline',
-            message: `Printer '${info.Name}' sedang Offline. Kabel USB terputus atau printer mati.`,
-            printer: { ...p, is_online: false, hardware_name: info.Name },
-          };
-        }
-        if (info.DetectedErrorState === 4) {
-          return {
-            isConfigured: true,
-            isOnline: false,
-            status: 'error',
-            message: `Kertas thermal pada printer '${info.Name}' habis.`,
-            printer: { ...p, is_online: false, hardware_name: info.Name },
-          };
-        }
-        if (info.DetectedErrorState === 7) {
-          return {
-            isConfigured: true,
-            isOnline: false,
-            status: 'error',
-            message: `Penutup printer '${info.Name}' terbuka.`,
-            printer: { ...p, is_online: false, hardware_name: info.Name },
+            message: `Printer '${match.name}' sedang Offline. Periksa kabel USB dan tombol power.`,
+            printer: { ...p, is_online: false, hardware_name: match.name },
           };
         }
         return {
           isConfigured: true,
           isOnline: true,
           status: 'online',
-          message: `Printer '${info.Name}' siap dan terhubung.`,
-          printer: { ...p, is_online: true, hardware_name: info.Name },
+          message: `Printer '${match.name}' siap dan terhubung.`,
+          printer: { ...p, is_online: true, hardware_name: match.name },
         };
       }
     } catch {}
@@ -1422,7 +1365,7 @@ if ($p) {
     isConfigured: true,
     isOnline: false,
     status: 'offline',
-    message: `Printer '${p.name}' tidak terdeteksi di sistem operasi.`,
+    message: `Printer '${p.name}' tidak terdeteksi di Windows. Pastikan kabel USB terhubung dan printer menyala.`,
     printer: { ...p, is_online: false },
   };
 }

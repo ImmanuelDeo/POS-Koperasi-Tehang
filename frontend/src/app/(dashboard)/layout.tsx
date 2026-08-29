@@ -1,15 +1,22 @@
 'use client';
 
+import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import AppSidebar from '@/components/layout/Sidebar';
 import AuthGuard from '@/components/layout/AuthGuard';
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar';
 import StatusBar from '@/components/layout/StatusBar';
 import GlobalNotifications from '@/components/layout/GlobalNotifications';
+import { useCatalogStore } from '@/store/catalog';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isPos = pathname === '/pos' || pathname === '/kds';
+
+  // Pre-warm catalog store once on dashboard entry for 0ms instant section navigation
+  useEffect(() => {
+    useCatalogStore.getState().initCatalog();
+  }, []);
 
   return (
     <SidebarProvider defaultOpen={false}>

@@ -342,24 +342,36 @@ function createTray(): void {
 function startMdns(): void {
   try {
     bonjour = new Bonjour();
-    bonjour.publish({
-      name: 'Flo',
+    const serviceName = `POS-Koperasi-${PORT}`;
+    const service = bonjour.publish({
+      name: serviceName,
       type: 'http',
       port: PORT,
-      host: 'flo',   // resolves as flo.local on the LAN
-      txt: { version: app.getVersion(), kds: `/kds`, kds_port: String(getKdsPort()) },
+      host: 'pos-koperasi',
+      txt: { version: app.getVersion(), app: 'POS Koperasi' },
     });
+    
+    // Handle name collision or network socket conflict gracefully without crashing/error logging
+    service.on('error', (err: any) => {
+      console.log(`[mDNS] Info: Service name '${serviceName}' already active on network (LAN direct IP access remains fully operational).`);
+    });
+
     const ip = getLocalIP();
-    console.log(`[mDNS] Advertising flo.local:${PORT}  (IP fallback: http://${ip}:${PORT})`);
-    console.log(`[mDNS] KDS available at http://flo.local:${getKdsPort()}  (IP fallback: http://${ip}:${getKdsPort()})`);
+    console.log(`[mDNS] Advertising pos-koperasi.local:${PORT} (Direct LAN IP: http://${ip}:${PORT})`);
   } catch (err) {
-    console.warn('[mDNS] Could not start Bonjour:', err);
+    console.warn('[mDNS] Bonjour initialization skipped (direct IP access unaffected):', err);
   }
 }
 
 function stopMdns(): void {
   if (bonjour) {
-    bonjour.unpublishAll(() => bonjour?.destroy());
+    try {
+      bonjour.unpublishAll(() => {
+        try {
+          bonjour?.destroy();
+        } catch {}
+      });
+    } catch {}
     bonjour = null;
   }
 }
@@ -542,7 +554,20 @@ async function initialize(): Promise<void> {
 }
 
 
-app.whenReady().then(initialize);
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  console.warn('[Flo] Another instance is already running. Quitting secondary instance.');
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+
+  app.whenReady().then(initialize);
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

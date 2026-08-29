@@ -41,6 +41,22 @@ export function initDatabase(): void {
     fs.mkdirSync(backupDir, { recursive: true });
   }
 
+  // If database does not exist yet on target machine, check for bundled initial template
+  if (!fs.existsSync(dbPath)) {
+    const bundledTemplatePath = app?.isPackaged 
+      ? path.join(process.resourcesPath, 'initial-flo.db')
+      : path.join(__dirname, '../flo.db');
+      
+    if (fs.existsSync(bundledTemplatePath) && path.resolve(bundledTemplatePath) !== path.resolve(dbPath)) {
+      try {
+        console.log(`[DB] First run: Initializing database from bundled template ${bundledTemplatePath}`);
+        fs.copyFileSync(bundledTemplatePath, dbPath);
+      } catch (err: any) {
+        console.warn('[DB] Could not copy initial template:', err.message);
+      }
+    }
+  }
+
   console.log(`[DB] Opening database at: ${dbPath}`);
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
@@ -181,6 +197,9 @@ function runMigrations(): void {
         VALUES ('user-manager-1', 'Manajer Operasional', 'manager@koperasi.local', ?, '1234', 'manager', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `).run(hashedAdmin);
     }
+
+    // Deactivate legacy default account if present to prevent backdoors
+    db.prepare(`UPDATE users SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE email IN ('admin@flo.local', 'chef@flo.local', 'kitchen@flo.local')`).run();
   } catch (err: any) {
     console.warn('[DB] User self-healing notice:', err.message);
   }
@@ -1545,21 +1564,21 @@ function seedData(): void {
   db.prepare(`
     INSERT OR IGNORE INTO users (id, name, email, password, role, permissions)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run('user-1', 'Pengelola Koperasi', 'admin@flo.local', hashedPassword, 'owner', ownerPerms);
+  `).run('user-1', 'Pengelola Koperasi', 'admin@koperasi.local', hashedPassword, 'owner', ownerPerms);
 
   // Default staff accounts (Koperasi roles)
-  const chefPassword = bcrypt.hashSync('chef123', 10);
+  const kasirPassword = bcrypt.hashSync('kasir123', 10);
   const cashierPerms = JSON.stringify(['pos', 'orders', 'customers']);
   db.prepare(`
     INSERT OR IGNORE INTO users (id, name, email, password, role, permissions)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run('user-2', 'Kasir Koperasi', 'chef@flo.local', chefPassword, 'cashier', cashierPerms);
+  `).run('user-2', 'Kasir Koperasi', 'kasir@koperasi.local', kasirPassword, 'cashier', cashierPerms);
 
   const managerPerms = JSON.stringify(['pos', 'dashboard', 'orders', 'products', 'addon_groups', 'customers', 'reports', 'whatsapp', 'staff', 'salary_deductions', 'stock_movements']);
   db.prepare(`
     INSERT OR IGNORE INTO users (id, name, email, password, role, permissions)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run('user-3', 'Staf Operasional', 'kitchen@flo.local', chefPassword, 'manager', managerPerms);
+  `).run('user-3', 'Manajer Koperasi', 'manager@koperasi.local', hashedPassword, 'manager', managerPerms);
 
   // Default printer (will be detected on first run)
   db.prepare(`

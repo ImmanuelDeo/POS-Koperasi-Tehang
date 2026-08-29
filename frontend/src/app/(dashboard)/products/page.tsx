@@ -19,6 +19,7 @@ import { useConfirm } from '@/hooks/use-confirm';
 import { nameToColor } from '@/lib/image-utils';
 import { useI18n } from '@/hooks/useI18n';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
+import { useCatalogStore } from '@/store/catalog';
 
 const PRESET_TAGS = [
   { key: 'veg', labelKey: 'pos.tagVeg' },
@@ -165,11 +166,16 @@ export default function ProductsPage() {
   const [isSearching, setIsSearching] = useState(false);
 
   const fetchCategoriesAndAddons = async () => {
+    const storeCategories = useCatalogStore.getState().categories;
+    if (storeCategories.length > 0) {
+      setCategories(storeCategories);
+    }
     try {
       const requests: Promise<{ data: Record<string, unknown> }>[] = [api.get('/categories')];
       if (isRestaurant) requests.push(api.get('/addon-groups'));
       const [catRes, agRes] = await Promise.all(requests);
-      setCategories((catRes.data.categories as Category[]) || []);
+      const fetchedCats = (catRes.data.categories as Category[]) || [];
+      setCategories(fetchedCats);
       if (agRes) setAddonGroups((agRes.data.addon_groups as AddonGroup[]) || []);
     } catch {
       // Non-fatal
@@ -252,6 +258,7 @@ export default function ProductsPage() {
     setCursor(null);
     setCursorHistory([]);
     fetchProductsList(null, committedSearch);
+    useCatalogStore.getState().refreshCatalog(true);
   };
 
   const openCsvModal = (type: 'categories' | 'products' | 'addons' = 'products') => {

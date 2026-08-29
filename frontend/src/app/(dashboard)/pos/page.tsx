@@ -8,7 +8,7 @@ import { usePosSettingsStore } from '@/store/pos-settings';
 import { useSidebar } from '@/components/ui/sidebar';
 import toast from 'react-hot-toast';
 import { ShoppingCart } from 'lucide-react';
-import type { Category, Product, Bill, Order } from '@/lib/types';
+import type { Product, Bill, Order } from '@/lib/types';
 import { Drawer, DrawerContent, DrawerTrigger } from '@/components/ui/drawer';
 
 import ProductGrid from '@/components/pos/ProductGrid';
@@ -25,6 +25,8 @@ import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useI18n } from '@/hooks/useI18n';
 import { getCurrencySymbol, getCountryByCode } from '@/lib/countries';
 
+import { useCatalogStore } from '@/store/catalog';
+
 export default function POSPage() {
   const { currentTenant } = useAuthStore();
   const cart = useCartStore();
@@ -32,8 +34,6 @@ export default function POSPage() {
   const { open: leftSidebarOpen } = useSidebar();
   const { t } = useI18n();
 
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
 
@@ -68,18 +68,9 @@ export default function POSPage() {
     }
   };
 
-  const refreshCatalog = useCallback(async () => {
-    try {
-      const catRes = await api.get('/categories?active=1');
-      setCategories((catRes.data.categories as Category[]) || []);
-    } catch {
-      toast.error('Gagal memuat kategori produk');
-    }
-  }, []);
-
   useEffect(() => {
-    refreshCatalog();
-  }, [refreshCatalog]);
+    useCatalogStore.getState().initCatalog();
+  }, []);
 
   // Direct scan or click adds product to cart (+1 qty) with stock limits
   const handleProductClick = useCallback(
@@ -246,7 +237,7 @@ export default function POSPage() {
       toast.error(errorMsg, { duration: 5000 });
     } finally {
       setSubmitting(false);
-      refreshCatalog();
+      useCatalogStore.getState().refreshCatalog(true);
     }
   };
 
@@ -267,9 +258,6 @@ export default function POSPage() {
         {/* Product Grid — full width on mobile, flex-1 on desktop */}
         <div className="flex-1 min-w-0 h-full flex flex-col">
           <ProductGrid
-            categories={categories}
-            selectedCategory={selectedCategory}
-            setSelectedCategory={setSelectedCategory}
             onProductClick={handleProductClick}
             sidebarOpen={leftSidebarOpen}
           />

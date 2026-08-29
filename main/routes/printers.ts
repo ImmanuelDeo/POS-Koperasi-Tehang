@@ -403,4 +403,125 @@ router.post('/retry-print', async (req: AuthenticatedRequest, res: Response) => 
   }
 });
 
+// POST /api/printers/test-default — test print to default printer
+router.post('/test-default', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const db = getDatabase();
+    let printer = db.prepare('SELECT * FROM printers WHERE is_default = 1').get() as any;
+    if (!printer) {
+      printer = db.prepare('SELECT * FROM printers ORDER BY created_at ASC LIMIT 1').get() as any;
+    }
+    if (!printer) {
+      return res.status(404).json({
+        success: false,
+        code: 'PRINTER_NOT_FOUND',
+        message: 'Belum ada printer yang dikonfigurasi di database.',
+      });
+    }
+
+    const settingsRows = db.prepare('SELECT key, value FROM settings').all() as any[];
+    const settingsMap: Record<string, string> = {};
+    for (const r of settingsRows) settingsMap[r.key] = r.value;
+
+    const testData = buildTestPage(printer.paper_width || '58mm', printer.name, settingsMap);
+    const printRes = await dispatchPrint(printer, testData);
+
+    if (printRes.success) {
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'printer.test_print.completed',
+        target_type: 'printer',
+        target_id: printer.id,
+        details: { printer_name: printer.name, paper_width: printer.paper_width || '58mm' },
+      });
+
+      return res.json({
+        success: true,
+        jobId: `TEST-${Date.now()}`,
+        printerName: printer.name,
+        printedAt: new Date().toISOString(),
+        message: `Struk tes berhasil dikirim ke printer '${printer.name}'.`,
+      });
+    }
+
+    return res.status(502).json({
+      success: false,
+      code: printRes.code || 'PRINT_FAILED',
+      message: printRes.message || 'Printer tidak merespons. Periksa koneksi printer.',
+    });
+  } catch (error: any) {
+    console.error('[Printer Test Default] Error:', error);
+    res.status(500).json({
+      success: false,
+      code: 'PRINT_FAILED',
+      message: 'Gagal melakukan tes cetak printer: ' + error.message,
+    });
+  }
+});
+
+// POST /api/printers/auto-connect — auto scan OS and register/connect thermal printer
+router.post('/auto-connect', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const detected = await detectConnectedPrinters();
+    const db = getDatabase();
+
+    if (!detected || detected.length === 0) {
+      return res.json({
+        success: false,
+        message: 'Tidak ada printer yang terdeteksi di Windows. Pastikan kabel USB printer terhubung dan tombol power menyala.',
+        printers: [],
+      });
+    }
+
+    // Prioritize thermal printer
+    const thermal = detected.find(p => 
+      p.name.toLowerCase().includes('blueprint') ||
+      p.name.toLowerCase().includes('eco') ||
+      p.name.toLowerCase().includes('58') ||
+      p.name.toLowerCase().includes('pos') ||
+      p.name.toLowerCase().includes('thermal') ||
+      p.name.toLowerCase().includes('haoyin')
+    ) || detected[0];
+
+    const existing = db.prepare('SELECT * FROM printers WHERE name = ?').get(thermal.name) as any;
+    let printerId = existing?.id;
+
+    if (existing) {
+      db.prepare('UPDATE printers SET is_default = 0').run();
+      db.prepare('UPDATE printers SET is_default = 1, updated_at = ? WHERE id = ?').run(now(), existing.id);
+    } else {
+      printerId = uuidv4();
+      db.prepare('UPDATE printers SET is_default = 0').run();
+      db.prepare(`
+        INSERT INTO printers (id, name, connection_type, paper_width, is_default, created_at, updated_at)
+        VALUES (?, ?, 'usb', '58mm', 1, ?, ?)
+      `).run(printerId, thermal.name, now(), now());
+    }
+
+    const savedPrinter = db.prepare('SELECT * FROM printers WHERE id = ?').get(printerId) as any;
+
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'printer.auto_connected',
+      target_type: 'printer',
+      target_id: printerId,
+      details: { name: thermal.name },
+    });
+
+    return res.json({
+      success: true,
+      message: `Printer '${thermal.name}' berhasil terdeteksi dan dihubungkan sebagai printer utama!`,
+      printer: savedPrinter,
+      detected,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      message: 'Gagal melakukan auto-detect printer: ' + error.message,
+    });
+  }
+});
+
 export const printerRoutes = router;
