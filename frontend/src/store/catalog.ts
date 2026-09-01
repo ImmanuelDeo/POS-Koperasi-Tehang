@@ -5,7 +5,7 @@ import { productCache } from '@/lib/lru-cache';
 
 interface CatalogState {
   categories: Category[];
-  selectedCategoryId: number | null;
+  selectedCategoryId: number | string | null;
   displayedProducts: Product[];
   categoryCache: Record<string, Product[]>;
   searchQuery: string;
@@ -16,16 +16,18 @@ interface CatalogState {
 
   // Actions
   initCatalog: (force?: boolean) => Promise<void>;
-  setSelectedCategory: (categoryId: number | null) => Promise<void>;
+  setSelectedCategory: (categoryId: number | string | null) => Promise<void>;
   setSearchQuery: (query: string) => void;
-  searchProducts: (query: string, categoryId?: number | null) => Promise<void>;
+  searchProducts: (query: string, categoryId?: number | string | null) => Promise<void>;
   clearSearch: () => void;
   refreshCatalog: (silent?: boolean) => Promise<void>;
   updateProductStock: (productId: number | string, newStock: number) => void;
   patchProduct: (product: Product) => void;
+  removeProduct: (productId: number | string) => void;
+  invalidateCatalog: () => void;
 }
 
-const getCategoryKey = (catId: number | null) => (catId ? `cat_${catId}` : 'all');
+const getCategoryKey = (catId: number | string | null) => (catId !== null && catId !== undefined ? `cat_${catId}` : 'all');
 
 export const useCatalogStore = create<CatalogState>((set, get) => ({
   categories: [],
@@ -86,7 +88,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     }
   },
 
-  setSelectedCategory: async (categoryId: number | null) => {
+  setSelectedCategory: async (categoryId: number | string | null) => {
     const { categoryCache } = get();
     const key = getCategoryKey(categoryId);
 
@@ -166,8 +168,8 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     set({ searchQuery: query });
   },
 
-  searchProducts: async (query: string, categoryId?: number | null) => {
-    const trimmed = query.trim();
+  searchProducts: async (query: string, categoryId?: number | string | null) => {
+    const trimmed = (query || '').trim();
     const effectiveCatId = categoryId !== undefined ? categoryId : get().selectedCategoryId;
     const catKey = getCategoryKey(effectiveCatId);
 
@@ -274,7 +276,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
   updateProductStock: (productId: number | string, newStock: number) => {
     const numId = Number(productId);
     const updateList = (list: Product[]) =>
-      list.map((p) => (p.id === numId ? { ...p, stock_quantity: newStock } : p));
+      list.map((p) => (p.id === numId || String(p.id) === String(productId) ? { ...p, stock_quantity: newStock } : p));
 
     set((state) => {
       const updatedCache: Record<string, Product[]> = {};
@@ -292,7 +294,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
   patchProduct: (product: Product) => {
     const numId = Number(product.id);
     const updateList = (list: Product[]) =>
-      list.map((p) => (p.id === numId ? { ...p, ...product } : p));
+      list.map((p) => (p.id === numId || String(p.id) === String(product.id) ? { ...p, ...product } : p));
 
     set((state) => {
       const updatedCache: Record<string, Product[]> = {};
@@ -305,5 +307,36 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
         categoryCache: updatedCache,
       };
     });
+  },
+
+  removeProduct: (productId: number | string) => {
+    const idStr = String(productId);
+    productCache.delete(idStr);
+
+    const filterList = (list: Product[]) =>
+      list.filter((p) => String(p.id) !== idStr);
+
+    set((state) => {
+      const updatedCache: Record<string, Product[]> = {};
+      for (const [key, list] of Object.entries(state.categoryCache)) {
+        updatedCache[key] = filterList(list);
+      }
+
+      return {
+        displayedProducts: filterList(state.displayedProducts),
+        categoryCache: updatedCache,
+      };
+    });
+  },
+
+  invalidateCatalog: () => {
+    productCache.clear();
+    set({
+      categoryCache: {},
+      isInitialized: false,
+      searchQuery: '',
+      isSearching: false,
+    });
+    get().initCatalog(true);
   },
 }));

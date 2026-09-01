@@ -42,6 +42,60 @@ export function formatProductResponse(product: any, db: any, catMap?: Map<string
   };
 }
 
+export function formatBundleAsProduct(b: any, db: any) {
+  const components = db.prepare(`
+    SELECT a.*, p.name as product_name, p.unit as product_unit, p.price as product_unit_price, p.stock_quantity as product_stock_quantity, p.track_inventory as product_track_inventory
+    FROM addons a
+    LEFT JOIN products p ON a.product_id = p.id
+    WHERE a.addon_group_id = ? AND (a.is_active IS NULL OR a.is_active = 1)
+    ORDER BY a.sort_order, a.name
+  `).all(b.id) as any[];
+
+  let minAvailableBundles = Infinity;
+  let isTracked = false;
+  for (const comp of components) {
+    if (comp.product_track_inventory === 1) {
+      isTracked = true;
+      const requiredPerBundle = Math.max(0.01, Number(comp.quantity || 1));
+      const compStock = Number(comp.product_stock_quantity || 0);
+      const possible = Math.floor(compStock / requiredPerBundle);
+      if (possible < minAvailableBundles) {
+        minAvailableBundles = Math.max(0, possible);
+      }
+    }
+  }
+  if (!isTracked || minAvailableBundles === Infinity) {
+    minAvailableBundles = 999;
+  }
+
+  return {
+    id: `bundle_${b.id}`,
+    addon_group_id: b.id,
+    name: `[PAKET] ${b.name}`,
+    bundle_title: b.name,
+    category_id: '__bundles__',
+    category: { id: '__bundles__', name: '🎁 Promo & Bundling', color: 'emerald' },
+    description: b.description,
+    price: Math.round(Number(b.bundle_price || 0)),
+    member_price: Math.round(Number(b.bundle_price || 0)),
+    cost: 0,
+    cost_price: 0,
+    sku: `BUNDLE-${b.id.slice(0, 8)}`,
+    barcode: null,
+    unit: 'paket',
+    allow_decimal: 0,
+    track_inventory: isTracked ? 1 : 0,
+    stock_quantity: minAvailableBundles,
+    low_stock_threshold: 3,
+    is_active: 1,
+    is_bundle: true,
+    item_type: 'bundle',
+    components,
+    tags: ['promo', 'bundle'],
+    updated_at: b.updated_at,
+  };
+}
+
 export interface CursorPayload {
   sort: string;
   lastName: string;
@@ -94,10 +148,11 @@ router.get('/', (req: Request, res: Response) => {
     // Keyset pagination cursor based on (name ASC, id ASC)
     if (cursorParam) {
       const decoded = decodeCursor(cursorParam);
-      if (decoded) {
-        query += ' AND (name > ? OR (name = ? AND id > ?))';
-        params.push(decoded.lastName, decoded.lastName, decoded.lastId);
+      if (!decoded) {
+        return res.status(400).json({ error: 'Invalid cursor', cursor_reset: true });
       }
+      query += ' AND (name > ? OR (name = ? AND id > ?))';
+      params.push(decoded.lastName, decoded.lastName, decoded.lastId);
     }
 
     query += ' ORDER BY name ASC, id ASC LIMIT ?';
@@ -153,6 +208,7 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // ── GET /api/products/search (Server-Side Debounced Search) ────────────────────
+// Exact match prioritized: exact name → prefix → contains → SKU/barcode only
 router.get('/search', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
@@ -179,6 +235,10 @@ router.get('/search', (req: Request, res: Response) => {
       params.push(categoryId);
     }
 
+    // Priority ordering params collected separately
+    const orderParams: any[] = [];
+    let orderClause = ' ORDER BY name ASC, id ASC';
+
     if (q) {
       const cleanQ = q.trim();
       const words = cleanQ.split(/\s+/).filter(Boolean);
@@ -188,8 +248,6 @@ router.get('/search', (req: Request, res: Response) => {
         params.push(cleanQ, cleanQ, `%${cleanQ}%`, `%${cleanQ}%`);
       } else {
         // Multi-word keyword search: all keywords must match in the product fields
-        // Example: "paseo aloe" matches "PASEO BOX ALOE VERA 100'S"
-        // Example: "indomie goreng" matches "INDOMIE MI INSTAN GORENG SPESIAL"
         const wordClauses = words.map(() => '(name LIKE ? OR description LIKE ? OR sku LIKE ? OR barcode LIKE ?)').join(' AND ');
         query += ` AND (barcode = ? OR sku = ? OR (${wordClauses}))`;
         params.push(cleanQ, cleanQ);
@@ -197,16 +255,85 @@ router.get('/search', (req: Request, res: Response) => {
           params.push(`%${w}%`, `%${w}%`, `%${w}%`, `%${w}%`);
         }
       }
+
+      // Exact match priority: exact name → prefix → contains → SKU/barcode only
+      orderClause = ` ORDER BY
+        CASE
+          WHEN LOWER(TRIM(name)) = LOWER(TRIM(?)) THEN 0
+          WHEN LOWER(name) LIKE LOWER(? || '%') THEN 1
+          WHEN LOWER(name) LIKE '%' || LOWER(?) || '%' THEN 2
+          ELSE 3
+        END,
+        name ASC, id ASC`;
+      orderParams.push(cleanQ, cleanQ, cleanQ);
     }
 
-    query += ' ORDER BY name ASC, id ASC LIMIT ?';
-    params.push(limit);
+    query += orderClause + ' LIMIT ?';
+    const finalParams = [...params, ...orderParams, limit];
+
+    // Special handling for virtual category '__bundles__'
+    if (categoryId === '__bundles__') {
+      let bundleSql = `
+        SELECT * FROM addon_groups
+        WHERE (show_in_pos = 1 OR show_in_pos = '1')
+          AND (is_active IS NULL OR is_active = 1 OR is_active = '1')
+          AND (
+            is_forever = 1 OR is_forever = '1'
+            OR (
+              (promo_end_date IS NULL OR date(promo_end_date) >= date('now', 'localtime') OR promo_end_date >= date('now', 'localtime'))
+              AND (promo_start_date IS NULL OR date(promo_start_date) <= date('now', 'localtime') OR promo_start_date <= date('now', 'localtime'))
+            )
+          )
+      `;
+      const bundleParams: any[] = [];
+      if (q) {
+        bundleSql += ' AND (name LIKE ? OR description LIKE ? OR category_name LIKE ?)';
+        bundleParams.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      }
+      bundleSql += ' ORDER BY sort_order, name LIMIT ?';
+      bundleParams.push(limit);
+
+      const bundles = db.prepare(bundleSql).all(...bundleParams) as any[];
+      const bundleProducts = bundles.map((b) => formatBundleAsProduct(b, db));
+
+      return res.json({
+        products: bundleProducts,
+        count: bundleProducts.length,
+      });
+    }
 
     const categories = db.prepare('SELECT * FROM categories').all();
     const catMap = new Map<string, any>(categories.map((c: any) => [c.id, c]));
 
-    const products = db.prepare(query).all(...params) as any[];
+    const products = db.prepare(query).all(...finalParams) as any[];
     const formatted = products.map((p) => formatProductResponse(p, db, catMap));
+
+    // When showing all categories or global search, prepend active bundles
+    if (!categoryId) {
+      let activeBundleSql = `
+        SELECT * FROM addon_groups
+        WHERE (show_in_pos = 1 OR show_in_pos = '1')
+          AND (is_active IS NULL OR is_active = 1 OR is_active = '1')
+          AND (
+            is_forever = 1 OR is_forever = '1'
+            OR (
+              (promo_end_date IS NULL OR date(promo_end_date) >= date('now', 'localtime') OR promo_end_date >= date('now', 'localtime'))
+              AND (promo_start_date IS NULL OR date(promo_start_date) <= date('now', 'localtime') OR promo_start_date <= date('now', 'localtime'))
+            )
+          )
+      `;
+      const activeBundleParams: any[] = [];
+      if (q) {
+        activeBundleSql += ' AND (name LIKE ? OR description LIKE ? OR category_name LIKE ?)';
+        activeBundleParams.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      }
+      activeBundleSql += ' ORDER BY sort_order, name LIMIT 10';
+
+      const matchingBundles = db.prepare(activeBundleSql).all(...activeBundleParams) as any[];
+      for (const b of matchingBundles) {
+        formatted.unshift(formatBundleAsProduct(b, db));
+      }
+    }
 
     res.json({
       products: formatted,
@@ -242,8 +369,36 @@ router.post('/stock-snapshot', (req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/products/units ──────────────────────────────────────────────────
+// Returns all distinct units from product_units table and active products catalog
+router.get('/units', (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const standardList = [
+      'pcs', 'kg', 'gram', 'liter', 'ml', 'pack', 'pouch', 'box', 'sak', 'tray',
+      'dus', 'renceng', 'botol', 'ikat', 'bungkus', 'butir', 'karton', 'kaleng', 'sachet', 'lusin', 'galon'
+    ];
+    const set = new Set<string>(standardList);
+    try {
+      const dbUnits = db.prepare(`SELECT name FROM product_units WHERE name IS NOT NULL AND trim(name) != ''`).all() as any[];
+      for (const u of dbUnits) {
+        if (u.name) set.add(String(u.name).trim());
+      }
+      const prodUnits = db.prepare(`SELECT DISTINCT unit FROM products WHERE unit IS NOT NULL AND trim(unit) != ''`).all() as any[];
+      for (const u of prodUnits) {
+        if (u.unit) set.add(String(u.unit).trim());
+      }
+    } catch {}
+    const sorted = Array.from(set).sort((a, b) => a.localeCompare(b, 'id', { sensitivity: 'base' }));
+    res.json({ units: sorted });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ── GET /api/products/lookup-barcode ─────────────────────────────────────────
 // Exact-match barcode lookup for POS Scanner and Stock Flow (registered before /:id)
+// Supports multi-product match resolution (disambiguation)
 router.get('/lookup-barcode', (req: Request, res: Response) => {
   try {
     const { code } = req.query;
@@ -280,17 +435,23 @@ router.get('/lookup-barcode', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Produk belum terdaftar' });
     }
 
-    if (matchingProducts.length > 1) {
-      return res.status(409).json({ error: 'Barcode/SKU ambigu atau duplikat. Hubungi admin.' });
+    // If exactly 1 product matched
+    if (matchingProducts.length === 1) {
+      const product = matchingProducts[0];
+      if (product.is_active === 0) {
+        return res.status(422).json({ error: 'Produk tidak aktif', product: formatProductResponse(product, db) });
+      }
+      return res.json({ product: formatProductResponse(product, db), multiple: false });
     }
 
-    const product = matchingProducts[0];
-
-    if (product.is_active === 0) {
-      return res.status(422).json({ error: 'Produk tidak aktif', product: formatProductResponse(product, db) });
-    }
-
-    res.json({ product: formatProductResponse(product, db) });
+    // If 2 or more products share the exact same barcode/SKU
+    const formattedProducts = matchingProducts.map((p) => formatProductResponse(p, db));
+    return res.json({
+      products: formattedProducts,
+      multiple: true,
+      count: formattedProducts.length,
+      message: `Ditemukan ${formattedProducts.length} produk dengan barcode/SKU '${cleanCode}'. Silakan pilih produk yang sesuai.`,
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -332,6 +493,7 @@ router.post('/', (req: Request, res: Response) => {
 
     const parsedCostPrice = parseRupiahNumber(cost_price) || 0;
 
+    const warnings: string[] = [];
     let cleanBarcode: string | null = null;
     if (barcode !== undefined && barcode !== null) {
       const str = String(barcode).trim();
@@ -339,9 +501,11 @@ router.post('/', (req: Request, res: Response) => {
         if (str.length > 128 || /[\x00-\x1F\x7F]/.test(str)) {
           return res.status(422).json({ error: 'Format barcode tidak valid (maksimal 128 karakter, tanpa karakter kontrol)' });
         }
-        const existing = db.prepare('SELECT id FROM products WHERE barcode = ? AND deleted_at IS NULL').get(str) as any;
-        if (existing) {
-          return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
+        // Informative check: Check if other products already use this barcode
+        const existing = db.prepare('SELECT id, name, deleted_at FROM products WHERE barcode = ?').all(str) as any[];
+        if (existing.length > 0) {
+          const names = existing.map(p => `'${p.name}'${p.deleted_at ? ' (terhapus)' : ''}`).join(', ');
+          warnings.push(`Barcode '${str}' juga digunakan oleh produk: ${names}.`);
         }
         cleanBarcode = str;
       }
@@ -359,6 +523,14 @@ router.post('/', (req: Request, res: Response) => {
       : 0;
 
     const parsedTags = Array.isArray(tags) ? tags : typeof tags === 'string' ? [tags] : [];
+    const cleanUnit = unit ? String(unit).trim() : 'pcs';
+
+    // Auto-register unit into product_units if non-empty
+    if (cleanUnit) {
+      try {
+        db.prepare('INSERT OR IGNORE INTO product_units (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run(uuidv4(), cleanUnit);
+      } catch {}
+    }
 
     const result = db.prepare(`
       INSERT INTO products (id, category_id, name, sku, barcode, description, price, cost,
@@ -373,7 +545,7 @@ router.post('/', (req: Request, res: Response) => {
       track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
       is_active !== false ? 1 : 0, image_url || null,
       sort_order || 0, cb_percent || 0, JSON.stringify(parsedTags),
-      unit ? String(unit).trim() : 'pcs',
+      cleanUnit,
       allow_decimal ? 1 : 0,
       parsedMemberPrice,
       parsedMinReorderQty,
@@ -410,11 +582,8 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
-    res.status(201).json({ product: formatProductResponse(product, db) });
+    res.status(201).json({ product: formatProductResponse(product, db), warnings });
   } catch (error: any) {
-    if (error.message?.includes('UNIQUE constraint failed')) {
-      return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
-    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -434,6 +603,7 @@ router.put('/:id', (req: Request, res: Response) => {
       unit, allow_decimal, member_price, min_reorder_qty
     } = req.body;
 
+    const warnings: string[] = [];
     let cleanBarcode = product.barcode;
     if (barcode !== undefined) {
       if (barcode === null || String(barcode).trim().length === 0) {
@@ -444,9 +614,10 @@ router.put('/:id', (req: Request, res: Response) => {
           return res.status(422).json({ error: 'Format barcode tidak valid (maksimal 128 karakter, tanpa karakter kontrol)' });
         }
         if (str !== product.barcode) {
-          const existing = db.prepare('SELECT id FROM products WHERE barcode = ? AND id != ? AND deleted_at IS NULL').get(str, req.params.id) as any;
-          if (existing) {
-            return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
+          const existing = db.prepare('SELECT id, name, deleted_at FROM products WHERE barcode = ? AND id != ?').all(str, req.params.id) as any[];
+          if (existing.length > 0) {
+            const names = existing.map(p => `'${p.name}'${p.deleted_at ? ' (terhapus)' : ''}`).join(', ');
+            warnings.push(`Barcode '${str}' juga digunakan oleh produk: ${names}.`);
           }
         }
         cleanBarcode = str;
@@ -483,6 +654,13 @@ router.put('/:id', (req: Request, res: Response) => {
     if (tags !== undefined) {
       const tagArr = Array.isArray(tags) ? tags : typeof tags === 'string' ? [tags] : [];
       parsedTagsJson = JSON.stringify(tagArr);
+    }
+
+    const cleanUnit = unit !== undefined ? (unit ? String(unit).trim() : 'pcs') : product.unit;
+    if (cleanUnit) {
+      try {
+        db.prepare('INSERT OR IGNORE INTO product_units (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run(uuidv4(), cleanUnit);
+      } catch {}
     }
 
     // Auto-record stock movement if stock quantity changed during edit
@@ -538,7 +716,7 @@ router.put('/:id', (req: Request, res: Response) => {
       is_active !== undefined ? (is_active ? 1 : 0) : null,
       image_url, sort_order, cb_percent,
       parsedTagsJson !== undefined ? parsedTagsJson : null,
-      unit, allow_decimal !== undefined ? (allow_decimal ? 1 : 0) : null,
+      cleanUnit, allow_decimal !== undefined ? (allow_decimal ? 1 : 0) : null,
       parsedMemberPrice,
       parsedMinReorderQty,
       now(),
@@ -554,11 +732,8 @@ router.put('/:id', (req: Request, res: Response) => {
     }
 
     const updatedProduct = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-    res.json({ product: formatProductResponse(updatedProduct, db) });
+    res.json({ product: formatProductResponse(updatedProduct, db), warnings });
   } catch (error: any) {
-    if (error.message?.includes('UNIQUE constraint failed')) {
-      return res.status(409).json({ error: 'Barcode sudah digunakan oleh produk lain.' });
-    }
     res.status(500).json({ error: error.message });
   }
 });

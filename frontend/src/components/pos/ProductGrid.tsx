@@ -40,8 +40,8 @@ function getCategoryColorClasses(color: string | null | undefined) {
 interface Props {
   categories?: Category[];
   products?: Product[];
-  selectedCategory?: number | null;
-  setSelectedCategory?: (id: number | null) => void;
+  selectedCategory?: number | string | null;
+  setSelectedCategory?: (id: number | string | null) => void;
   search?: string;
   setSearch?: (s: string) => void;
   currency?: string;
@@ -73,12 +73,10 @@ export default function ProductGrid({
   const [inputVal, setInputVal] = useState(searchQuery);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Initialize catalog once if not yet initialized
+  // Initialize or refresh catalog on mount to guarantee fresh categories & active bundles
   useEffect(() => {
-    if (!isInitialized) {
-      initCatalog();
-    }
-  }, [isInitialized, initCatalog]);
+    initCatalog(true);
+  }, [initCatalog]);
 
   // Keep local inputVal in sync if store clears search
   useEffect(() => {
@@ -246,6 +244,9 @@ export default function ProductGrid({
               const isOutOfStock = isTracked && Number(product.stock_quantity || 0) <= 0;
               const isCartFull = isTracked && availableStock <= 0;
 
+              const isBundle = Boolean(product.is_bundle);
+              const componentCount = Array.isArray(product.components) ? product.components.length : 0;
+
               return (
                 <div
                   key={product.id}
@@ -257,10 +258,18 @@ export default function ProductGrid({
                   className={`rounded-xl p-2.5 border transition-all text-left relative group overflow-hidden ${
                     isCartFull
                       ? 'bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed select-none'
-                      : 'bg-white border-gray-100 hover:border-emerald-600/40 hover:shadow-md cursor-pointer'
+                      : isBundle
+                        ? 'bg-emerald-50/40 border-emerald-300 hover:border-emerald-500 hover:shadow-md cursor-pointer'
+                        : 'bg-white border-gray-100 hover:border-emerald-600/40 hover:shadow-md cursor-pointer'
                   }`}
                 >
-                  {isTracked && (
+                  {isBundle && (
+                    <span className="absolute top-2 left-2 bg-emerald-600 text-white text-[10px] font-black tracking-wide px-2 py-0.5 rounded-full z-10 shadow-xs flex items-center gap-1 pointer-events-none">
+                      🎁 PROMO
+                    </span>
+                  )}
+
+                  {!isBundle && isTracked && (
                     <>
                       {isOutOfStock ? (
                         <span className="absolute top-2 left-2 bg-red-100 text-red-700 text-[10px] font-bold px-2 py-0.5 rounded-full z-10 shadow-xs border border-red-200 pointer-events-none">
@@ -291,7 +300,7 @@ export default function ProductGrid({
                         style={{ backgroundColor: nameToColor(product.name) }}
                       >
                         <span className="text-2xl font-bold text-white/80">
-                          {product.name.substring(0, 2).toUpperCase()}
+                          {isBundle ? '🎁' : product.name.substring(0, 2).toUpperCase()}
                         </span>
                       </div>
 
@@ -326,8 +335,15 @@ export default function ProductGrid({
                     )}
                   </div>
 
+                  {/* Component summary for bundles */}
+                  {isBundle && componentCount > 0 && (
+                    <p className="text-[11px] text-emerald-800 font-semibold mb-1 truncate">
+                      📦 Paket ({componentCount} produk isi)
+                    </p>
+                  )}
+
                   {/* Stock information if tracked */}
-                  {isTracked && (
+                  {!isBundle && isTracked && (
                     <p className="text-[11px] text-gray-500 mb-1">
                       Stok:{' '}
                       <span
@@ -345,10 +361,15 @@ export default function ProductGrid({
                   )}
 
                   {/* Pricing layout */}
-                  <div className="mt-1 pt-1 border-t border-gray-100">
+                  <div className="mt-1 pt-1 border-t border-gray-100 flex items-center justify-between">
                     <p className="text-emerald-600 font-bold text-sm">
                       {fmt(Number(product.price))}
                     </p>
+                    {isBundle && (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100/80 px-1.5 py-0.5 rounded">
+                        Paket
+                      </span>
+                    )}
                   </div>
                 </div>
               );

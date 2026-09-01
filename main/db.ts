@@ -3,9 +3,10 @@ import * as path from 'path';
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
 
 // Bump this whenever the schema changes incompatibly
-const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 19;
 
 let db: Database.Database;
 
@@ -43,10 +44,10 @@ export function initDatabase(): void {
 
   // If database does not exist yet on target machine, check for bundled initial template
   if (!fs.existsSync(dbPath)) {
-    const bundledTemplatePath = app?.isPackaged 
+    const bundledTemplatePath = app?.isPackaged
       ? path.join(process.resourcesPath, 'initial-flo.db')
       : path.join(__dirname, '../flo.db');
-      
+
     if (fs.existsSync(bundledTemplatePath) && path.resolve(bundledTemplatePath) !== path.resolve(dbPath)) {
       try {
         console.log(`[DB] First run: Initializing database from bundled template ${bundledTemplatePath}`);
@@ -498,7 +499,7 @@ function runIncrementalMigrations(fromVersion: number): void {
   // Migration from version 7 to 8
   if (fromVersion < 8) {
     console.log('[DB] Running migration to v8...');
-    
+
     // Add printers table if it doesn't exist
     db.exec(`CREATE TABLE IF NOT EXISTS printers (
       id TEXT PRIMARY KEY,
@@ -1020,6 +1021,155 @@ function runIncrementalMigrations(fromVersion: number): void {
     console.log('[DB] Migration to v16 complete');
   }
 
+  // Migration to version 17 (Print Jobs Queue, HOLD mechanism & Offline Resilience)
+  if (fromVersion < 17) {
+    console.log('[DB] Applying migration to v17 (Print Jobs Queue & Persistence)...');
+    const migrationV17 = db.transaction(() => {
+      db.exec(`CREATE TABLE IF NOT EXISTS print_jobs (
+        id TEXT PRIMARY KEY,
+        bill_id INTEGER NOT NULL,
+        receipt_data TEXT,
+        printer_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'printing', 'completed', 'failed', 'cancelled')),
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 10,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        FOREIGN KEY (bill_id) REFERENCES bills(id)
+      )`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status, created_at)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_print_jobs_bill_id ON print_jobs(bill_id)`);
+    });
+
+    migrationV17();
+    console.log('[DB] Migration to v17 complete');
+  }
+
+  // Migration to version 18 (Component-Based Bundle & POS Add-Ons)
+  if (fromVersion < 18) {
+    console.log('[DB] Applying migration to v18 (Component-Based Bundling & POS Add-Ons)...');
+    const migrationV18 = db.transaction(() => {
+      // 1. Add product_id and quantity to addons
+      if (!columnExists('addons', 'product_id')) {
+        db.exec(`ALTER TABLE addons ADD COLUMN product_id TEXT REFERENCES products(id)`);
+      }
+      if (!columnExists('addons', 'quantity')) {
+        db.exec(`ALTER TABLE addons ADD COLUMN quantity REAL NOT NULL DEFAULT 1`);
+      }
+
+      // 2. Add show_in_pos to addon_groups
+      if (!columnExists('addon_groups', 'show_in_pos')) {
+        db.exec(`ALTER TABLE addon_groups ADD COLUMN show_in_pos INTEGER NOT NULL DEFAULT 0`);
+      }
+
+      // 3. Performance indexes for component lookup and POS bundle listing
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_addons_product_id ON addons(product_id)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_addons_group_active ON addons(addon_group_id, is_active)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_addon_groups_pos ON addon_groups(show_in_pos, is_active)`);
+    });
+
+    migrationV18();
+    console.log('[DB] Migration to v18 complete');
+  }
+
+  // Migration to version 19 (Non-unique Barcodes & Product Units Reference & Flexible Units)
+  if (fromVersion < 19) {
+    console.log('[DB] Applying migration to v19 (Non-unique Barcodes & Product Units Reference)...');
+    const migrationV19 = db.transaction(() => {
+      // 1. Relax unit column CHECK constraint in products table if present
+      const productsTableInfo = (db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='products'`).get() as any)?.sql || '';
+      if (productsTableInfo.includes('CHECK(unit IN') || productsTableInfo.includes('CHECK (unit IN')) {
+        db.exec(`PRAGMA foreign_keys = OFF;`);
+        db.exec(`
+          CREATE TABLE products_v19_tmp (
+            id TEXT PRIMARY KEY,
+            category_id TEXT,
+            name TEXT NOT NULL,
+            description TEXT,
+            unit TEXT NOT NULL DEFAULT 'pcs',
+            allow_decimal INTEGER NOT NULL DEFAULT 0 CHECK(allow_decimal IN (0, 1)),
+            price REAL NOT NULL DEFAULT 0,
+            member_price INTEGER NULL CHECK(member_price IS NULL OR member_price >= 0),
+            cost REAL DEFAULT 0,
+            sku TEXT,
+            barcode TEXT,
+            image_url TEXT,
+            is_active INTEGER DEFAULT 1,
+            sort_order INTEGER DEFAULT 0,
+            track_inventory INTEGER DEFAULT 0,
+            stock_quantity REAL DEFAULT 0,
+            low_stock_threshold REAL DEFAULT 5,
+            min_reorder_qty REAL NOT NULL DEFAULT 0 CHECK(min_reorder_qty >= 0),
+            tax_type TEXT DEFAULT 'none',
+            tax_rate REAL DEFAULT 0,
+            cb_percent REAL DEFAULT 0,
+            tags TEXT,
+            deleted_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+        const existingCols = (db.prepare(`PRAGMA table_info(products)`).all() as any[]).map(c => c.name);
+        const targetCols = [
+          'id', 'category_id', 'name', 'description', 'unit', 'allow_decimal',
+          'price', 'member_price', 'cost', 'sku', 'barcode', 'image_url',
+          'is_active', 'sort_order', 'track_inventory', 'stock_quantity',
+          'low_stock_threshold', 'min_reorder_qty', 'tax_type', 'tax_rate',
+          'cb_percent', 'tags', 'deleted_at', 'created_at', 'updated_at'
+        ];
+        const commonCols = targetCols.filter(c => existingCols.includes(c));
+        const colList = commonCols.join(', ');
+        db.exec(`INSERT INTO products_v19_tmp (${colList}) SELECT ${colList} FROM products;`);
+        db.exec(`
+          DROP TABLE products;
+          ALTER TABLE products_v19_tmp RENAME TO products;
+          CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
+          CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+          CREATE INDEX IF NOT EXISTS idx_products_is_active ON products(is_active);
+        `);
+        db.exec(`PRAGMA foreign_keys = ON;`);
+      }
+
+      // 2. Drop existing unique barcode indexes (verified via PRAGMA index_list)
+      db.exec(`DROP INDEX IF EXISTS idx_products_barcode_unique`);
+      db.exec(`DROP INDEX IF EXISTS idx_products_barcode_clean`);
+
+      // 3. Create non-unique barcode index for fast lookup
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode) WHERE barcode IS NOT NULL AND trim(barcode) != ''`);
+
+      // 4. Create product_units table for flexible unit suggestions
+      db.exec(`CREATE TABLE IF NOT EXISTS product_units (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+
+      // 5. Seed initial standard units (as starting suggestions, not a restrictive whitelist)
+      const standardUnits = [
+        'pcs', 'kg', 'gram', 'liter', 'ml', 'pack', 'pouch', 'box', 'sak', 'tray',
+        'dus', 'renceng', 'botol', 'ikat', 'bungkus', 'butir', 'karton', 'kaleng', 'sachet', 'lusin', 'galon'
+      ];
+      const insertUnitStmt = db.prepare(`INSERT OR IGNORE INTO product_units (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)`);
+      for (const u of standardUnits) {
+        insertUnitStmt.run(uuidv4(), u);
+      }
+
+      // 6. Populate any existing custom units from products table
+      const existingUnits = db.prepare(`SELECT DISTINCT unit FROM products WHERE unit IS NOT NULL AND trim(unit) != ''`).all() as any[];
+      for (const row of existingUnits) {
+        const clean = String(row.unit).trim();
+        if (clean) {
+          insertUnitStmt.run(uuidv4(), clean);
+        }
+      }
+    });
+
+    migrationV19();
+    console.log('[DB] Migration to v19 complete');
+  }
+
   // Update schema version
   db.prepare(`
     INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, CURRENT_TIMESTAMP)
@@ -1053,8 +1203,7 @@ function createSchema(): void {
       category_id TEXT,
       name TEXT NOT NULL,
       description TEXT,
-      unit TEXT NOT NULL DEFAULT 'pcs'
-        CHECK(unit IN ('pcs','kg','gram','liter','ml','pack','pouch','box','sak','tray')),
+      unit TEXT NOT NULL DEFAULT 'pcs',
       allow_decimal INTEGER NOT NULL DEFAULT 0
         CHECK(allow_decimal IN (0, 1)),
       price REAL NOT NULL DEFAULT 0,
@@ -1093,6 +1242,7 @@ function createSchema(): void {
       is_required INTEGER DEFAULT 0,
       min_selection INTEGER DEFAULT 0,
       max_selection INTEGER DEFAULT 1,
+      show_in_pos INTEGER NOT NULL DEFAULT 0,
       is_active INTEGER DEFAULT 1,
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1102,13 +1252,16 @@ function createSchema(): void {
     CREATE TABLE addons (
       id TEXT PRIMARY KEY,
       addon_group_id TEXT NOT NULL,
+      product_id TEXT,
       name TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
       price REAL NOT NULL DEFAULT 0,
       is_active INTEGER DEFAULT 1,
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (addon_group_id) REFERENCES addon_groups(id)
+      FOREIGN KEY (addon_group_id) REFERENCES addon_groups(id),
+      FOREIGN KEY (product_id) REFERENCES products(id)
     );
 
     CREATE TABLE addon_group_product (
@@ -1440,11 +1593,18 @@ function createSchema(): void {
     CREATE INDEX idx_audit_logs_actor
       ON audit_logs(actor_user_id);
 
-    -- ── Schema v11 Indexes (Product Barcode & SKU) ────────────────────────
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode_unique
+    -- ── Schema v11 & v19 Indexes (Product Barcode & SKU) ─────────────────
+    CREATE INDEX IF NOT EXISTS idx_products_barcode
       ON products(barcode) WHERE barcode IS NOT NULL AND trim(barcode) != '';
     CREATE INDEX IF NOT EXISTS idx_products_sku
       ON products(sku);
+
+    -- ── Schema v19 Product Units Table ───────────────────────────────────
+    CREATE TABLE IF NOT EXISTS product_units (
+      id TEXT PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
 
     -- ── Schema v15 (WhatsApp Official Campaign & Consent) ─────────────────
     CREATE TABLE IF NOT EXISTS customer_consent_logs (
@@ -1530,9 +1690,26 @@ function createSchema(): void {
       FOREIGN KEY (customer_id) REFERENCES customers(id),
       UNIQUE(campaign_id, customer_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_wa_recipients_camp_status ON whatsapp_campaign_recipients(campaign_id, status);
     CREATE INDEX IF NOT EXISTS idx_wa_recipients_prov_msg ON whatsapp_campaign_recipients(provider_message_id);
     CREATE INDEX IF NOT EXISTS idx_customers_wa_optin ON customers(whatsapp_marketing_opt_in, is_active);
+
+    -- ── Schema v17 (Print Jobs Queue & Persistence) ─────────────────────
+    CREATE TABLE IF NOT EXISTS print_jobs (
+      id TEXT PRIMARY KEY,
+      bill_id INTEGER NOT NULL,
+      receipt_data TEXT,
+      printer_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'printing', 'completed', 'failed', 'cancelled')),
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      max_retries INTEGER NOT NULL DEFAULT 10,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT,
+      FOREIGN KEY (bill_id) REFERENCES bills(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_print_jobs_bill_id ON print_jobs(bill_id);
   `);
 }
 

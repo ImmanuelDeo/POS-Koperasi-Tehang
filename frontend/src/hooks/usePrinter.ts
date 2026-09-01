@@ -33,6 +33,15 @@ export interface HardwarePrinter {
   message?: string;
 }
 
+export interface PrintQueueSummary {
+  total: number;
+  pending: number;
+  printing: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+}
+
 interface PrinterState {
   status: PrinterStatus;
   deviceInfo: PrinterInfo | null;
@@ -42,6 +51,7 @@ interface PrinterState {
   paperWidth: PaperWidth;
   printMethod: PrintMode;
   hardwarePrinter: HardwarePrinter | null;
+  queueSummary: PrintQueueSummary;
 
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
@@ -55,6 +65,7 @@ interface PrinterState {
   downloadLastReceipt: () => void;
   copyLastReceiptHex: () => Promise<void>;
   refreshHardwarePrinter: () => Promise<void>;
+  retryAllQueuedJobs: () => Promise<number>;
 }
 
 export const usePrinterStore = create<PrinterState>()(
@@ -68,13 +79,19 @@ export const usePrinterStore = create<PrinterState>()(
       paperWidth: 58,
       printMethod: 'escpos',
       hardwarePrinter: null,
+      queueSummary: { total: 0, pending: 0, printing: 0, completed: 0, failed: 0, cancelled: 0 },
 
       refreshHardwarePrinter: async () => {
         try {
           const statusRes = await api.get('/printers/status');
           const hwData = statusRes.data;
+          const qSummary: PrintQueueSummary = hwData?.queue || {
+            total: 0, pending: 0, printing: 0, completed: 0, failed: 0, cancelled: 0,
+          };
+
           if (hwData && hwData.printer) {
             set({
+              queueSummary: qSummary,
               hardwarePrinter: {
                 ...hwData.printer,
                 is_online: Boolean(hwData.isOnline),
@@ -88,9 +105,19 @@ export const usePrinterStore = create<PrinterState>()(
           const res = await api.get('/printers');
           const list: HardwarePrinter[] = res.data.printers || [];
           const defaultPrinter = list.find((p) => p.is_default === 1 && p.connection_type !== 'webusb') || null;
-          set({ hardwarePrinter: defaultPrinter });
+          set({ hardwarePrinter: defaultPrinter, queueSummary: qSummary });
         } catch {
           set({ hardwarePrinter: null });
+        }
+      },
+
+      retryAllQueuedJobs: async () => {
+        try {
+          const res = await api.post('/printers/queue/retry-all');
+          await get().refreshHardwarePrinter();
+          return res.data.queued || 0;
+        } catch {
+          return 0;
         }
       },
 
@@ -286,10 +313,10 @@ export function usePrinterStatusSync(): void {
 
     store.refreshHardwarePrinter();
 
-    // Auto-refresh printer status periodically every 15s to keep UI status live
+    // Auto-refresh printer status periodically every 30s to keep UI status live without overhead
     const interval = setInterval(() => {
       store.refreshHardwarePrinter();
-    }, 15000);
+    }, 30000);
 
     const unsub = printerService.onStatusChange((status, info) => {
       usePrinterStore.setState({

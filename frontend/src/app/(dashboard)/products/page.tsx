@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
@@ -20,6 +20,7 @@ import { nameToColor } from '@/lib/image-utils';
 import { useI18n } from '@/hooks/useI18n';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useCatalogStore } from '@/store/catalog';
+import { LABELS } from '@/lib/labels';
 
 const PRESET_TAGS = [
   { key: 'veg', labelKey: 'pos.tagVeg' },
@@ -118,12 +119,16 @@ export default function ProductsPage() {
   const [csvType, setCsvType] = useState<'categories' | 'products' | 'addons'>('products');
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvFileText, setCsvFileText] = useState<string>('');
+  const [csvFileBase64, setCsvFileBase64] = useState<string>('');
   const [csvPreview, setCsvPreview] = useState<any | null>(null);
   const [csvValidating, setCsvValidating] = useState(false);
   const [csvResult, setCsvResult] = useState<Record<string, unknown> | null>(null);
   const [csvUploading, setCsvUploading] = useState(false);
-  const [catDeleteModal, setCatDeleteModal] = useState<{ open: boolean; id: number | null; name: string; productCount: number }>({ open: false, id: null, name: '', productCount: 0 });
+  const [catDeleteModal, setCatDeleteModal] = useState<{ open: boolean; id: string | number | null; name: string; productCount: number }>({ open: false, id: null, name: '', productCount: 0 });
   const [catReassignTo, setCatReassignTo] = useState<string>('');
+  const [availableUnits, setAvailableUnits] = useState<string[]>([
+    'pcs', 'kg', 'gram', 'liter', 'ml', 'pack', 'pouch', 'box', 'sak', 'tray', 'dus', 'renceng', 'botol', 'ikat', 'bungkus', 'butir', 'karton', 'kaleng', 'sachet', 'lusin', 'galon'
+  ]);
 
   const currency = getCurrencySymbol(currentTenant?.currency || 'IDR', getCountryByCode(currentTenant?.country ?? 'ID')?.locale);
   const fmt = useFormatCurrency();
@@ -171,11 +176,14 @@ export default function ProductsPage() {
       setCategories(storeCategories);
     }
     try {
-      const requests: Promise<{ data: Record<string, unknown> }>[] = [api.get('/categories')];
+      const requests: Promise<{ data: Record<string, unknown> }>[] = [api.get('/categories'), api.get('/products/units')];
       if (isRestaurant) requests.push(api.get('/addon-groups'));
-      const [catRes, agRes] = await Promise.all(requests);
+      const [catRes, unitsRes, agRes] = await Promise.all(requests);
       const fetchedCats = (catRes.data.categories as Category[]) || [];
       setCategories(fetchedCats);
+      if (unitsRes?.data && Array.isArray((unitsRes.data as any).units)) {
+        setAvailableUnits((unitsRes.data as any).units);
+      }
       if (agRes) setAddonGroups((agRes.data.addon_groups as AddonGroup[]) || []);
     } catch {
       // Non-fatal
@@ -209,7 +217,13 @@ export default function ProductsPage() {
           setTotalCount(res.data.total_count);
         }
       }
-    } catch {
+    } catch (err: any) {
+      if (targetCursor && (err?.response?.status === 400 || err?.response?.data?.cursor_reset)) {
+        setCursor(null);
+        setCursorHistory([]);
+        fetchProductsList(null, searchStr);
+        return;
+      }
       toast.error(t('products.failedToLoad'));
     } finally {
       setLoading(false);
@@ -217,7 +231,19 @@ export default function ProductsPage() {
     }
   }, [t]);
 
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSearchInputChange = (val: string) => {
+    setSearchInput(val);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+
+    searchDebounceRef.current = setTimeout(() => {
+      handleExecuteSearch(val);
+    }, 250);
+  };
+
   const handleExecuteSearch = (val?: string) => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     const query = val !== undefined ? val : searchInput;
     setCommittedSearch(query);
     setCursor(null);
@@ -226,6 +252,7 @@ export default function ProductsPage() {
   };
 
   const handleClearSearch = () => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     setSearchInput('');
     setCommittedSearch('');
     setCursor(null);
@@ -284,34 +311,73 @@ export default function ProductsPage() {
     }
   };
 
+  const downloadXlsxTemplate = async () => {
+    try {
+      const res = await api.get('/catalog-csv/template-xlsx', { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data as Blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'katalog-produk-koperasi-template.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Gagal mengunduh template Excel (.xlsx)');
+    }
+  };
+
   const handleCsvFileSelect = async (file: File | null) => {
     setCsvFile(file);
     setCsvPreview(null);
     setCsvResult(null);
-    if (!file) {
-      setCsvFileText('');
-      return;
-    }
+    setCsvFileText('');
+    setCsvFileBase64('');
+    if (!file) return;
 
     setCsvValidating(true);
     try {
-      const text = await file.text();
-      setCsvFileText(text);
-      const res = await api.post('/catalog-csv/preview', { csv: text });
-      setCsvPreview(res.data);
+      const isXlsx = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheetml');
+      if (isXlsx) {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const arrayBuffer = e.target?.result as ArrayBuffer;
+            const bytes = new Uint8Array(arrayBuffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+              binary += String.fromCharCode(bytes[i]);
+            }
+            const base64 = btoa(binary);
+            setCsvFileBase64(base64);
+            const res = await api.post('/catalog-csv/preview', { xlsx_base64: base64 });
+            setCsvPreview(res.data);
+          } catch (err: any) {
+            const msg = err.response?.data?.error || 'Gagal memvalidasi file Excel';
+            toast.error(msg);
+          } finally {
+            setCsvValidating(false);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        const text = await file.text();
+        setCsvFileText(text);
+        const res = await api.post('/catalog-csv/preview', { csv: text });
+        setCsvPreview(res.data);
+        setCsvValidating(false);
+      }
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Gagal memvalidasi CSV';
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Gagal memvalidasi file';
       toast.error(msg);
-    } finally {
       setCsvValidating(false);
     }
   };
 
   const handleExecuteImport = async () => {
-    if (!csvFileText) return;
+    if (!csvFileText && !csvFileBase64) return;
     setCsvUploading(true);
     try {
-      const res = await api.post('/catalog-csv/import', { csv: csvFileText });
+      const payload = csvFileBase64 ? { xlsx_base64: csvFileBase64 } : { csv: csvFileText };
+      const res = await api.post('/catalog-csv/import', payload);
       setCsvResult(res.data?.result || res.data);
       toast.success(res.data?.message || 'Impor katalog berhasil');
       fetchCategoriesAndAddons();
@@ -401,13 +467,20 @@ export default function ProductsPage() {
       }
 
       if (editingProduct) {
-        await api.put(`/products/${editingProduct.id}`, payload);
+        const res = await api.put(`/products/${editingProduct.id}`, payload);
         toast.success(t('products.updated'));
+        if (Array.isArray(res.data?.warnings) && res.data.warnings.length > 0) {
+          res.data.warnings.forEach((w: string) => toast(w, { icon: '⚠️', duration: 5000 }));
+        }
       } else {
-        await api.post('/products', payload);
+        const res = await api.post('/products', payload);
         toast.success(t('products.created'));
+        if (Array.isArray(res.data?.warnings) && res.data.warnings.length > 0) {
+          res.data.warnings.forEach((w: string) => toast(w, { icon: '⚠️', duration: 5000 }));
+        }
       }
       resetForm();
+      fetchCategoriesAndAddons();
       reloadFullProducts();
     } catch (err: unknown) {
       const error = err as { response?: { data?: { errors?: Record<string, string[]>; error?: string } } };
@@ -418,11 +491,12 @@ export default function ProductsPage() {
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: number | string) => {
     if (!await confirm(t('products.deleteConfirm'), { destructive: true, confirmLabel: t('common.delete') })) return;
     try {
       await api.delete(`/products/${id}`);
       toast.success(t('products.deleted'));
+      useCatalogStore.getState().removeProduct(id);
       reloadFullProducts();
     } catch {
       toast.error(t('common.failedToDelete'));
@@ -460,7 +534,11 @@ export default function ProductsPage() {
     }
   };
 
-  const handleCategoryDelete = async (id: number, name: string) => {
+  const handleCategoryDelete = async (id: string | number, name: string) => {
+    if (id === '__bundles__') {
+      toast.error('Kategori Promo & Bundling dikelola melalui menu Add-Ons & Bundling');
+      return;
+    }
     const productCount = products.filter(p => p.category_id === id).length;
     if (productCount > 0) {
       setCatReassignTo('');
@@ -604,14 +682,14 @@ export default function ProductsPage() {
               <input
                 type="text"
                 value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
+                onChange={(e) => handleSearchInputChange(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
                     handleExecuteSearch();
                   }
                 }}
-                placeholder="Cari nama, SKU, barcode (Tekan Enter)..."
+                placeholder="Cari nama, SKU, barcode..."
                 className="w-full pl-9 pr-20 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-brand outline-none bg-white"
               />
               <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
@@ -1035,28 +1113,20 @@ export default function ProductsPage() {
                         <label className="block text-xs font-semibold text-gray-700 mb-1">
                           Satuan Produk (Unit) <span className="text-red-500">*</span>
                         </label>
-                        <select
+                        <input
+                          list="product-unit-options"
+                          type="text"
                           value={form.unit}
                           onChange={(e) => setForm({ ...form, unit: e.target.value })}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-brand outline-none text-sm"
-                        >
-                          <option value="pcs">Pcs (Pieces)</option>
-                          <option value="kg">Kg (Kilogram)</option>
-                          <option value="gr">Gram (Gr)</option>
-                          <option value="liter">Liter (L)</option>
-                          <option value="ml">Mililiter (ml)</option>
-                          <option value="sak">Sak (Karung)</option>
-                          <option value="pack">Pack</option>
-                          <option value="dus">Dus (Karton)</option>
-                          <option value="botol">Botol</option>
-                          <option value="renceng">Renceng</option>
-                          <option value="bungkus">Bungkus</option>
-                          <option value="kaleng">Kaleng</option>
-                          <option value="lusin">Lusin</option>
-                          <option value="roll">Roll</option>
-                          <option value="ikat">Ikat</option>
-                          <option value="porsi">Porsi</option>
-                        </select>
+                          placeholder="Pilih atau ketik satuan (misal: pcs, kg, dus, renceng)"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-brand outline-none text-sm font-medium"
+                          required
+                        />
+                        <datalist id="product-unit-options">
+                          {availableUnits.map((u) => (
+                            <option key={u} value={u} />
+                          ))}
+                        </datalist>
                       </div>
 
                       <div>
@@ -1208,12 +1278,16 @@ export default function ProductsPage() {
                       </td>
                       <td className="p-4 text-right">
                         <div className="flex gap-2 justify-end">
-                          {isOwnerOrManager && (
+                          {isOwnerOrManager && cat.id !== '__bundles__' ? (
                             <>
                               <button onClick={() => openEditCategory(cat)} className="p-1.5 text-gray-400 hover:text-brand"><Pencil size={16} /></button>
                               <button onClick={() => handleCategoryDelete(cat.id, cat.name)} className="p-1.5 text-gray-400 hover:text-red-600"><Trash2 size={16} /></button>
                             </>
-                          )}
+                          ) : cat.id === '__bundles__' ? (
+                            <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                              Kelola di Add-Ons
+                            </span>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -1406,20 +1480,32 @@ export default function ProductsPage() {
             </div>
 
             <div className="space-y-4 py-4 overflow-y-auto flex-1">
-              {/* Download section */}
-              <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              {/* Template Download Buttons */}
+              <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-xl space-y-2.5">
                 <div>
-                  <p className="text-sm font-semibold text-emerald-900">Unduh Template CSV</p>
+                  <p className="text-sm font-semibold text-emerald-900">Unduh Format Template Katalog</p>
                   <p className="text-xs text-emerald-700 mt-0.5">
-                    Format resmi berisi contoh barcode, harga umum, harga member, dan stok awal.
+                    Gunakan file template resmi untuk mengimpor data produk sembako, harga umum, harga anggota, dan stok awal.
                   </p>
                 </div>
-                <button
-                  onClick={downloadCsvTemplate}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium shadow-sm transition-colors shrink-0"
-                >
-                  <Download size={14} /> Download Template
-                </button>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={downloadXlsxTemplate}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-colors"
+                  >
+                    <Download size={13} />
+                    Template Excel (.xlsx) [Format Teks & Barcode Aman]
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadCsvTemplate}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-white border border-emerald-300 hover:bg-emerald-100/50 rounded-lg transition-colors"
+                  >
+                    <Download size={13} />
+                    Template CSV (.csv)
+                  </button>
+                </div>
               </div>
 
               {/* Upload section */}
@@ -1427,12 +1513,12 @@ export default function ProductsPage() {
                 <label className="flex flex-col items-center justify-center w-full h-28 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:bg-gray-50 hover:border-brand/50 transition-colors bg-white">
                   <Upload size={22} className="text-gray-400 mb-1" />
                   <span className="text-sm font-medium text-gray-700">
-                    {csvFile ? csvFile.name : 'Pilih atau Tarik File CSV ke Sini'}
+                    {csvFile ? csvFile.name : 'Pilih atau Tarik File Excel / CSV ke Sini'}
                   </span>
-                  <span className="text-xs text-gray-400 mt-0.5">Mendukung file .csv UTF-8 hingga 1.000 baris</span>
+                  <span className="text-xs text-gray-400 mt-0.5">Mendukung file .xlsx dan .csv UTF-8 hingga 5.000 baris</span>
                   <input
                     type="file"
-                    accept=".csv,text/csv"
+                    accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                     className="hidden"
                     onChange={(e) => handleCsvFileSelect(e.target.files?.[0] ?? null)}
                   />

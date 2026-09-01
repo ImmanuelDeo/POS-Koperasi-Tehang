@@ -1,13 +1,8 @@
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import ExcelJS from 'exceljs';
 import { now } from '../db';
 import { parseRupiahNumber, executeStockMovement } from './cooperative';
-
-export const ALLOWED_UNITS = [
-  'pcs', 'kg', 'gram', 'liter', 'ml', 'pack', 'pouch', 'box', 'sak', 'tray'
-] as const;
-
-export type UnitType = typeof ALLOWED_UNITS[number];
 
 export interface CatalogRowData {
   row_number: number;
@@ -15,7 +10,7 @@ export interface CatalogRowData {
   sku: string | null;
   name: string;
   category_name: string;
-  unit: UnitType;
+  unit: string;
   allow_decimal: boolean;
   cost_price: number;
   selling_price: number;
@@ -41,6 +36,7 @@ export interface CatalogCsvValidationResult {
   error_rows_count: number;
   new_categories: string[];
   existing_categories: string[];
+  new_units: string[];
   total_initial_stock_items: number;
   total_initial_stock_value: number;
   errors: CatalogRowError[];
@@ -53,6 +49,8 @@ export interface CatalogImportExecutionResult {
   created_products_count: number;
   created_categories_count: number;
   created_categories: string[];
+  created_units_count: number;
+  created_units: string[];
   initial_stock_items_count: number;
   total_initial_stock_quantity: number;
   total_initial_stock_value: number;
@@ -61,12 +59,7 @@ export interface CatalogImportExecutionResult {
 
 /**
  * Parses RFC 4180 CSV string with zero external dependencies.
- * Handles:
- * - Quotes and escaped quotes ("")
- * - Commas inside quoted fields
- * - CRLF and LF line breaks
- * - UTF-8 BOM removal
- * - Formula injection sanitization
+ * Handles quotes, CRLF/LF, UTF-8 BOM, and preserves raw leading zeroes.
  */
 export function parseRfc4180Csv(csvContent: string): string[][] {
   if (!csvContent || typeof csvContent !== 'string') {
@@ -91,7 +84,7 @@ export function parseRfc4180Csv(csvContent: string): string[][] {
         if (nextChar === '"') {
           // Escaped quote: "" -> "
           currentCell += '"';
-          i++; // Skip next quote
+          i++;
         } else {
           // End of quoted field
           inQuotes = false;
@@ -107,7 +100,7 @@ export function parseRfc4180Csv(csvContent: string): string[][] {
         currentCell = '';
       } else if (char === '\r') {
         if (nextChar === '\n') {
-          i++; // Skip \n
+          i++;
         }
         currentRow.push(currentCell.trim());
         if (currentRow.some(c => c.length > 0)) {
@@ -138,35 +131,220 @@ export function parseRfc4180Csv(csvContent: string): string[][] {
 }
 
 /**
+ * Parses an XLSX buffer directly into string[][] using ExcelJS,
+ * preserving string values with leading zeros (e.g. '0812345678', '0000000001').
+ */
+export async function parseXlsxBuffer(buffer: Buffer): Promise<string[][]> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as any);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) return [];
+
+  const rows: string[][] = [];
+  worksheet.eachRow({ includeEmpty: false }, (row) => {
+    const rowValues: string[] = [];
+    const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+    for (const val of values) {
+      if (val === null || val === undefined) {
+        rowValues.push('');
+      } else if (typeof val === 'object' && 'text' in val) {
+        rowValues.push(String((val as any).text || '').trim());
+      } else if (typeof val === 'object' && 'result' in val) {
+        rowValues.push(String((val as any).result || '').trim());
+      } else {
+        rowValues.push(String(val).trim());
+      }
+    }
+    if (rowValues.some(c => c.length > 0)) {
+      rows.push(rowValues);
+    }
+  });
+
+  return rows;
+}
+
+/**
  * Sanitizes cell values to prevent CSV Formula Injection (=, +, -, @).
  */
 export function sanitizeTextValue(val: string): string {
   if (!val) return '';
   const trimmed = val.trim();
   if (/^[=+\-@]/.test(trimmed)) {
-    // Escape leading formula character with single quote
+    // If it starts with formula force like ="08123", unwrap it
+    const match = trimmed.match(/^="([^"]+)"$/);
+    if (match) {
+      return match[1].trim();
+    }
     return `'${trimmed}`;
   }
   return trimmed;
 }
 
 /**
- * Generates official Indonesian Koperasi CSV catalog template.
+ * Generates official Indonesian Koperasi CSV catalog template with formula text-force for Excel CSV compatibility.
  */
 export function generateCatalogCsvTemplate(): string {
-  const header = 'barcode,sku,name,category,unit,allow_decimal,cost_price,selling_price,member_price,initial_stock,low_stock_threshold,min_reorder_qty,is_active';
+  const header = 'barcode,sku,nama_produk,kategori,satuan,boleh_desimal,harga_beli,harga_jual,harga_member,stok_awal,batas_stok_minimum,min_reorder_qty,status_aktif';
   const sampleRows = [
-    '8992753101111,SKU-BYS-05K,Beras Pandan Wangi 5kg,Beras & Biji-bijian,sak,0,65000,72000,72000,50,10,20,1',
-    '8991002102222,SKU-MYK-02L,Minyak Goreng Sawit 2L,Minyak & Mentega,pouch,0,31000,34500,34500,100,20,40,1',
-    '8998866103333,SKU-GUL-01K,Gula Pasir Kristal Putih 1kg,Gula & Pemanis,kg,0,14500,17000,17000,80,15,30,1',
-    '8993456104444,SKU-TPG-01K,Tepung Terigu Serbaguna 1kg,Tepung & Bumbu,pack,0,10500,12500,12500,60,10,25,1',
-    '8992345105555,SKU-TLR-01K,Telur Ayam Ras Segar 1kg,Telur & Unggas,kg,1,26000,29500,29500,45.5,10,20,1',
+    '="0812345678",SKU-BYS-05K,Beras Pandan Wangi 5kg,Beras & Biji-bijian,sak,0,65000,72000,70000,50,10,20,1',
+    '="0000000001",SKU-MYK-02L,Minyak Goreng Sawit 2L,Minyak & Mentega,pouch,0,31000,34500,33500,100,20,40,1',
+    '8998866103333,SKU-GUL-01K,Gula Pasir Kristal Putih 1kg,Gula & Pemanis,kg,0,14500,17000,16500,80,15,30,1',
+    '8993456104444,SKU-KCP-RCG,Kecap Manis Renceng 11x20ml,Bumbu & Dapur,renceng,0,9000,11000,10500,30,5,10,1',
+    '8992345105555,SKU-TLR-01K,Telur Ayam Ras Segar 1kg,Telur & Unggas,kg,1,26000,29500,28500,45.5,10,20,1',
     '8994567106666,SKU-MIE-085,Mi Instan Rasa Soto 85g,Makanan Instan,pcs,0,2700,3100,3100,240,40,80,1',
-    '8995678107777,SKU-SKM-370,Susu Kental Manis Putih 370g,Susu & Olahan,pcs,0,11000,12800,12800,72,12,24,1',
-    '8996789108888,SKU-KCP-550,"Kecap Manis Refill, Pouch 550ml",Tepung & Bumbu,pouch,0,18500,21000,21000,40,8,16,1',
   ];
 
   return [header, ...sampleRows].join('\r\n') + '\r\n';
+}
+
+/**
+ * Generates official Indonesian Koperasi XLSX catalog template with explicit Text Cell Formatting (@)
+ * guaranteeing leading zeroes (e.g. '0812345678') are 100% preserved in Excel.
+ */
+export async function generateCatalogXlsxTemplate(): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'POS Koperasi';
+  workbook.lastModifiedBy = 'POS Koperasi';
+  workbook.created = new Date();
+  workbook.modified = new Date();
+
+  const worksheet = workbook.addWorksheet('Katalog Produk');
+
+  worksheet.columns = [
+    { header: 'Barcode', key: 'barcode', width: 20 },
+    { header: 'SKU', key: 'sku', width: 16 },
+    { header: 'Nama Produk', key: 'name', width: 35 },
+    { header: 'Kategori', key: 'category', width: 22 },
+    { header: 'Satuan', key: 'unit', width: 14 },
+    { header: 'Boleh Desimal (0/1)', key: 'allow_decimal', width: 18 },
+    { header: 'Harga Beli / HPP (Rp)', key: 'cost_price', width: 20 },
+    { header: 'Harga Jual Umum (Rp)', key: 'selling_price', width: 20 },
+    { header: 'Harga Anggota (Rp)', key: 'member_price', width: 20 },
+    { header: 'Stok Awal', key: 'initial_stock', width: 14 },
+    { header: 'Batas Stok Minimum', key: 'low_stock_threshold', width: 20 },
+    { header: 'Min Reorder Qty', key: 'min_reorder_qty', width: 16 },
+    { header: 'Status Aktif (0/1)', key: 'is_active', width: 16 },
+  ];
+
+  // Header row styling
+  const headerRow = worksheet.getRow(1);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FF1E293B' },
+  };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+  headerRow.height = 28;
+
+  const sampleData = [
+    {
+      barcode: '0812345678',
+      sku: 'SKU-BYS-05K',
+      name: 'Beras Pandan Wangi 5kg',
+      category: 'Beras & Biji-bijian',
+      unit: 'sak',
+      allow_decimal: 0,
+      cost_price: 65000,
+      selling_price: 72000,
+      member_price: 70000,
+      initial_stock: 50,
+      low_stock_threshold: 10,
+      min_reorder_qty: 20,
+      is_active: 1,
+    },
+    {
+      barcode: '0000000001',
+      sku: 'SKU-MYK-02L',
+      name: 'Minyak Goreng Sawit 2L',
+      category: 'Minyak & Mentega',
+      unit: 'pouch',
+      allow_decimal: 0,
+      cost_price: 31000,
+      selling_price: 34500,
+      member_price: 33500,
+      initial_stock: 100,
+      low_stock_threshold: 20,
+      min_reorder_qty: 40,
+      is_active: 1,
+    },
+    {
+      barcode: '8998866103333',
+      sku: 'SKU-GUL-01K',
+      name: 'Gula Pasir Kristal Putih 1kg',
+      category: 'Gula & Pemanis',
+      unit: 'kg',
+      allow_decimal: 0,
+      cost_price: 14500,
+      selling_price: 17000,
+      member_price: 16500,
+      initial_stock: 80,
+      low_stock_threshold: 15,
+      min_reorder_qty: 30,
+      is_active: 1,
+    },
+    {
+      barcode: '8993456104444',
+      sku: 'SKU-KCP-RCG',
+      name: 'Kecap Manis Renceng 11x20ml',
+      category: 'Bumbu & Dapur',
+      unit: 'renceng',
+      allow_decimal: 0,
+      cost_price: 9000,
+      selling_price: 11000,
+      member_price: 10500,
+      initial_stock: 30,
+      low_stock_threshold: 5,
+      min_reorder_qty: 10,
+      is_active: 1,
+    },
+    {
+      barcode: '8992345105555',
+      sku: 'SKU-TLR-01K',
+      name: 'Telur Ayam Ras Segar 1kg',
+      category: 'Telur & Segar',
+      unit: 'kg',
+      allow_decimal: 1,
+      cost_price: 26000,
+      selling_price: 29500,
+      member_price: 28500,
+      initial_stock: 45.5,
+      low_stock_threshold: 10,
+      min_reorder_qty: 20,
+      is_active: 1,
+    },
+    {
+      barcode: '8994567106666',
+      sku: 'SKU-MIE-085',
+      name: 'Mi Instan Rasa Soto 85g',
+      category: 'Makanan Instan',
+      unit: 'pcs',
+      allow_decimal: 0,
+      cost_price: 2700,
+      selling_price: 3100,
+      member_price: 3100,
+      initial_stock: 240,
+      low_stock_threshold: 40,
+      min_reorder_qty: 80,
+      is_active: 1,
+    },
+  ];
+
+  for (const item of sampleData) {
+    const row = worksheet.addRow(item);
+    // Explicit Text format (@) for text columns
+    row.getCell('barcode').numFmt = '@';
+    row.getCell('sku').numFmt = '@';
+    row.getCell('name').numFmt = '@';
+    row.getCell('category').numFmt = '@';
+    row.getCell('unit').numFmt = '@';
+  }
+
+  worksheet.getColumn('barcode').numFmt = '@';
+  worksheet.getColumn('sku').numFmt = '@';
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
 }
 
 function parseBooleanCell(val: any, defaultVal = false): boolean {
@@ -178,12 +356,9 @@ function parseBooleanCell(val: any, defaultVal = false): boolean {
 }
 
 /**
- * Validates in-memory CSV data against the SQLite catalog schema.
- * Returns preview, statistics, and any row-level validation errors.
+ * Validates parsed grid data against SQLite schema with flexible units and non-blocking duplicate barcodes.
  */
-export function validateCatalogCsv(db: Database.Database, csvContent: string): CatalogCsvValidationResult {
-  const parsedGrid = parseRfc4180Csv(csvContent);
-
+export function validateCatalogGrid(db: Database.Database, parsedGrid: string[][]): CatalogCsvValidationResult {
   if (parsedGrid.length < 2) {
     return {
       valid: false,
@@ -192,9 +367,10 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       error_rows_count: 0,
       new_categories: [],
       existing_categories: [],
+      new_units: [],
       total_initial_stock_items: 0,
       total_initial_stock_value: 0,
-      errors: [{ row: 1, message: 'File CSV kosong atau tidak memiliki baris data setelah header' }],
+      errors: [{ row: 1, message: 'File kosong atau tidak memiliki baris data setelah header' }],
       rows: [],
     };
   }
@@ -203,19 +379,19 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
   const headerMap: Record<string, number> = {};
 
   rawHeaders.forEach((h, idx) => {
-    if (h === 'barcode' || h === 'kode_barcode' || h === 'barcode_produk') headerMap.barcode = idx;
+    if (h === 'barcode' || h === 'kode_barcode' || h === 'barcode_produk' || h === 'kode batang' || h === 'kode_batang') headerMap.barcode = idx;
     else if (h === 'sku' || h === 'kode_sku' || h === 'sku_produk') headerMap.sku = idx;
-    else if (h === 'name' || h === 'nama' || h === 'nama_produk' || h === 'product_name') headerMap.name = idx;
+    else if (h === 'name' || h === 'nama' || h === 'nama_produk' || h === 'product_name' || h.startsWith('nama produk')) headerMap.name = idx;
     else if (h === 'category' || h === 'kategori' || h === 'nama_kategori' || h === 'category_name') headerMap.category = idx;
     else if (h === 'unit' || h === 'satuan' || h === 'satuan_produk') headerMap.unit = idx;
-    else if (h === 'allow_decimal' || h === 'desimal' || h === 'boleh_desimal') headerMap.allow_decimal = idx;
-    else if (h === 'cost_price' || h === 'harga_beli' || h === 'cost' || h === 'hpp') headerMap.cost_price = idx;
-    else if (h === 'selling_price' || h === 'harga_jual' || h === 'price' || h === 'harga_umum') headerMap.selling_price = idx;
-    else if (h === 'member_price' || h === 'harga_member' || h === 'harga_anggota') headerMap.member_price = idx;
-    else if (h === 'initial_stock' || h === 'stok_awal' || h === 'stok' || h === 'stock') headerMap.initial_stock = idx;
-    else if (h === 'low_stock_threshold' || h === 'min_stok' || h === 'batas_stok_minimum') headerMap.low_stock_threshold = idx;
-    else if (h === 'min_reorder_qty' || h === 'reorder_qty' || h === 'min_reorder') headerMap.min_reorder_qty = idx;
-    else if (h === 'is_active' || h === 'aktif' || h === 'status_aktif') headerMap.is_active = idx;
+    else if (h === 'allow_decimal' || h === 'desimal' || h === 'boleh_desimal' || h.startsWith('boleh desimal')) headerMap.allow_decimal = idx;
+    else if (h === 'cost_price' || h === 'harga_beli' || h === 'cost' || h === 'hpp' || h.startsWith('harga beli')) headerMap.cost_price = idx;
+    else if (h === 'selling_price' || h === 'harga_jual' || h === 'price' || h === 'harga_umum' || h.startsWith('harga jual')) headerMap.selling_price = idx;
+    else if (h === 'member_price' || h === 'harga_member' || h === 'harga_anggota' || h.startsWith('harga anggota')) headerMap.member_price = idx;
+    else if (h === 'initial_stock' || h === 'stok_awal' || h === 'stok' || h === 'stock' || h.startsWith('stok awal')) headerMap.initial_stock = idx;
+    else if (h === 'low_stock_threshold' || h === 'min_stok' || h === 'batas_stok_minimum' || h.startsWith('batas stok')) headerMap.low_stock_threshold = idx;
+    else if (h === 'min_reorder_qty' || h === 'reorder_qty' || h === 'min_reorder' || h.startsWith('min reorder')) headerMap.min_reorder_qty = idx;
+    else if (h === 'is_active' || h === 'aktif' || h === 'status_aktif' || h.startsWith('status aktif')) headerMap.is_active = idx;
   });
 
   // Check mandatory headers
@@ -227,9 +403,10 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       error_rows_count: 0,
       new_categories: [],
       existing_categories: [],
+      new_units: [],
       total_initial_stock_items: 0,
       total_initial_stock_value: 0,
-      errors: [{ row: 1, field: 'barcode', message: 'Header wajib "barcode" tidak ditemukan di file CSV' }],
+      errors: [{ row: 1, field: 'barcode', message: 'Header wajib "barcode" tidak ditemukan di file' }],
       rows: [],
     };
   }
@@ -242,9 +419,10 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       error_rows_count: 0,
       new_categories: [],
       existing_categories: [],
+      new_units: [],
       total_initial_stock_items: 0,
       total_initial_stock_value: 0,
-      errors: [{ row: 1, field: 'name', message: 'Header wajib "name" (nama produk) tidak ditemukan di file CSV' }],
+      errors: [{ row: 1, field: 'name', message: 'Header wajib "nama_produk" / "name" tidak ditemukan di file' }],
       rows: [],
     };
   }
@@ -257,36 +435,32 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       error_rows_count: 0,
       new_categories: [],
       existing_categories: [],
+      new_units: [],
       total_initial_stock_items: 0,
       total_initial_stock_value: 0,
-      errors: [{ row: 1, field: 'selling_price', message: 'Header wajib "selling_price" (harga jual) tidak ditemukan di file CSV' }],
+      errors: [{ row: 1, field: 'selling_price', message: 'Header wajib "harga_jual" / "selling_price" tidak ditemukan di file' }],
       rows: [],
     };
   }
 
   const errors: CatalogRowError[] = [];
   const validRows: CatalogRowData[] = [];
-  const seenFileBarcodes = new Map<string, number>(); // barcode -> rowNumber
-  const seenFileSkus = new Map<string, number>(); // sku -> rowNumber
 
-  // Load existing database barcodes and SKUs
-  const dbBarcodes = new Set<string>();
-  const dbSkus = new Set<string>();
-  const dbCategories = new Map<string, { id: string; name: string }>(); // lowerName -> cat
+  const dbCategories = new Map<string, { id: string; name: string }>();
+  const dbUnits = new Set<string>();
 
   try {
-    const existingProds = db.prepare('SELECT barcode, sku, name FROM products WHERE deleted_at IS NULL').all() as any[];
-    for (const p of existingProds) {
-      if (p.barcode) dbBarcodes.add(p.barcode.trim().toLowerCase());
-      if (p.sku) dbSkus.add(p.sku.trim().toLowerCase());
-    }
-
     const existingCats = db.prepare('SELECT id, name FROM categories WHERE deleted_at IS NULL').all() as any[];
     for (const c of existingCats) {
       if (c.name) dbCategories.set(c.name.trim().toLowerCase(), c);
     }
+    try {
+      const unitsList = db.prepare('SELECT name FROM product_units').all() as any[];
+      for (const u of unitsList) {
+        if (u.name) dbUnits.add(u.name.trim().toLowerCase());
+      }
+    } catch {}
   } catch (err: any) {
-    // Database query failed
     return {
       valid: false,
       total_rows: 0,
@@ -294,6 +468,7 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       error_rows_count: 0,
       new_categories: [],
       existing_categories: [],
+      new_units: [],
       total_initial_stock_items: 0,
       total_initial_stock_value: 0,
       errors: [{ row: 1, message: `Gagal membaca database: ${err.message}` }],
@@ -303,9 +478,10 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
 
   const newCategorySet = new Set<string>();
   const existingCategorySet = new Set<string>();
+  const newUnitSet = new Set<string>();
 
   const dataRows = parsedGrid.slice(1);
-  const MAX_ROWS = 1000;
+  const MAX_ROWS = 5000;
 
   if (dataRows.length > MAX_ROWS) {
     errors.push({
@@ -322,15 +498,15 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
     const rawRow = dataRows[i];
 
     // Skip completely empty rows
-    if (!rawRow || rawRow.every(c => !c || c.trim() === '')) {
+    if (!rawRow || rawRow.every(c => !c || String(c).trim() === '')) {
       continue;
     }
 
-    const rawBarcode = headerMap.barcode !== undefined ? (rawRow[headerMap.barcode] || '').trim() : '';
-    const rawSku = headerMap.sku !== undefined ? (rawRow[headerMap.sku] || '').trim() : '';
-    const rawName = headerMap.name !== undefined ? (rawRow[headerMap.name] || '').trim() : '';
-    const rawCategory = headerMap.category !== undefined ? (rawRow[headerMap.category] || '').trim() : '';
-    const rawUnit = headerMap.unit !== undefined ? (rawRow[headerMap.unit] || '').trim().toLowerCase() : 'pcs';
+    const rawBarcode = headerMap.barcode !== undefined ? String(rawRow[headerMap.barcode] || '').trim() : '';
+    const rawSku = headerMap.sku !== undefined ? String(rawRow[headerMap.sku] || '').trim() : '';
+    const rawName = headerMap.name !== undefined ? String(rawRow[headerMap.name] || '').trim() : '';
+    const rawCategory = headerMap.category !== undefined ? String(rawRow[headerMap.category] || '').trim() : '';
+    const rawUnit = headerMap.unit !== undefined ? String(rawRow[headerMap.unit] || '').trim() : 'pcs';
     const rawAllowDecimal = headerMap.allow_decimal !== undefined ? rawRow[headerMap.allow_decimal] : '0';
     const rawCostPrice = headerMap.cost_price !== undefined ? rawRow[headerMap.cost_price] : '0';
     const rawSellingPrice = headerMap.selling_price !== undefined ? rawRow[headerMap.selling_price] : '';
@@ -343,44 +519,18 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
     let rowHasError = false;
 
     // 1. Barcode validation
+    let cleanBarcode = '';
     if (!rawBarcode) {
       errors.push({ row: rowNum, field: 'barcode', name: rawName, message: 'Barcode wajib diisi' });
       rowHasError = true;
     } else {
-      if (rawBarcode.length < 1 || rawBarcode.length > 128) {
+      cleanBarcode = sanitizeTextValue(rawBarcode);
+      if (cleanBarcode.length < 1 || cleanBarcode.length > 128) {
         errors.push({ row: rowNum, field: 'barcode', barcode: rawBarcode, name: rawName, message: 'Panjang barcode harus antara 1 - 128 karakter' });
         rowHasError = true;
       }
-      if (/[\x00-\x1F\x7F]/.test(rawBarcode)) {
+      if (/[\x00-\x1F\x7F]/.test(cleanBarcode)) {
         errors.push({ row: rowNum, field: 'barcode', barcode: rawBarcode, name: rawName, message: 'Barcode memuat karakter kontrol tidak valid' });
-        rowHasError = true;
-      }
-
-      // Check duplicate in file
-      const lowerBarcode = rawBarcode.toLowerCase();
-      if (seenFileBarcodes.has(lowerBarcode)) {
-        const prevRow = seenFileBarcodes.get(lowerBarcode);
-        errors.push({
-          row: rowNum,
-          field: 'barcode',
-          barcode: rawBarcode,
-          name: rawName,
-          message: `Duplikat barcode '${rawBarcode}' di dalam file CSV (sebelumnya ada di baris ${prevRow})`,
-        });
-        rowHasError = true;
-      } else {
-        seenFileBarcodes.set(lowerBarcode, rowNum);
-      }
-
-      // Check duplicate in database
-      if (dbBarcodes.has(lowerBarcode)) {
-        errors.push({
-          row: rowNum,
-          field: 'barcode',
-          barcode: rawBarcode,
-          name: rawName,
-          message: `Barcode '${rawBarcode}' sudah digunakan oleh produk lain di database`,
-        });
         rowHasError = true;
       }
     }
@@ -388,36 +538,11 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
     // 2. SKU validation (optional)
     let cleanSku: string | null = null;
     if (rawSku) {
-      if (rawSku.length > 64) {
+      cleanSku = sanitizeTextValue(rawSku);
+      if (cleanSku.length > 64) {
         errors.push({ row: rowNum, field: 'sku', barcode: rawBarcode, name: rawName, message: 'SKU maksimal 64 karakter' });
         rowHasError = true;
       }
-      const lowerSku = rawSku.toLowerCase();
-      if (seenFileSkus.has(lowerSku)) {
-        const prevRow = seenFileSkus.get(lowerSku);
-        errors.push({
-          row: rowNum,
-          field: 'sku',
-          barcode: rawBarcode,
-          name: rawName,
-          message: `Duplikat SKU '${rawSku}' di dalam file CSV (sebelumnya ada di baris ${prevRow})`,
-        });
-        rowHasError = true;
-      } else {
-        seenFileSkus.set(lowerSku, rowNum);
-      }
-
-      if (dbSkus.has(lowerSku)) {
-        errors.push({
-          row: rowNum,
-          field: 'sku',
-          barcode: rawBarcode,
-          name: rawName,
-          message: `SKU '${rawSku}' sudah digunakan oleh produk lain di database`,
-        });
-        rowHasError = true;
-      }
-      cleanSku = sanitizeTextValue(rawSku);
     }
 
     // 3. Name validation
@@ -438,20 +563,24 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       newCategorySet.add(cleanCategoryName);
     }
 
-    // 5. Unit validation
-    let validUnit: UnitType = 'pcs';
+    // 5. Unit validation (Flexible string - accepts any unit up to 30 characters)
+    let cleanUnit = 'pcs';
     if (rawUnit) {
-      if (ALLOWED_UNITS.includes(rawUnit as UnitType)) {
-        validUnit = rawUnit as UnitType;
-      } else {
+      const sanitizedUnit = sanitizeTextValue(rawUnit).trim();
+      if (sanitizedUnit.length > 30) {
         errors.push({
           row: rowNum,
-          field: 'unit',
+          field: 'satuan',
           barcode: rawBarcode,
           name: rawName,
-          message: `Satuan '${rawUnit}' tidak valid. Pilih dari: ${ALLOWED_UNITS.join(', ')}`,
+          message: 'Nama satuan maksimal 30 karakter',
         });
         rowHasError = true;
+      } else if (sanitizedUnit.length > 0) {
+        cleanUnit = sanitizedUnit;
+        if (!dbUnits.has(cleanUnit.toLowerCase())) {
+          newUnitSet.add(cleanUnit);
+        }
       }
     }
 
@@ -460,13 +589,13 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
 
     // 7. Selling price validation
     const parsedSellingPrice = parseRupiahNumber(rawSellingPrice);
-    if (parsedSellingPrice === null || parsedSellingPrice <= 0) {
+    if (parsedSellingPrice === null || parsedSellingPrice < 0) {
       errors.push({
         row: rowNum,
-        field: 'selling_price',
+        field: 'harga_jual',
         barcode: rawBarcode,
         name: rawName,
-        message: 'Harga jual (selling_price) wajib diisi dengan nominal Rupiah positif (> 0)',
+        message: 'Harga jual wajib diisi dengan nominal Rupiah valid (>= 0)',
       });
       rowHasError = true;
     }
@@ -478,10 +607,10 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       if (pCost === null || pCost < 0) {
         errors.push({
           row: rowNum,
-          field: 'cost_price',
+          field: 'harga_beli',
           barcode: rawBarcode,
           name: rawName,
-          message: 'Harga pokok/beli (cost_price) harus berupa nominal Rupiah valid (>= 0)',
+          message: 'Harga beli (HPP) harus berupa nominal Rupiah valid (>= 0)',
         });
         rowHasError = true;
       } else {
@@ -496,10 +625,10 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       if (pMember === null || pMember < 0) {
         errors.push({
           row: rowNum,
-          field: 'member_price',
+          field: 'harga_member',
           barcode: rawBarcode,
           name: rawName,
-          message: 'Harga member (member_price) harus berupa nominal Rupiah valid (>= 0)',
+          message: 'Harga anggota/member harus berupa nominal Rupiah valid (>= 0)',
         });
         rowHasError = true;
       } else {
@@ -515,20 +644,20 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
       if (isNaN(numStock) || !Number.isFinite(numStock) || numStock < 0) {
         errors.push({
           row: rowNum,
-          field: 'initial_stock',
+          field: 'stok_awal',
           barcode: rawBarcode,
           name: rawName,
-          message: 'Stok awal (initial_stock) harus berupa angka positif (>= 0)',
+          message: 'Stok awal harus berupa angka positif (>= 0)',
         });
         rowHasError = true;
       } else {
         if (!allowDecimalBool && !Number.isInteger(numStock)) {
           errors.push({
             row: rowNum,
-            field: 'initial_stock',
+            field: 'stok_awal',
             barcode: rawBarcode,
             name: rawName,
-            message: `Stok awal '${numStock}' memuat desimal untuk satuan '${validUnit}'. Ubah allow_decimal=1 bila ingin desimal.`,
+            message: `Stok awal '${numStock}' memuat desimal untuk satuan '${cleanUnit}'. Ubah boleh_desimal=1 bila ingin desimal.`,
           });
           rowHasError = true;
         } else {
@@ -562,11 +691,11 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
 
       validRows.push({
         row_number: rowNum,
-        barcode: rawBarcode,
+        barcode: cleanBarcode,
         sku: cleanSku,
         name: sanitizeTextValue(rawName),
         category_name: cleanCategoryName,
-        unit: validUnit,
+        unit: cleanUnit,
         allow_decimal: allowDecimalBool,
         cost_price: parsedCostPrice,
         selling_price: parsedSellingPrice || 0,
@@ -588,6 +717,7 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
     error_rows_count: errors.length,
     new_categories: Array.from(newCategorySet),
     existing_categories: Array.from(existingCategorySet),
+    new_units: Array.from(newUnitSet),
     total_initial_stock_items: totalInitialStockItems,
     total_initial_stock_value: Math.round(totalInitialStockValue),
     errors,
@@ -596,8 +726,17 @@ export function validateCatalogCsv(db: Database.Database, csvContent: string): C
 }
 
 /**
- * Atomically executes catalog CSV import within a single SQLite transaction.
- * Creates new categories, inserts products, records initial stock in ledger, and writes audit log.
+ * Validates in-memory CSV text against catalog schema.
+ */
+export function validateCatalogCsv(db: Database.Database, csvContent: string): CatalogCsvValidationResult {
+  const parsedGrid = parseRfc4180Csv(csvContent);
+  return validateCatalogGrid(db, parsedGrid);
+}
+
+/**
+ * Atomically executes catalog import inside a single SQLite transaction (All-or-Nothing).
+ * Creates new categories, registers new units in product_units, inserts products,
+ * records initial stock in ledger, and writes audit log.
  */
 export function executeCatalogImport(
   db: Database.Database,
@@ -611,13 +750,15 @@ export function executeCatalogImport(
   const batchId = `IMPORT-${Date.now()}`;
   let createdCategoriesCount = 0;
   const createdCategoryNames: string[] = [];
+  let createdUnitsCount = 0;
+  const createdUnitNames: string[] = [];
   let initialStockItemsCount = 0;
   let totalInitialStockQty = 0;
   let totalInitialStockVal = 0;
 
   const importTx = db.transaction(() => {
     // 1. Map existing categories and insert new ones
-    const categoryMap = new Map<string, string>(); // lowerName -> categoryId
+    const categoryMap = new Map<string, string>();
     const existingCats = db.prepare('SELECT id, name FROM categories WHERE deleted_at IS NULL').all() as any[];
     for (const c of existingCats) {
       categoryMap.set(c.name.trim().toLowerCase(), c.id);
@@ -628,19 +769,43 @@ export function executeCatalogImport(
       VALUES (?, ?, ?, 1, ?, ?)
     `);
 
-    // Create new categories if needed
     for (const row of rows) {
       const lowerCat = row.category_name.trim().toLowerCase();
       if (!categoryMap.has(lowerCat)) {
         const newCatId = uuidv4();
-        insertCatStmt.run(newCatId, row.category_name.trim(), 'Kategori dari impor CSV katalog', now(), now());
+        insertCatStmt.run(newCatId, row.category_name.trim(), 'Kategori dari impor katalog', now(), now());
         categoryMap.set(lowerCat, newCatId);
         createdCategoriesCount++;
         createdCategoryNames.push(row.category_name.trim());
       }
     }
 
-    // 2. Prepare product insert statement
+    // 2. Register any new units into product_units
+    const insertUnitStmt = db.prepare(`
+      INSERT OR IGNORE INTO product_units (id, name, created_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+    `);
+
+    const knownUnits = new Set<string>();
+    try {
+      const existingUnits = db.prepare('SELECT name FROM product_units').all() as any[];
+      for (const u of existingUnits) {
+        if (u.name) knownUnits.add(u.name.trim().toLowerCase());
+      }
+    } catch {}
+
+    for (const row of rows) {
+      const uTrim = row.unit.trim();
+      const uLower = uTrim.toLowerCase();
+      if (uTrim && !knownUnits.has(uLower)) {
+        insertUnitStmt.run(uuidv4(), uTrim);
+        knownUnits.add(uLower);
+        createdUnitsCount++;
+        createdUnitNames.push(uTrim);
+      }
+    }
+
+    // 3. Prepare product insert statement
     const insertProdStmt = db.prepare(`
       INSERT INTO products (
         id, category_id, name, sku, barcode, description,
@@ -668,7 +833,7 @@ export function executeCatalogImport(
         row.name,
         row.sku,
         row.barcode,
-        null, // description
+        null,
         row.selling_price,
         row.cost_price,
         row.member_price,
@@ -683,7 +848,7 @@ export function executeCatalogImport(
         now()
       );
 
-      // 3. Record Initial Stock Movement if initial_stock > 0
+      // 4. Record Initial Stock Movement if initial_stock > 0
       if (row.initial_stock > 0) {
         executeStockMovement(db, {
           productId,
@@ -692,7 +857,7 @@ export function executeCatalogImport(
           unitCost: row.cost_price,
           referenceType: 'csv_import',
           referenceId: batchId,
-          notes: `Stok awal impor katalog CSV batch ${batchId}`,
+          notes: `Stok awal impor katalog batch ${batchId}`,
           createdBy: userId,
         });
 
@@ -702,7 +867,7 @@ export function executeCatalogImport(
       }
     }
 
-    // 4. Record Audit Log entry
+    // 5. Record Audit Log entry
     db.prepare(`
       INSERT INTO audit_logs (
         actor_user_id, actor_role, action, target_type, target_id, details, created_at
@@ -710,7 +875,7 @@ export function executeCatalogImport(
     `).run(
       userId,
       'admin',
-      'catalog.csv_imported',
+      'catalog.imported',
       'product_catalog',
       batchId,
       JSON.stringify({
@@ -718,6 +883,8 @@ export function executeCatalogImport(
         total_products: rows.length,
         created_categories_count: createdCategoriesCount,
         created_categories: createdCategoryNames,
+        created_units_count: createdUnitsCount,
+        created_units: createdUnitNames,
         initial_stock_items: initialStockItemsCount,
         total_initial_stock_quantity: totalInitialStockQty,
         total_initial_stock_value: Math.round(totalInitialStockVal),
@@ -731,6 +898,8 @@ export function executeCatalogImport(
       created_products_count: rows.length,
       created_categories_count: createdCategoriesCount,
       created_categories: createdCategoryNames,
+      created_units_count: createdUnitsCount,
+      created_units: createdUnitNames,
       initial_stock_items_count: initialStockItemsCount,
       total_initial_stock_quantity: totalInitialStockQty,
       total_initial_stock_value: Math.round(totalInitialStockVal),

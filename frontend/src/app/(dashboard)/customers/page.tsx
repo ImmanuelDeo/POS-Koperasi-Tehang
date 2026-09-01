@@ -35,6 +35,7 @@ import type { Customer } from '@/lib/types';
 import { dialCodeFor, parsePhone } from '@/lib/phone';
 import { useI18n } from '@/hooks/useI18n';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
+import { useConfirm } from '@/hooks/use-confirm';
 
 interface CsvValidationRow {
   row_number: number;
@@ -75,6 +76,7 @@ export default function CustomersPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const filter = searchParams.get('filter');
+  const { confirm, ConfirmDialog } = useConfirm();
 
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [, setLoading] = useState(true);
@@ -108,9 +110,10 @@ export default function CustomersPage() {
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [downloadingExcel, setDownloadingExcel] = useState(false);
 
-  // CSV Import Modal State
+  // CSV / Excel Import Modal State
   const [showImportModal, setShowImportModal] = useState(false);
   const [csvContent, setCsvContent] = useState<string>('');
+  const [csvBase64, setCsvBase64] = useState<string>('');
   const [csvFileName, setCsvFileName] = useState<string>('');
   const [validatingCsv, setValidatingCsv] = useState(false);
   const [importingCsv, setImportingCsv] = useState(false);
@@ -320,8 +323,13 @@ export default function CustomersPage() {
   };
 
   const handleDeleteCustomer = async (c: Customer) => {
-    const confirmed = window.confirm(
-      `Apakah Anda yakin ingin menghapus data "${c.name}"?\n\nJika member ini telah memiliki riwayat transaksi atau bon potongan gaji, akun akan dinonaktifkan (arsip) agar pembukuan keuangan tetap valid.`
+    const confirmed = await confirm(
+      `Apakah Anda yakin ingin menghapus data "${c.name}"?\n\nJika member ini telah memiliki riwayat transaksi atau bon potongan gaji, akun akan dinonaktifkan (arsip) agar pembukuan keuangan tetap valid.`,
+      {
+        title: 'Hapus Data Anggota',
+        confirmLabel: 'Hapus Anggota',
+        destructive: true,
+      }
     );
     if (!confirmed) return;
 
@@ -381,7 +389,7 @@ export default function CustomersPage() {
     }
   };
 
-  // ── CSV Import Handlers ───────────────────────────────────────────────────
+  // ── CSV / Excel Import Handlers ─────────────────────────────────────────────
   const handleDownloadCsvTemplate = async () => {
     try {
       const res = await api.get('/members-csv/template', { responseType: 'blob' });
@@ -400,50 +408,92 @@ export default function CustomersPage() {
     }
   };
 
+  const handleDownloadXlsxTemplate = async () => {
+    try {
+      const res = await api.get('/members-csv/template-xlsx', { responseType: 'blob' });
+      const blob = new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = 'template-impor-member-koperasi.xlsx';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+      toast.success('Template Excel (.xlsx) anggota berhasil diunduh');
+    } catch {
+      toast.error('Gagal mengunduh template Excel');
+    }
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setCsvFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      const content = event.target?.result as string;
-      setCsvContent(content);
-      await validateCsvFile(content);
-    };
-    reader.readAsText(file);
+    setCsvContent('');
+    setCsvBase64('');
+
+    const isXlsx = file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.type.includes('spreadsheetml');
+    if (isXlsx) {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const arrayBuffer = event.target?.result as ArrayBuffer;
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+        setCsvBase64(base64);
+        await validateFilePayload({ xlsx_base64: base64 });
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const content = event.target?.result as string;
+        setCsvContent(content);
+        await validateFilePayload({ csv: content });
+      };
+      reader.readAsText(file);
+    }
   };
 
-  const validateCsvFile = async (content: string) => {
+  const validateFilePayload = async (payload: { csv?: string; xlsx_base64?: string }) => {
     setValidatingCsv(true);
     setCsvValidationResult(null);
     try {
-      const { data } = await api.post('/members-csv/preview', { csv: content });
+      const { data } = await api.post('/members-csv/preview', payload);
       setCsvValidationResult(data);
       if (!data.valid) {
-        toast.error(`Ditemukan ${data.error_count} kesalahan dalam format CSV`);
+        toast.error(`Ditemukan ${data.error_count} kesalahan dalam format file`);
       } else {
         toast.success(`${data.valid_count} data member siap diimpor`);
       }
     } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Gagal memvalidasi konten CSV');
+      toast.error(err.response?.data?.error || 'Gagal memvalidasi konten file');
     } finally {
       setValidatingCsv(false);
     }
   };
 
   const handleExecuteImport = async () => {
-    if (!csvContent || !csvValidationResult?.valid) return;
+    if ((!csvContent && !csvBase64) || !csvValidationResult?.valid) return;
     setImportingCsv(true);
     try {
-      const { data } = await api.post('/members-csv/import', { csv: csvContent });
+      const payload = csvBase64 ? { xlsx_base64: csvBase64 } : { csv: csvContent };
+      const { data } = await api.post('/members-csv/import', payload);
       toast.success(data.message || 'Data member berhasil diimpor!');
       setShowImportModal(false);
       setCsvContent('');
+      setCsvBase64('');
       setCsvFileName('');
       setCsvValidationResult(null);
       fetchCustomers();
     } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Gagal mengimpor data member dari CSV');
+      toast.error(err.response?.data?.error || 'Gagal mengimpor data member dari file');
     } finally {
       setImportingCsv(false);
     }
@@ -690,9 +740,9 @@ export default function CustomersPage() {
                   <FileSpreadsheet size={20} />
                 </div>
                 <div>
-                  <h2 className="text-base font-bold text-gray-900">Import Anggota dari File CSV</h2>
+                  <h2 className="text-base font-bold text-gray-900">Impor Anggota dari File Excel (.xlsx) / CSV</h2>
                   <p className="text-xs text-gray-500">
-                    Unggah daftar karyawan/member koperasi secara massal (batch)
+                    Unggah daftar karyawan/member koperasi secara massal (batch) dengan aman
                   </p>
                 </div>
               </div>
@@ -706,32 +756,32 @@ export default function CustomersPage() {
 
             {/* Modal Body */}
             <div className="flex-1 overflow-y-auto py-4 space-y-4">
-              {/* File Dropzone */}
+              {/* Dropzone */}
               <div
                 onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-emerald-300 bg-emerald-50/40 hover:bg-emerald-50/80 rounded-2xl p-6 text-center cursor-pointer transition-colors"
+                className="border-2 border-dashed border-gray-300 hover:border-emerald-500 rounded-2xl p-6 text-center cursor-pointer transition-colors bg-gray-50/50 hover:bg-emerald-50/20"
               >
-                <Upload size={28} className="mx-auto text-emerald-600 mb-2" />
-                <p className="text-xs font-bold text-gray-800">
-                  {csvFileName ? `File Terpilih: ${csvFileName}` : 'Klik untuk memilih file CSV anggota'}
-                </p>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Mendukung separator koma (,) atau titik-koma (;)
-                </p>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".csv,text/csv"
-                  onChange={handleFileSelect}
+                  accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                   className="hidden"
+                  onChange={handleFileSelect}
                 />
+                <Upload size={28} className="mx-auto text-emerald-600 mb-2" />
+                <p className="text-sm font-semibold text-gray-800">
+                  {csvFileName ? csvFileName : 'Pilih file Excel (.xlsx) atau CSV (.csv)'}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">
+                  Format teks pada NIK, NIK Karyawan, dan No HP terlindungi otomatis dalam file Excel
+                </p>
               </div>
 
               {/* Validation Status */}
               {validatingCsv && (
-                <div className="flex items-center justify-center gap-2 py-4 text-xs text-gray-500">
+                <div className="flex items-center justify-center gap-2 py-4 text-xs text-gray-500 font-medium">
                   <RefreshCw size={16} className="animate-spin text-emerald-600" />
-                  <span>Memeriksa format data CSV...</span>
+                  <span>Memeriksa format data file...</span>
                 </div>
               )}
 
@@ -808,18 +858,29 @@ export default function CustomersPage() {
             </div>
 
             {/* Modal Footer */}
-            <div className="pt-3 border-t border-gray-100 flex items-center justify-between gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={handleDownloadCsvTemplate}
-                className="text-xs"
-              >
-                <Download size={13} className="mr-1 text-gray-500" /> Unduh Template CSV
-              </Button>
+            <div className="pt-3 border-t border-gray-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadXlsxTemplate}
+                  className="text-xs font-semibold bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100"
+                >
+                  <Download size={13} className="mr-1 text-emerald-700" /> Template Excel (.xlsx) [Disarankan]
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadCsvTemplate}
+                  className="text-xs"
+                >
+                  <Download size={13} className="mr-1 text-gray-500" /> Template CSV (.csv)
+                </Button>
+              </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center justify-end gap-2">
                 <Button
                   type="button"
                   variant="outline"
@@ -1215,6 +1276,8 @@ export default function CustomersPage() {
           </div>
         </div>
       )}
+
+      {ConfirmDialog}
     </div>
   );
 }

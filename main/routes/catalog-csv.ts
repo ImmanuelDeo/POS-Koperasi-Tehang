@@ -3,7 +3,10 @@ import { getDatabase } from '../db';
 import { AuthenticatedRequest } from '../middleware/auth';
 import {
   generateCatalogCsvTemplate,
-  validateCatalogCsv,
+  generateCatalogXlsxTemplate,
+  parseRfc4180Csv,
+  parseXlsxBuffer,
+  validateCatalogGrid,
   executeCatalogImport,
 } from '../services/catalog-csv';
 
@@ -22,20 +25,45 @@ router.get('/template', (req: AuthenticatedRequest, res: Response) => {
   }
 });
 
-// ── POST /api/catalog-csv/preview ────────────────────────────────────────────
-// Memory-only validation & preview of CSV content without modifying database
-router.post('/preview', (req: AuthenticatedRequest, res: Response) => {
+// ── GET /api/catalog-csv/template-xlsx ────────────────────────────────────────
+// Download standard XLSX Excel catalog template with explicit text formatting
+router.get('/template-xlsx', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { csv } = req.body;
+    const buffer = await generateCatalogXlsxTemplate();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="katalog-produk-koperasi-template.xlsx"');
+    return res.status(200).send(buffer);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Gagal membuat template Excel' });
+  }
+});
 
-    if (!csv || typeof csv !== 'string' || csv.trim() === '') {
-      return res.status(400).json({ error: 'Konten CSV tidak boleh kosong' });
+// Helper to extract grid from request payload (csv string or xlsx_base64)
+async function extractGridFromPayload(body: any): Promise<string[][]> {
+  const { csv, xlsx_base64 } = body || {};
+  if (xlsx_base64 && typeof xlsx_base64 === 'string') {
+    const buffer = Buffer.from(xlsx_base64, 'base64');
+    return await parseXlsxBuffer(buffer);
+  }
+  if (csv && typeof csv === 'string') {
+    return parseRfc4180Csv(csv);
+  }
+  return [];
+}
+
+// ── POST /api/catalog-csv/preview ────────────────────────────────────────────
+// Memory-only validation & preview of CSV/XLSX content without modifying database
+router.post('/preview', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const grid = await extractGridFromPayload(req.body);
+
+    if (!grid || grid.length === 0) {
+      return res.status(400).json({ error: 'Konten file CSV/Excel tidak boleh kosong' });
     }
 
     const db = getDatabase();
-    const validationResult = validateCatalogCsv(db, csv);
+    const validationResult = validateCatalogGrid(db, grid);
 
-    // Limit browser payload to max 50 preview rows and max 50 errors
     return res.status(200).json({
       ...validationResult,
       rows: validationResult.rows.slice(0, 50),
@@ -44,26 +72,26 @@ router.post('/preview', (req: AuthenticatedRequest, res: Response) => {
       errors_limited: validationResult.errors.length > 50,
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message || 'Gagal memproses validasi CSV' });
+    return res.status(500).json({ error: error.message || 'Gagal memproses validasi file' });
   }
 });
 
 // ── POST /api/catalog-csv/import ─────────────────────────────────────────────
-// Atomic execution of catalog import + stock movements ledger
-router.post('/import', (req: AuthenticatedRequest, res: Response) => {
+// Atomic execution of catalog import + stock movements ledger (All-or-Nothing)
+router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { csv } = req.body;
+    const grid = await extractGridFromPayload(req.body);
 
-    if (!csv || typeof csv !== 'string' || csv.trim() === '') {
-      return res.status(400).json({ error: 'Konten CSV tidak boleh kosong' });
+    if (!grid || grid.length === 0) {
+      return res.status(400).json({ error: 'Konten file CSV/Excel tidak boleh kosong' });
     }
 
     const db = getDatabase();
-    const validationResult = validateCatalogCsv(db, csv);
+    const validationResult = validateCatalogGrid(db, grid);
 
     if (!validationResult.valid) {
       return res.status(422).json({
-        error: 'Terdapat kesalahan validasi pada file CSV. Impor dibatalkan.',
+        error: 'Terdapat kesalahan validasi pada file. Impor dibatalkan secara penuh (All-or-Nothing).',
         validation: validationResult,
       });
     }
@@ -78,7 +106,7 @@ router.post('/import', (req: AuthenticatedRequest, res: Response) => {
     const importResult = executeCatalogImport(db, validationResult.rows, userId);
 
     return res.status(201).json({
-      message: `Berhasil mengimpor ${importResult.created_products_count} produk dan ${importResult.created_categories_count} kategori baru`,
+      message: `Berhasil mengimpor ${importResult.created_products_count} produk, ${importResult.created_categories_count} kategori baru, dan ${importResult.created_units_count} satuan baru.`,
       result: importResult,
     });
   } catch (error: any) {

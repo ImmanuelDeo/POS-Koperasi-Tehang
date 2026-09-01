@@ -125,7 +125,7 @@ export default function OrdersPage() {
   // Add Item modal states
   const [products, setProducts] = useState<Product[]>([]);
   const [productSearch, setProductSearch] = useState('');
-  const [selectedItems, setSelectedItems] = useState<{ product_id: number; product_name: string; quantity: number; special_instructions: string }[]>([]);
+  const [selectedItems, setSelectedItems] = useState<{ product_id: string | number; product_name: string; quantity: number; special_instructions: string }[]>([]);
   const [addingItems, setAddingItems] = useState(false);
 
   // Link Customer states
@@ -497,9 +497,17 @@ export default function OrdersPage() {
     if (tabFilter === 'active' && !isOrderActive(order)) return false;
     if (tabFilter === 'unpaid' && !(order.bill && order.bill.payment_status !== 'paid')) return false;
 
-    // Search by order number
-    if (filters.search && !order.order_number.toLowerCase().includes(filters.search.toLowerCase())) {
-      return false;
+    // Search filter (order number, customer name, nik, member_no, phone)
+    if (filters.search) {
+      const q = filters.search.toLowerCase().trim();
+      const matchNum = order.order_number?.toLowerCase().includes(q);
+      const matchCust = (order.customer as any)?.name?.toLowerCase().includes(q);
+      const matchNik = (order.customer as any)?.nik?.toLowerCase().includes(q);
+      const matchMbr = (order.customer as any)?.member_no?.toLowerCase().includes(q);
+      const matchPhone = (order.customer as any)?.phone?.toLowerCase().includes(q);
+      if (!matchNum && !matchCust && !matchNik && !matchMbr && !matchPhone) {
+        return false;
+      }
     }
     // Filter by table
     if (filters.table && String(order.table_id) !== filters.table) {
@@ -852,16 +860,16 @@ export default function OrdersPage() {
     });
   };
 
-  const handleRemoveFromSelection = (productId: number) => {
+  const handleRemoveFromSelection = (productId: string | number) => {
     setSelectedItems(prev => prev.filter(i => i.product_id !== productId));
   };
 
-  const handleUpdateSelectionQty = (productId: number, quantity: number) => {
+  const handleUpdateSelectionQty = (productId: string | number, quantity: number) => {
     if (quantity < 1) return;
     setSelectedItems(prev => prev.map(i => i.product_id === productId ? { ...i, quantity } : i));
   };
 
-  const handleUpdateSelectionNotes = (productId: number, notes: string) => {
+  const handleUpdateSelectionNotes = (productId: string | number, notes: string) => {
     setSelectedItems(prev => prev.map(i => i.product_id === productId ? { ...i, special_instructions: notes } : i));
   };
 

@@ -93,9 +93,19 @@ router.get('/', (req: Request, res: Response) => {
 
       query += ' AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR c.member_no LIKE ? OR c.employee_id LIKE ? OR (c.nik IS NOT NULL AND c.nik LIKE ?))';
       params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, nikPattern);
-    }
 
-    query += ' ORDER BY c.name';
+      query += ` ORDER BY
+        CASE
+          WHEN LOWER(TRIM(c.name)) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(c.nik, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(c.member_no, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(c.employee_id, ''))) = LOWER(TRIM(?)) THEN 0
+          WHEN LOWER(c.name) LIKE LOWER(? || '%') OR LOWER(COALESCE(c.member_no, '')) LIKE LOWER(? || '%') OR LOWER(COALESCE(c.employee_id, '')) LIKE LOWER(? || '%') THEN 1
+          WHEN LOWER(c.name) LIKE '%' || LOWER(?) || '%' THEN 2
+          ELSE 3
+        END,
+        c.name ASC`;
+      params.push(rawSearch, rawSearch, rawSearch, rawSearch, rawSearch, rawSearch, rawSearch, rawSearch);
+    } else {
+      query += ' ORDER BY c.name ASC';
+    }
 
     if (req.query.per_page) {
       query += ` LIMIT ${parseInt(req.query.per_page as string)}`;
@@ -126,8 +136,21 @@ router.get('/search', (req: Request, res: Response) => {
       SELECT * FROM customers
       WHERE (is_active IS NULL OR is_active = 1)
         AND (phone LIKE ? OR name LIKE ? OR email LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR (nik IS NOT NULL AND nik LIKE ?))
-      ORDER BY name LIMIT 30
-    `).all(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, nikTerm) as any[];
+      ORDER BY
+        CASE
+          WHEN LOWER(TRIM(name)) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(nik, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(member_no, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(employee_id, ''))) = LOWER(TRIM(?)) THEN 0
+          WHEN LOWER(name) LIKE LOWER(? || '%') OR LOWER(COALESCE(member_no, '')) LIKE LOWER(? || '%') OR LOWER(COALESCE(employee_id, '')) LIKE LOWER(? || '%') THEN 1
+          WHEN LOWER(name) LIKE '%' || LOWER(?) || '%' THEN 2
+          ELSE 3
+        END,
+        name ASC
+      LIMIT 30
+    `).all(
+      searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, nikTerm,
+      rawQ, rawQ, rawQ, rawQ,
+      rawQ, rawQ, rawQ,
+      rawQ
+    ) as any[];
 
     const userRole = (req as any).user?.role;
     res.json({ customers: customers.map((c) => formatCustomerResponse(c, userRole)) });

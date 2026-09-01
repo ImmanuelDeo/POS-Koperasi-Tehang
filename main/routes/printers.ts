@@ -8,17 +8,24 @@ import {
   dispatchPrint,
   printReceiptById,
   getPrinterHardwareStatus,
+  getPrintQueueSummary,
+  getPrintQueueJobs,
+  retryAllPrintJobs,
+  retrySinglePrintJob,
+  cancelPrintJob,
 } from '../printers/thermal';
 import { createAuditLog } from '../services/audit';
 import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 
-// GET /api/printers/status — get real-time physical connection status of default printer
-router.get('/status', (_req: Request, res: Response) => {
+// GET /api/printers/status — get cached physical connection status of default printer
+router.get('/status', (req: Request, res: Response) => {
   try {
-    const status = getPrinterHardwareStatus();
-    res.json(status);
+    const forceRefresh = req.query.force === 'true' || req.query.refresh === '1';
+    const status = getPrinterHardwareStatus(undefined, forceRefresh);
+    const queueSummary = getPrintQueueSummary();
+    res.json({ ...status, queue: queueSummary });
   } catch (error: any) {
     res.status(500).json({
       isConfigured: false,
@@ -26,7 +33,86 @@ router.get('/status', (_req: Request, res: Response) => {
       status: 'error',
       message: error.message,
       printer: null,
+      queue: { total: 0, pending: 0, printing: 0, completed: 0, failed: 0, cancelled: 0 },
     });
+  }
+});
+
+// GET /api/printers/queue — get list and summary of print jobs (sanitized, no raw receipt_data)
+router.get('/queue', (_req: Request, res: Response) => {
+  try {
+    const summary = getPrintQueueSummary();
+    const jobs = getPrintQueueJobs(50);
+    res.json({ summary, jobs });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/printers/queue/retry-all — manual retry all failed and pending jobs
+router.post('/queue/retry-all', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const db = getDatabase();
+    const result = await retryAllPrintJobs();
+    createAuditLog(db, {
+      actor_user_id: req.user?.id,
+      actor_role: req.user?.role,
+      action: 'printer.queue.retry_all',
+      target_type: 'printer_queue',
+      target_id: 'all',
+      details: { queued_count: result.queued },
+    });
+    res.json({
+      success: true,
+      message: `${result.queued} dokumen berhasil dimasukkan kembali ke antrean cetak.`,
+      queued: result.queued,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/printers/queue/:id/retry — manual retry specific failed/pending print job
+router.post('/queue/:id/retry', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const db = getDatabase();
+    const result = await retrySinglePrintJob(req.params.id);
+    if (result.success) {
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'printer.queue.retry_job',
+        target_type: 'print_job',
+        target_id: req.params.id,
+        details: { job_id: req.params.id },
+      });
+      return res.json(result);
+    }
+    return res.status(400).json(result);
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// DELETE /api/printers/queue/:id — cancel a queued print job
+router.delete('/queue/:id', (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const db = getDatabase();
+    const result = cancelPrintJob(req.params.id);
+    if (result.success) {
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'printer.queue.job_cancelled',
+        target_type: 'print_job',
+        target_id: req.params.id,
+        details: { job_id: req.params.id },
+      });
+      return res.json(result);
+    }
+    return res.status(400).json(result);
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
@@ -44,8 +130,8 @@ router.get('/', (_req: Request, res: Response) => {
 // GET /api/printers/detect — detect connected USB/network/bluetooth printers from OS
 router.get('/detect', async (_req: Request, res: Response) => {
   try {
-    const printers = await detectConnectedPrinters();
-    console.log('[Printer] Detected printers from OS:', printers.length);
+    const printers = await detectConnectedPrinters(true);
+    console.log('[Printer] Detected printers from OS (forced scan):', printers.length);
     res.json({ printers });
   } catch (error: any) {
     console.error('[Printer] Detection error:', error);
@@ -463,7 +549,7 @@ router.post('/test-default', async (req: AuthenticatedRequest, res: Response) =>
 // POST /api/printers/auto-connect — auto scan OS and register/connect thermal printer
 router.post('/auto-connect', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const detected = await detectConnectedPrinters();
+    const detected = await detectConnectedPrinters(true);
     const db = getDatabase();
 
     if (!detected || detected.length === 0) {

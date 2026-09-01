@@ -20,6 +20,7 @@ import PrepaidCheckoutModal, {
   type PrepaidDiscount,
 } from '@/components/pos/PrepaidCheckoutModal';
 import PosTopbar from '@/components/pos/PosTopbar';
+import { ProductBarcodeSelectModal } from '@/components/pos/ProductBarcodeSelectModal';
 import { usePrinterStore } from '@/hooks/usePrinter';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useI18n } from '@/hooks/useI18n';
@@ -41,6 +42,15 @@ export default function POSPage() {
   const [showMemberSelector, setShowMemberSelector] = useState(false);
   const [showPrepaidCheckout, setShowPrepaidCheckout] = useState(false);
   const [showAdminExitModal, setShowAdminExitModal] = useState(false);
+  const [barcodeDisambiguation, setBarcodeDisambiguation] = useState<{
+    isOpen: boolean;
+    barcode: string;
+    products: Product[];
+  }>({
+    isOpen: false,
+    barcode: '',
+    products: [],
+  });
 
   const currency = getCurrencySymbol(
     currentTenant?.currency || 'IDR',
@@ -92,6 +102,17 @@ export default function POSPage() {
 
     try {
       const res = await api.get(`/products/lookup-barcode?code=${encodeURIComponent(trimmed)}`);
+
+      // If multiple products share the same barcode
+      if (res.data?.multiple && Array.isArray(res.data?.products) && res.data.products.length > 1) {
+        setBarcodeDisambiguation({
+          isOpen: true,
+          barcode: trimmed,
+          products: res.data.products,
+        });
+        return;
+      }
+
       const product = res.data?.product;
 
       if (product) {
@@ -99,6 +120,8 @@ export default function POSPage() {
           toast.error('Produk tidak aktif.');
           return;
         }
+        // If disambiguation modal was open, close it since new barcode was scanned
+        setBarcodeDisambiguation({ isOpen: false, barcode: '', products: [] });
         const addRes = cart.addItem(product, 1);
         if (!addRes.success) {
           toast.error(addRes.message || `Stok '${product.name}' sudah mencapai batas maksimal.`);
@@ -111,8 +134,6 @@ export default function POSPage() {
     } catch (err: any) {
       if (err.response?.status === 404) {
         toast.error('Produk belum terdaftar.');
-      } else if (err.response?.status === 409) {
-        toast.error('Barcode bermasalah. Hubungi admin.');
       } else if (err.response?.status === 422) {
         toast.error('Produk tidak aktif.');
       } else {
@@ -181,8 +202,10 @@ export default function POSPage() {
         special_instructions: notes || cart.orderNotes || undefined,
         items: cart.items.map((item) => ({
           product_id: item.product.id,
+          addon_group_id: (item.product as any).addon_group_id || undefined,
+          is_bundle: Boolean((item.product as any).is_bundle),
           quantity: item.quantity,
-          addons: null,
+          addons: item.addons || null,
           special_instructions: item.special_instructions || null,
         })),
       });
@@ -317,6 +340,20 @@ export default function POSPage() {
       <AdminExitModal
         isOpen={showAdminExitModal}
         onClose={() => setShowAdminExitModal(false)}
+      />
+
+      {/* Barcode Multi-Product Disambiguation Modal */}
+      <ProductBarcodeSelectModal
+        isOpen={barcodeDisambiguation.isOpen}
+        barcode={barcodeDisambiguation.barcode}
+        products={barcodeDisambiguation.products}
+        onSelect={(selectedProduct) => {
+          handleProductClick(selectedProduct);
+          setBarcodeDisambiguation({ isOpen: false, barcode: '', products: [] });
+        }}
+        onCancel={() => {
+          setBarcodeDisambiguation({ isOpen: false, barcode: '', products: [] });
+        }}
       />
     </>
   );

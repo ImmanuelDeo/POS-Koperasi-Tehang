@@ -16,3 +16,7 @@ release/
 /assets/master_icon.jpg
 /assets/prompt-2_flat-icon.jpg
 scratch/
+*.zip
+*.xlsx
+*.pdf
+*.docx

@@ -21,6 +21,7 @@ import toast from 'react-hot-toast';
 import { Button } from '@/components/ui/button';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
+import { ProductBarcodeSelectModal } from '@/components/pos/ProductBarcodeSelectModal';
 import type { Product } from '@/lib/types';
 
 export type BulkMode = 'receive' | 'adjust' | 'stock_opname';
@@ -74,6 +75,17 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
     actual_stock: number;
   } | null>(null);
 
+  // Barcode disambiguation modal state
+  const [barcodeDisambiguation, setBarcodeDisambiguation] = useState<{
+    isOpen: boolean;
+    barcode: string;
+    products: Product[];
+  }>({
+    isOpen: false,
+    barcode: '',
+    products: [],
+  });
+
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rowInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -115,6 +127,17 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
       const { data } = await api.get('/products/lookup-barcode', {
         params: { code: cleanCode },
       });
+
+      // Multi-product match disambiguation
+      if (data?.multiple && Array.isArray(data?.products) && data.products.length > 1) {
+        setBarcodeDisambiguation({
+          isOpen: true,
+          barcode: cleanCode,
+          products: data.products,
+        });
+        return;
+      }
+
       const matchedProd = data.product;
 
       if (!matchedProd) {
@@ -122,6 +145,7 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
         return;
       }
 
+      setBarcodeDisambiguation({ isOpen: false, barcode: '', products: [] });
       addProductToDraft(matchedProd);
     } catch (err: any) {
       const msg = err.response?.data?.error || `Gagal mencari barcode "${cleanCode}".`;
@@ -183,11 +207,11 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
     }, 150);
   };
 
-  // Search input handler - server-side search (min 2 chars)
+  // Search input handler - server-side search (min 1 char)
   const handleSearchChange = async (query: string) => {
     setSearchQuery(query);
     const q = query.trim();
-    if (!q || q.length < 2) {
+    if (!q || q.length < 1) {
       setSearchResults([]);
       return;
     }
@@ -948,6 +972,20 @@ export default function BulkStockWorkspace({ products, onSuccess }: BulkStockWor
           </div>
         </div>
       )}
+
+      {/* Barcode Multi-Product Disambiguation Modal */}
+      <ProductBarcodeSelectModal
+        isOpen={barcodeDisambiguation.isOpen}
+        barcode={barcodeDisambiguation.barcode}
+        products={barcodeDisambiguation.products}
+        onSelect={(selectedProduct) => {
+          addProductToDraft(selectedProduct);
+          setBarcodeDisambiguation({ isOpen: false, barcode: '', products: [] });
+        }}
+        onCancel={() => {
+          setBarcodeDisambiguation({ isOpen: false, barcode: '', products: [] });
+        }}
+      />
     </div>
   );
 }

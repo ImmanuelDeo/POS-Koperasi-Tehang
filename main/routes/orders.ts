@@ -86,7 +86,24 @@ router.get('/', (req: Request, res: Response) => {
     const totalPages = Math.ceil(totalCount / pageSize) || 1;
 
     // Fetch paginated orders
-    const selectSql = `
+    const rawSearch = search && search.trim() ? search.trim() : '';
+    const selectSql = rawSearch
+      ? `
+      SELECT o.*
+      FROM orders o
+      LEFT JOIN customers c ON o.customer_id = c.id
+      ${whereClause}
+      ORDER BY
+        CASE
+          WHEN LOWER(TRIM(o.order_number)) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(c.name, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(c.nik, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(c.member_no, ''))) = LOWER(TRIM(?)) THEN 0
+          WHEN LOWER(o.order_number) LIKE LOWER(? || '%') OR LOWER(COALESCE(c.name, '')) LIKE LOWER(? || '%') OR LOWER(COALESCE(c.member_no, '')) LIKE LOWER(? || '%') THEN 1
+          WHEN LOWER(o.order_number) LIKE '%' || LOWER(?) || '%' OR LOWER(COALESCE(c.name, '')) LIKE '%' || LOWER(?) || '%' THEN 2
+          ELSE 3
+        END,
+        o.created_at DESC
+      LIMIT ? OFFSET ?
+    `
+      : `
       SELECT o.*
       FROM orders o
       LEFT JOIN customers c ON o.customer_id = c.id
@@ -94,7 +111,12 @@ router.get('/', (req: Request, res: Response) => {
       ORDER BY o.created_at DESC
       LIMIT ? OFFSET ?
     `;
-    const orders = db.prepare(selectSql).all(...params, pageSize, offset) as any[];
+
+    const selectParams = rawSearch
+      ? [...params, rawSearch, rawSearch, rawSearch, rawSearch, rawSearch, rawSearch, rawSearch, rawSearch, rawSearch, pageSize, offset]
+      : [...params, pageSize, offset];
+
+    const orders = db.prepare(selectSql).all(...selectParams) as any[];
 
     // Load related data
     const ordersWithRelations = orders.map((order: any) => {
@@ -440,22 +462,46 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
     const createOrderTx = db.transaction(() => {
       // 1. Aggregate requested quantities per product to validate against available stock
       const aggregatedQtyMap: Record<string, number> = {};
+
       for (const item of items) {
-        if (!item.product_id) {
-          throw new Error('Setiap item wajib memiliki product_id');
+        if (!item.product_id && !item.addon_group_id) {
+          throw new Error('Setiap item wajib memiliki product_id atau addon_group_id');
         }
         const q = Number(item.quantity);
         if (isNaN(q) || !Number.isFinite(q) || q <= 0) {
           throw new Error('Jumlah barang harus berupa angka positif lebih dari 0');
         }
-        aggregatedQtyMap[item.product_id] = (aggregatedQtyMap[item.product_id] || 0) + q;
+
+        const isBundle = item.is_bundle || Boolean(item.addon_group_id) || String(item.product_id).startsWith('bundle_');
+        if (isBundle) {
+          const bundleId = item.addon_group_id || String(item.product_id).replace(/^bundle_/, '');
+          const bundle = db.prepare('SELECT * FROM addon_groups WHERE id = ?').get(bundleId) as any;
+          if (!bundle) {
+            throw new Error(`Paket bundling dengan ID '${bundleId}' tidak ditemukan`);
+          }
+          const components = db.prepare(`
+            SELECT a.*, p.name as product_name, p.track_inventory, p.stock_quantity, p.allow_decimal
+            FROM addons a
+            LEFT JOIN products p ON a.product_id = p.id
+            WHERE a.addon_group_id = ? AND (a.is_active IS NULL OR a.is_active = 1)
+          `).all(bundleId) as any[];
+
+          for (const comp of components) {
+            if (comp.product_id) {
+              const compReqQty = Math.max(0.01, Number(comp.quantity || 1)) * q;
+              aggregatedQtyMap[comp.product_id] = (aggregatedQtyMap[comp.product_id] || 0) + compReqQty;
+            }
+          }
+        } else {
+          aggregatedQtyMap[item.product_id] = (aggregatedQtyMap[item.product_id] || 0) + q;
+        }
       }
 
       // 2. Pre-validate stock availability and decimal rules
       for (const [prodId, totalRequestedQty] of Object.entries(aggregatedQtyMap)) {
         const prod = db.prepare('SELECT id, name, stock_quantity, track_inventory, allow_decimal, price FROM products WHERE id = ?').get(prodId) as any;
         if (!prod) {
-          throw new Error(`Produk dengan ID ${prodId} tidak ditemukan`);
+          throw new Error(`Produk dengan ID '${prodId}' tidak ditemukan`);
         }
 
         // Validate decimal support
@@ -465,7 +511,7 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
 
         // Validate stock
         if (prod.track_inventory === 1 && Number(prod.stock_quantity || 0) < totalRequestedQty) {
-          throw new Error(`Stok tidak mencukupi untuk '${prod.name}'. Stok tersedia: ${prod.stock_quantity}, diminta: ${totalRequestedQty}`);
+          throw new Error(`Stok tidak mencukupi untuk '${prod.name}'. Stok tersedia: ${prod.stock_quantity}, dibutuhkan: ${totalRequestedQty}`);
         }
       }
 
@@ -493,54 +539,131 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
       `);
 
       for (const item of items) {
-        const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
-        const unitPrice = parseFloat(product.price);
+        const isBundle = item.is_bundle || Boolean(item.addon_group_id) || String(item.product_id).startsWith('bundle_');
         const quantity = Number(item.quantity);
         const itemDiscount = item.discount_amount || 0;
 
-        let itemSubtotal = unitPrice * quantity;
-        if (item.addons) {
-          for (const addon of item.addons) {
-            itemSubtotal += (addon.price || 0) * quantity;
+        if (isBundle) {
+          const bundleId = item.addon_group_id || String(item.product_id).replace(/^bundle_/, '');
+          const bundle = db.prepare('SELECT * FROM addon_groups WHERE id = ?').get(bundleId) as any;
+          if (!bundle) {
+            throw new Error(`Paket bundling dengan ID '${bundleId}' tidak ditemukan`);
           }
-        }
-        itemSubtotal = Math.max(0, itemSubtotal - itemDiscount);
 
-        const customer = customer_id ? db.prepare('SELECT * FROM customers WHERE id = ?').get(customer_id) as any : null;
-        const taxResult = calculateItemTax(tenantInfo, product, itemSubtotal, customer);
+          const components = db.prepare(`
+            SELECT a.*, p.name as product_name, p.unit as product_unit, p.price as product_unit_price, p.track_inventory, p.stock_quantity
+            FROM addons a
+            LEFT JOIN products p ON a.product_id = p.id
+            WHERE a.addon_group_id = ? AND (a.is_active IS NULL OR a.is_active = 1)
+          `).all(bundleId) as any[];
 
-        totalTax += taxResult.tax_amount;
-        if (taxResult.tax_breakdown) {
-          allTaxBreakdowns.push(taxResult.tax_breakdown);
-        }
+          const unitPrice = Number(bundle.bundle_price || 0);
+          const itemSubtotal = Math.max(0, unitPrice * quantity - itemDiscount);
+          const itemTotal = itemSubtotal;
+          subtotal += itemSubtotal;
 
-        const itemTotal = itemSubtotal + taxResult.tax_amount;
-        subtotal += itemSubtotal;
+          // Store component snapshot in addons column for receipt printing & history
+          const componentsSnapshot = components.map((c) => ({
+            id: c.id,
+            product_id: c.product_id,
+            name: c.product_name || c.name,
+            quantity: Number(c.quantity || 1),
+            unit: c.product_unit || 'pcs',
+            price: Number(c.product_unit_price || c.price || 0),
+          }));
 
-        insertItem.run(
-          orderId, product.id, product.name, product.sku, unitPrice, quantity,
-          itemSubtotal, taxResult.tax_amount, JSON.stringify(taxResult.tax_breakdown),
-          product.tax_type, itemDiscount, itemTotal,
-          JSON.stringify(item.variant_selection || null),
-          JSON.stringify(item.modifier_selection || null),
-          JSON.stringify(item.addons || null),
-          item.special_instructions || null, now(), now()
-        );
+          insertItem.run(
+            orderId,
+            `bundle_${bundle.id}`,
+            `[PAKET] ${bundle.name}`,
+            `BUNDLE-${bundle.id.slice(0, 8)}`,
+            unitPrice,
+            quantity,
+            itemSubtotal,
+            0,
+            JSON.stringify([]),
+            'none',
+            itemDiscount,
+            itemTotal,
+            JSON.stringify(item.variant_selection || null),
+            JSON.stringify(item.modifier_selection || null),
+            JSON.stringify(componentsSnapshot),
+            item.special_instructions || null,
+            now(),
+            now()
+          );
 
-        // Deduct inventory atomically and create stock movement record
-        if (product.track_inventory === 1) {
-          const moveRes = executeStockMovement(db, {
-            productId: product.id,
-            movementType: 'sale',
-            quantityChange: -quantity,
-            referenceType: 'order',
-            referenceId: orderNumber,
-            notes: `Penjualan POS #${orderNumber}`,
-            createdBy: userId,
-          });
+          // Deduct inventory atomically for each component product
+          for (const comp of components) {
+            if (comp.product_id && comp.track_inventory === 1) {
+              const compQtyToDeduct = Number(comp.quantity || 1) * quantity;
+              const moveRes = executeStockMovement(db, {
+                productId: comp.product_id,
+                movementType: 'sale',
+                quantityChange: -compQtyToDeduct,
+                referenceType: 'bundle_sale',
+                referenceId: orderNumber,
+                notes: `Penjualan Komponen Paket '${bundle.name}' #${orderNumber} (${compQtyToDeduct} ${comp.product_unit || 'pcs'})`,
+                createdBy: userId,
+              });
 
-          if (!moveRes.success) {
-            throw new Error(`Gagal memotong stok untuk ${product.name}: ${moveRes.error}`);
+              if (!moveRes.success) {
+                throw new Error(`Gagal memotong stok komponen '${comp.product_name}' untuk paket '${bundle.name}': ${moveRes.error}`);
+              }
+            }
+          }
+        } else {
+          // Regular product item
+          const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
+          if (!product) {
+            throw new Error(`Produk dengan ID '${item.product_id}' tidak ditemukan`);
+          }
+          const unitPrice = parseFloat(product.price);
+
+          let itemSubtotal = unitPrice * quantity;
+          if (item.addons && Array.isArray(item.addons)) {
+            for (const addon of item.addons) {
+              itemSubtotal += (addon.price || 0) * quantity;
+            }
+          }
+          itemSubtotal = Math.max(0, itemSubtotal - itemDiscount);
+
+          const customer = customer_id ? db.prepare('SELECT * FROM customers WHERE id = ?').get(customer_id) as any : null;
+          const taxResult = calculateItemTax(tenantInfo, product, itemSubtotal, customer);
+
+          totalTax += taxResult.tax_amount;
+          if (taxResult.tax_breakdown) {
+            allTaxBreakdowns.push(taxResult.tax_breakdown);
+          }
+
+          const itemTotal = itemSubtotal + taxResult.tax_amount;
+          subtotal += itemSubtotal;
+
+          insertItem.run(
+            orderId, product.id, product.name, product.sku, unitPrice, quantity,
+            itemSubtotal, taxResult.tax_amount, JSON.stringify(taxResult.tax_breakdown),
+            product.tax_type, itemDiscount, itemTotal,
+            JSON.stringify(item.variant_selection || null),
+            JSON.stringify(item.modifier_selection || null),
+            JSON.stringify(item.addons || null),
+            item.special_instructions || null, now(), now()
+          );
+
+          // Deduct inventory atomically and create stock movement record
+          if (product.track_inventory === 1) {
+            const moveRes = executeStockMovement(db, {
+              productId: product.id,
+              movementType: 'sale',
+              quantityChange: -quantity,
+              referenceType: 'order',
+              referenceId: orderNumber,
+              notes: `Penjualan POS #${orderNumber}`,
+              createdBy: userId,
+            });
+
+            if (!moveRes.success) {
+              throw new Error(`Gagal memotong stok untuk ${product.name}: ${moveRes.error}`);
+            }
           }
         }
       }

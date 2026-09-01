@@ -65,32 +65,60 @@ export function useConfirm() {
     [],
   );
 
+  const cleanupBodyLock = useCallback(() => {
+    if (typeof document !== 'undefined') {
+      document.body.style.pointerEvents = '';
+      document.body.removeAttribute('data-scroll-locked');
+      // Restore focus to active window/viewport
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    }
+  }, []);
+
   const handleConfirm = useCallback(() => {
-    state?.resolve(true);
-    setState(null);
-  }, [state]);
+    const resolver = state?.resolve;
+    setState((prev) => (prev ? { ...prev, open: false } : null));
+    cleanupBodyLock();
+    setTimeout(() => {
+      resolver?.(true);
+      setState(null);
+      cleanupBodyLock();
+    }, 50);
+  }, [state, cleanupBodyLock]);
 
   const handleCancel = useCallback(() => {
-    state?.resolve(false);
-    setState(null);
-  }, [state]);
+    const resolver = state?.resolve;
+    setState((prev) => (prev ? { ...prev, open: false } : null));
+    cleanupBodyLock();
+    setTimeout(() => {
+      resolver?.(false);
+      setState(null);
+      cleanupBodyLock();
+    }, 50);
+  }, [state, cleanupBodyLock]);
 
   const ConfirmDialog: ReactNode = state ? (
-    <Dialog open={state.open} onOpenChange={(open) => !open && handleCancel()}>
+    <Dialog
+      open={state.open}
+      onOpenChange={(open) => {
+        if (!open) handleCancel();
+      }}
+    >
       <DialogContent className="sm:max-w-md" showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle>{state.title || 'Confirm'}</DialogTitle>
+          <DialogTitle>{state.title || 'Konfirmasi'}</DialogTitle>
           <DialogDescription>{state.message}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={handleCancel}>
-            Cancel
+            Batal
           </Button>
           <Button
             variant={state.destructive ? 'destructive' : 'default'}
             onClick={handleConfirm}
           >
-            {state.confirmLabel || 'Confirm'}
+            {state.confirmLabel || 'Ya, Lanjutkan'}
           </Button>
         </DialogFooter>
       </DialogContent>

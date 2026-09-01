@@ -4,10 +4,11 @@ import { useState, useEffect } from 'react';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';
-import { Plus, X, Edit, RotateCcw, Shield, Check } from 'lucide-react';
+import { Plus, X, Edit, RotateCcw, Shield, Check, Search, Trash2 } from 'lucide-react';
 import type { Staff } from '@/lib/types';
 import { useI18n } from '@/hooks/useI18n';
 import { useAuthStore } from '@/store/auth';
+import { useConfirm } from '@/hooks/use-confirm';
 
 const VALID_ROLES = ['owner', 'admin', 'manager', 'cashier', 'office_hr', 'office_inventory', 'waiter', 'chef'];
 
@@ -87,8 +88,10 @@ export default function StaffPage() {
   const { user, currentTenant } = useAuthStore();
   const currentRole = currentTenant?.role || user?.role || 'cashier';
   const canManagePermissions = ['owner', 'admin', 'manager'].includes(currentRole);
+  const { confirm, ConfirmDialog } = useConfirm();
 
   const [staff, setStaff] = useState<Staff[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -245,6 +248,29 @@ export default function StaffPage() {
     }
   };
 
+  const handleDeleteStaff = async (s: Staff) => {
+    if (String(s.id) === String(user?.id)) {
+      toast.error('Tidak dapat menghapus akun yang sedang Anda gunakan.');
+      return;
+    }
+    const confirmed = await confirm(
+      `Apakah Anda yakin ingin menghapus permanen akun staf "${s.name}"?`,
+      {
+        title: 'Hapus Akun Staf',
+        confirmLabel: 'Hapus Akun',
+        destructive: true,
+      }
+    );
+    if (!confirmed) return;
+    try {
+      await api.delete(`/staff/${s.id}`);
+      toast.success('Akun staf berhasil dihapus');
+      fetchStaff();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Gagal menghapus akun staf');
+    }
+  };
+
   const getRoleLabel = (role: string) => {
     const key = roleColorKey[role];
     if (key) {
@@ -256,11 +282,44 @@ export default function StaffPage() {
     return roleLabelFallback[role] || role;
   };
 
+  const filteredStaff = staff.filter((s) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase().trim();
+    return (
+      s.name?.toLowerCase().includes(q) ||
+      s.email?.toLowerCase().includes(q) ||
+      s.role?.toLowerCase().includes(q) ||
+      (getRoleLabel(s.role) || '').toLowerCase().includes(q)
+    );
+  });
+
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
         <h1 className="text-2xl font-bold text-gray-900">{t('staff.title')}</h1>
         <Button onClick={openAdd}><Plus size={16} className="mr-1" /> {t('staff.addButton')}</Button>
+      </div>
+
+      {/* ── Staff Search Bar ── */}
+      <div className="relative mb-6">
+        <Search size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Cari berdasarkan nama staf, email, atau jabatan..."
+          className="w-full pl-10 pr-10 py-2.5 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand/20 focus:border-brand outline-none text-sm"
+        />
+        {searchQuery && (
+          <button
+            type="button"
+            onClick={() => setSearchQuery('')}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"
+            title="Hapus pencarian"
+          >
+            <X size={14} />
+          </button>
+        )}
       </div>
 
       {/* Error state */}
@@ -300,7 +359,7 @@ export default function StaffPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {staff.map((s) => (
+          {filteredStaff.map((s) => (
             <div key={s.id} className={`bg-white rounded-xl p-5 border transition-all ${s.is_active ? 'border-gray-100 hover:shadow-md' : 'border-gray-200 opacity-60'}`}>
               <div className="flex justify-between items-start mb-3">
                 <div>
@@ -350,17 +409,32 @@ export default function StaffPage() {
                   variant="ghost"
                   size="sm"
                   onClick={() => toggleActive(s)}
-                  className={s.is_active ? 'text-red-500 hover:text-red-700 hover:bg-red-50' : 'text-green-500 hover:text-green-700 hover:bg-green-50'}
+                  className={s.is_active ? 'text-amber-600 hover:text-amber-700 hover:bg-amber-50' : 'text-green-600 hover:text-green-700 hover:bg-green-50'}
                 >
                   {s.is_active ? t('staff.deactivate') : t('staff.reactivate')}
                 </Button>
+                {canManagePermissions && s.role !== 'owner' && String(s.id) !== String(user?.id) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleDeleteStaff(s)}
+                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                    title="Hapus Akun Staf"
+                  >
+                    <Trash2 size={14} className="mr-1" /> Hapus
+                  </Button>
+                )}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {!loading && staff.length === 0 && !errorMsg && <p className="text-center text-gray-500 py-12">{t('staff.empty')}</p>}
+      {!loading && filteredStaff.length === 0 && !errorMsg && (
+        <p className="text-center text-gray-500 py-12">
+          {searchQuery ? `Tidak ada staf yang cocok dengan "${searchQuery}"` : t('staff.empty')}
+        </p>
+      )}
 
       {/* ── Add/Edit Staff Modal ──────────────────────────────────────────── */}
       {showForm && (
@@ -553,6 +627,8 @@ export default function StaffPage() {
           </div>
         </div>
       )}
+
+      {ConfirmDialog}
     </div>
   );
 }

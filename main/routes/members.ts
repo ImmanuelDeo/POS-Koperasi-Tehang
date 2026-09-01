@@ -50,9 +50,22 @@ router.get('/lookup', (req: AuthenticatedRequest, res: Response) => {
         FROM customers
         WHERE (is_active IS NULL OR is_active = 1)
           AND (name LIKE ? OR member_no LIKE ? OR employee_id LIKE ? OR phone LIKE ? OR (nik IS NOT NULL AND nik LIKE ?))
-        ORDER BY is_member DESC, name ASC
+        ORDER BY
+          is_member DESC,
+          CASE
+            WHEN LOWER(TRIM(name)) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(nik, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(member_no, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(employee_id, ''))) = LOWER(TRIM(?)) THEN 0
+            WHEN LOWER(name) LIKE LOWER(? || '%') OR LOWER(COALESCE(member_no, '')) LIKE LOWER(? || '%') OR LOWER(COALESCE(employee_id, '')) LIKE LOWER(? || '%') THEN 1
+            WHEN LOWER(name) LIKE '%' || LOWER(?) || '%' THEN 2
+            ELSE 3
+          END,
+          name ASC
         LIMIT 30
-      `).all(searchPattern, searchPattern, searchPattern, searchPattern, nikPattern) as any[];
+      `).all(
+        searchPattern, searchPattern, searchPattern, searchPattern, nikPattern,
+        rawQ, rawQ, rawQ, rawQ,
+        rawQ, rawQ, rawQ,
+        rawQ
+      ) as any[];
     }
 
     const userRole = req.user?.role;
@@ -142,7 +155,20 @@ router.get('/', (req: AuthenticatedRequest, res: Response) => {
     const countSql = query.replace('SELECT *', 'SELECT COUNT(*) as total');
     const totalCount = (db.prepare(countSql).get(...params) as any)?.total || 0;
 
-    query += ' ORDER BY name ASC';
+    const rawQ = q && String(q).trim().length > 0 ? String(q).trim() : '';
+    if (rawQ) {
+      query += ` ORDER BY
+        CASE
+          WHEN LOWER(TRIM(name)) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(nik, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(member_no, ''))) = LOWER(TRIM(?)) OR LOWER(TRIM(COALESCE(employee_id, ''))) = LOWER(TRIM(?)) THEN 0
+          WHEN LOWER(name) LIKE LOWER(? || '%') OR LOWER(COALESCE(member_no, '')) LIKE LOWER(? || '%') OR LOWER(COALESCE(employee_id, '')) LIKE LOWER(? || '%') THEN 1
+          WHEN LOWER(name) LIKE '%' || LOWER(?) || '%' THEN 2
+          ELSE 3
+        END,
+        name ASC`;
+      params.push(rawQ, rawQ, rawQ, rawQ, rawQ, rawQ, rawQ, rawQ);
+    } else {
+      query += ' ORDER BY name ASC';
+    }
 
     const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(String(per_page), 10) || 50));

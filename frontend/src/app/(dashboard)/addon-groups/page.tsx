@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/hooks/useI18n';
@@ -20,10 +20,29 @@ import {
   CheckCircle2,
   AlertCircle,
   Package,
+  Search,
+  Check,
+  ShoppingBag,
+  Store,
+  ArrowRight,
+  Barcode,
 } from 'lucide-react';
-import type { AddonGroup, Addon } from '@/lib/types';
+import type { AddonGroup, Addon, Product } from '@/lib/types';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
 import { useConfirm } from '@/hooks/use-confirm';
+import { useCatalogStore } from '@/store/catalog';
+
+interface ExtendedAddon extends Addon {
+  product_id?: string | null;
+  quantity?: number;
+  product_name?: string;
+  product_barcode?: string | null;
+  product_sku?: string | null;
+  product_unit?: string | null;
+  product_unit_price?: number;
+  product_stock_quantity?: number;
+  product_track_inventory?: number;
+}
 
 interface ExtendedAddonGroup extends AddonGroup {
   category_name?: string | null;
@@ -31,6 +50,9 @@ interface ExtendedAddonGroup extends AddonGroup {
   promo_end_date?: string | null;
   is_forever?: number | boolean | null;
   bundle_price?: number | null;
+  show_in_pos?: number | boolean | null;
+  total_normal_price?: number;
+  addons?: ExtendedAddon[];
 }
 
 export default function AddonGroupsPage() {
@@ -43,7 +65,7 @@ export default function AddonGroupsPage() {
   const [expandedGroup, setExpandedGroup] = useState<number | string | null>(null);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('all');
 
-  // Form State
+  // Form State for Group
   const [form, setForm] = useState({
     name: '',
     category_name: 'Paket Sembako',
@@ -52,17 +74,27 @@ export default function AddonGroupsPage() {
     promo_start_date: '',
     promo_end_date: '',
     bundle_price: '',
+    show_in_pos: false,
     is_required: false,
     allow_multiple_quantities: false,
     min_selection: '1',
     max_selection: '5',
   });
 
-  // Addon form (inline)
-  const [addonForm, setAddonForm] = useState({ name: '', price: '0' });
+  // Addon Component Picker Form
   const [addingAddonTo, setAddingAddonTo] = useState<number | string | null>(null);
-  const [editingAddon, setEditingAddon] = useState<{ groupId: number | string; addon: Addon } | null>(null);
+  const [editingAddon, setEditingAddon] = useState<{ groupId: number | string; addon: ExtendedAddon } | null>(null);
 
+  // Product Search State in Component Picker
+  const [productSearchQuery, setProductSearchQuery] = useState('');
+  const [productSearchResults, setProductSearchResults] = useState<Product[]>([]);
+  const [isSearchingProduct, setIsSearchingProduct] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [componentQuantity, setComponentQuantity] = useState<string>('1');
+  const [componentPrice, setComponentPrice] = useState<string>('0');
+  const [componentName, setComponentName] = useState<string>('');
+
+  const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
   const fmt = useFormatCurrency();
 
   const extractErrorMessage = (err: unknown, fallback: string) => {
@@ -71,10 +103,13 @@ export default function AddonGroupsPage() {
     return error.response?.data?.errors ? Object.values(error.response.data.errors)[0]?.[0] : fallback;
   };
 
-  const fetchGroups = async () => {
+  const fetchGroups = async (syncWithCatalog = false) => {
     try {
       const { data } = await api.get('/addon-groups');
       setGroups(data.addon_groups || []);
+      if (syncWithCatalog) {
+        useCatalogStore.getState().invalidateCatalog();
+      }
     } catch {
       toast.error('Gagal memuat data paket & promo');
     } finally {
@@ -82,7 +117,6 @@ export default function AddonGroupsPage() {
     }
   };
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchGroups();
   }, []);
@@ -96,6 +130,7 @@ export default function AddonGroupsPage() {
       promo_start_date: '',
       promo_end_date: '',
       bundle_price: '',
+      show_in_pos: false,
       is_required: false,
       allow_multiple_quantities: false,
       min_selection: '1',
@@ -115,6 +150,7 @@ export default function AddonGroupsPage() {
       promo_start_date: group.promo_start_date ? group.promo_start_date.slice(0, 10) : '',
       promo_end_date: group.promo_end_date ? group.promo_end_date.slice(0, 10) : '',
       bundle_price: group.bundle_price !== null && group.bundle_price !== undefined ? String(group.bundle_price) : '',
+      show_in_pos: group.show_in_pos === 1 || group.show_in_pos === true,
       is_required: Boolean(group.is_required),
       allow_multiple_quantities: Boolean(group.allow_multiple_quantities),
       min_selection: String(group.min_selection || 0),
@@ -148,6 +184,7 @@ export default function AddonGroupsPage() {
         promo_start_date: form.is_forever ? null : (form.promo_start_date || null),
         promo_end_date: form.is_forever ? null : (form.promo_end_date || null),
         bundle_price: form.bundle_price ? Number(form.bundle_price) : null,
+        show_in_pos: form.show_in_pos ? 1 : 0,
         is_required: form.is_required ? 1 : 0,
         allow_multiple_quantities: form.allow_multiple_quantities ? 1 : 0,
         min_selection: minVal,
@@ -155,16 +192,33 @@ export default function AddonGroupsPage() {
       };
 
       if (editingGroup) {
-        await api.put(`/addon-groups/${editingGroup.id}`, payload);
+        const res = await api.put(`/addon-groups/${editingGroup.id}`, payload);
         toast.success('Paket / Promo berhasil diperbarui');
+        if (res.data?.warning) {
+          toast(res.data.warning, { icon: '⚠️', duration: 6000 });
+        }
       } else {
-        await api.post('/addon-groups', payload);
+        const res = await api.post('/addon-groups', payload);
         toast.success('Paket / Promo baru berhasil dibuat');
+        if (res.data?.warning) {
+          toast(res.data.warning, { icon: '⚠️', duration: 6000 });
+        }
       }
       resetForm();
-      fetchGroups();
+      fetchGroups(true);
     } catch (err: unknown) {
       toast.error(extractErrorMessage(err, 'Gagal menyimpan data paket/promo'));
+    }
+  };
+
+  const handleTogglePosVisibility = async (group: ExtendedAddonGroup) => {
+    const nextState = !(group.show_in_pos === 1 || group.show_in_pos === true);
+    try {
+      await api.put(`/addon-groups/${group.id}`, { show_in_pos: nextState ? 1 : 0 });
+      toast.success(nextState ? `Paket '${group.name}' sekarang aktif di POS` : `Paket '${group.name}' disembunyikan dari POS`);
+      fetchGroups(true);
+    } catch {
+      toast.error('Gagal mengubah status POS');
     }
   };
 
@@ -173,42 +227,91 @@ export default function AddonGroupsPage() {
     try {
       await api.delete(`/addon-groups/${id}`);
       toast.success('Paket promo berhasil dihapus');
-      fetchGroups();
+      fetchGroups(true);
     } catch {
       toast.error('Gagal menghapus paket promo');
     }
   };
 
-  // Addon Item CRUD
+  // Product Search handler for component picker
+  const handleProductSearch = (query: string) => {
+    setProductSearchQuery(query);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (!query.trim()) {
+      setProductSearchResults([]);
+      setIsSearchingProduct(false);
+      return;
+    }
+
+    setIsSearchingProduct(true);
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const { data } = await api.get('/products/search', {
+          params: { q: query.trim(), limit: 8, active: true },
+        });
+        setProductSearchResults(data.products || []);
+      } catch {
+        setProductSearchResults([]);
+      } finally {
+        setIsSearchingProduct(false);
+      }
+    }, 200);
+  };
+
+  const selectProductForAddon = (prod: Product) => {
+    setSelectedProduct(prod);
+    setComponentName(prod.name);
+    setProductSearchQuery('');
+    setProductSearchResults([]);
+  };
+
+  const resetAddonPicker = () => {
+    setAddingAddonTo(null);
+    setEditingAddon(null);
+    setSelectedProduct(null);
+    setComponentName('');
+    setComponentQuantity('1');
+    setComponentPrice('0');
+    setProductSearchQuery('');
+    setProductSearchResults([]);
+  };
+
   const handleAddAddon = async (groupId: number | string) => {
-    if (!addonForm.name.trim()) return;
+    if (!componentName.trim() && !selectedProduct) {
+      toast.error('Silakan cari dan pilih produk untuk isi paket');
+      return;
+    }
     try {
-      await api.post(`/addon-groups/${groupId}/addons`, {
-        name: addonForm.name.trim(),
-        price: Number(addonForm.price) || 0,
-      });
-      toast.success('Item produk berhasil ditambahkan ke paket');
-      setAddonForm({ name: '', price: '0' });
-      setAddingAddonTo(null);
-      fetchGroups();
-    } catch {
-      toast.error('Gagal menambahkan item produk');
+      const payload = {
+        product_id: selectedProduct ? selectedProduct.id : null,
+        name: componentName.trim() || selectedProduct?.name,
+        quantity: Math.max(0.01, Number(componentQuantity) || 1),
+        price: Number(componentPrice) || 0,
+      };
+      await api.post(`/addon-groups/${groupId}/addons`, payload);
+      toast.success('Komponen produk berhasil ditambahkan ke paket');
+      resetAddonPicker();
+      fetchGroups(true);
+    } catch (err: unknown) {
+      toast.error(extractErrorMessage(err, 'Gagal menambahkan komponen produk'));
     }
   };
 
   const handleUpdateAddon = async () => {
-    if (!editingAddon || !addonForm.name.trim()) return;
+    if (!editingAddon) return;
     try {
-      await api.put(`/addon-groups/${editingAddon.groupId}/addons/${editingAddon.addon.id}`, {
-        name: addonForm.name.trim(),
-        price: Number(addonForm.price) || 0,
-      });
-      toast.success('Item produk berhasil diperbarui');
-      setAddonForm({ name: '', price: '0' });
-      setEditingAddon(null);
-      fetchGroups();
-    } catch {
-      toast.error('Gagal memperbarui item produk');
+      const payload = {
+        product_id: selectedProduct ? selectedProduct.id : editingAddon.addon.product_id,
+        name: componentName.trim() || editingAddon.addon.name,
+        quantity: Math.max(0.01, Number(componentQuantity) || 1),
+        price: Number(componentPrice) || 0,
+      };
+      await api.put(`/addon-groups/${editingAddon.groupId}/addons/${editingAddon.addon.id}`, payload);
+      toast.success('Komponen produk berhasil diperbarui');
+      resetAddonPicker();
+      fetchGroups(true);
+    } catch (err: unknown) {
+      toast.error(extractErrorMessage(err, 'Gagal memperbarui komponen'));
     }
   };
 
@@ -217,13 +320,12 @@ export default function AddonGroupsPage() {
     try {
       await api.delete(`/addon-groups/${groupId}/addons/${addonId}`);
       toast.success('Item berhasil dihapus');
-      fetchGroups();
+      fetchGroups(true);
     } catch (err: unknown) {
       toast.error(extractErrorMessage(err, 'Gagal menghapus item'));
     }
   };
 
-  // Categories list for filter
   const categoriesList = useMemo(() => {
     const set = new Set<string>();
     for (const g of groups) {
@@ -300,7 +402,7 @@ export default function AddonGroupsPage() {
             </h1>
           </div>
           <p className="text-xs text-slate-300 max-w-xl">
-            Kelola paket sembako murah (contoh: Beras + Bumbu Dapur/Minyak), paket hemat bundling, serta atur masa aktif promo berjangka maupun selamanya.
+            Kelola paket bundling sembako (Component-Based: Beras + Minyak + Gula), atur harga paket khusus kasir, dan pantau potongan stok otomatis saat terjual.
           </p>
         </div>
         <Button
@@ -353,11 +455,17 @@ export default function AddonGroupsPage() {
         {filteredGroups.map((group) => {
           const isExpanded = expandedGroup === group.id;
           const itemsCount = group.addons?.length || 0;
+          const bundlePriceVal = Number(group.bundle_price || 0);
+          const totalNormalPrice = Number(group.total_normal_price || 0);
+          const savings = totalNormalPrice > bundlePriceVal ? totalNormalPrice - bundlePriceVal : 0;
+          const isPosActive = group.show_in_pos === 1 || group.show_in_pos === true;
 
           return (
             <div
               key={group.id}
-              className="bg-white rounded-2xl border border-gray-200/80 shadow-sm overflow-hidden transition-all hover:border-emerald-200"
+              className={`bg-white rounded-2xl border transition-all ${
+                isPosActive ? 'border-emerald-200/90 shadow-sm' : 'border-gray-200 shadow-2xs opacity-90'
+              }`}
             >
               {/* Card Header */}
               <div className="flex items-center justify-between p-4 sm:p-5">
@@ -379,8 +487,21 @@ export default function AddonGroupsPage() {
                         {group.category_name || 'Paket Sembako'}
                       </span>
                       {getPromoStatusBadge(group)}
+
+                      {/* POS Visibility Badge */}
+                      {isPosActive ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                          <Store size={11} />
+                          Tampil di Kasir POS
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-medium px-2 py-0.5 rounded-md bg-gray-100 text-gray-500 border border-gray-200">
+                          Disembunyikan dari POS
+                        </span>
+                      )}
+
                       <span className="text-xs text-gray-400 font-medium">
-                        ({itemsCount} pilihan produk)
+                        ({itemsCount} komponen isi)
                       </span>
                     </div>
 
@@ -388,13 +509,22 @@ export default function AddonGroupsPage() {
                       <p className="text-xs text-gray-600 line-clamp-1">{group.description}</p>
                     )}
 
-                    <div className="flex items-center gap-3 text-xs text-gray-500">
-                      <span>
-                        Pilihan kasir: <strong className="text-gray-700">{group.min_selection || 0} s/d {group.max_selection || 1} item</strong>
-                      </span>
-                      {group.bundle_price !== null && group.bundle_price !== undefined && (
-                        <span>
-                          • Harga Paket: <strong className="text-emerald-700">{fmt(Number(group.bundle_price))}</strong>
+                    {/* Price & Savings Summary */}
+                    <div className="flex flex-wrap items-center gap-3 text-xs pt-1">
+                      <div>
+                        Harga Paket:{' '}
+                        <strong className="text-emerald-700 font-bold text-sm">
+                          {bundlePriceVal > 0 ? fmt(bundlePriceVal) : 'Belum diatur'}
+                        </strong>
+                      </div>
+                      {totalNormalPrice > 0 && (
+                        <div className="text-gray-500">
+                          (Normal: <span className="line-through">{fmt(totalNormalPrice)}</span>)
+                        </div>
+                      )}
+                      {savings > 0 && (
+                        <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                          Hemat {fmt(savings)}!
                         </span>
                       )}
                     </div>
@@ -402,6 +532,19 @@ export default function AddonGroupsPage() {
                 </button>
 
                 <div className="flex items-center gap-1.5 shrink-0 ml-3">
+                  <button
+                    type="button"
+                    onClick={() => handleTogglePosVisibility(group)}
+                    title={isPosActive ? 'Nonaktifkan dari POS' : 'Aktifkan ke POS'}
+                    className={`p-2 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1 ${
+                      isPosActive
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100'
+                        : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Store size={15} />
+                    <span className="hidden md:inline">{isPosActive ? 'POS: ON' : 'POS: OFF'}</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => openEdit(group)}
@@ -421,15 +564,20 @@ export default function AddonGroupsPage() {
                 </div>
               </div>
 
-              {/* Expanded: Isi Produk dalam Paket */}
+              {/* Expanded: Isi Komponen Produk dalam Paket */}
               {isExpanded && (
                 <div className="border-t border-gray-100 bg-gray-50/50 p-4 sm:p-5 pt-3.5 space-y-3">
                   <div className="flex items-center justify-between">
-                    <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">
-                      Daftar Produk / Isi Paket Bundling
-                    </p>
-                    <span className="text-[11px] text-gray-400">
-                      {itemsCount} item tersedia dalam paket ini
+                    <div>
+                      <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">
+                        Komponen Produk Isi Paket
+                      </p>
+                      <p className="text-[11px] text-gray-400">
+                        Saat paket ini dibeli di kasir, stok masing-masing produk di bawah otomatis terpotong sesuai kuantitas.
+                      </p>
+                    </div>
+                    <span className="text-[11px] text-gray-500 font-medium">
+                      Total Normal: <strong>{fmt(totalNormalPrice)}</strong>
                     </span>
                   </div>
 
@@ -437,136 +585,194 @@ export default function AddonGroupsPage() {
                     {group.addons?.map((addon) => (
                       <div
                         key={addon.id}
-                        className="flex items-center justify-between py-2 px-3.5 bg-white border border-gray-200 rounded-xl shadow-xs"
+                        className="flex items-center justify-between py-2.5 px-3.5 bg-white border border-gray-200 rounded-xl shadow-xs"
                       >
-                        {editingAddon?.addon.id === addon.id ? (
-                          <div className="flex items-end gap-2 flex-1">
-                            <label className="flex-1">
-                              <span className="block text-[11px] font-medium text-gray-500 mb-0.5">Nama Produk</span>
-                              <input
-                                type="text"
-                                value={addonForm.name}
-                                onChange={(e) => setAddonForm({ ...addonForm, name: e.target.value })}
-                                className="w-full px-2.5 py-1 text-sm border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500"
-                              />
-                            </label>
-                            <label className="w-28">
-                              <span className="block text-[11px] font-medium text-gray-500 mb-0.5">Biaya Tambahan</span>
-                              <input
-                                type="number"
-                                value={addonForm.price}
-                                onChange={(e) => setAddonForm({ ...addonForm, price: e.target.value })}
-                                className="w-full px-2.5 py-1 text-sm border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500"
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              onClick={handleUpdateAddon}
-                              className="px-3 py-1 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700"
-                            >
-                              Simpan
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingAddon(null);
-                                setAddonForm({ name: '', price: '0' });
-                              }}
-                              className="px-2.5 py-1 text-xs text-gray-500 hover:text-gray-700"
-                            >
-                              Batal
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                              <span className="text-sm font-semibold text-gray-800">{addon.name}</span>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                                {Number(addon.price) === 0 ? 'Termasuk di Paket (Rp 0)' : `+ ${fmt(Number(addon.price))}`}
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-gray-800 truncate">
+                              {addon.product_name || addon.name}
+                            </p>
+                            <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                              <span>
+                                Qty Paket: <strong>{addon.quantity || 1} {addon.product_unit || 'pcs'}</strong>
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingAddon({ groupId: group.id, addon });
-                                  setAddonForm({ name: addon.name, price: String(addon.price) });
-                                }}
-                                className="p-1.5 text-gray-400 hover:text-emerald-700 rounded-lg hover:bg-gray-100"
-                              >
-                                <Pencil size={14} />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteAddon(group.id, addon.id)}
-                                className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50"
-                              >
-                                <Trash2 size={14} />
-                              </button>
+                              {addon.product_barcode && (
+                                <span>• Barcode: <code className="text-gray-600">{addon.product_barcode}</code></span>
+                              )}
+                              {addon.product_unit_price !== undefined && (
+                                <span>• Harga Normal: {fmt(Number(addon.product_unit_price))}</span>
+                              )}
+                              {addon.product_stock_quantity !== undefined && (
+                                <span className={`font-semibold ${Number(addon.product_stock_quantity) <= 0 ? 'text-red-600' : 'text-gray-600'}`}>
+                                  • Stok Toko: {addon.product_stock_quantity}
+                                </span>
+                              )}
                             </div>
-                          </>
-                        )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0 ml-3">
+                          <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            Subtotal Normal: {fmt((Number(addon.product_unit_price || addon.price || 0)) * (Number(addon.quantity || 1)))}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingAddon({ groupId: group.id, addon });
+                              setComponentName(addon.name);
+                              setComponentQuantity(String(addon.quantity || 1));
+                              setComponentPrice(String(addon.price || 0));
+                              setAddingAddonTo(group.id);
+                            }}
+                            className="p-1.5 text-gray-400 hover:text-emerald-700 rounded-lg hover:bg-gray-100"
+                            title="Edit Komponen"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteAddon(group.id, addon.id)}
+                            className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50"
+                            title="Hapus Komponen"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
 
-                  {/* Add Product to Bundle */}
+                  {/* Add / Edit Component Picker Form */}
                   {addingAddonTo === group.id ? (
-                    <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2.5">
-                      <p className="text-xs font-bold text-emerald-900">Tambah Produk ke Paket Ini</p>
-                      <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2">
-                        <label className="flex-1">
-                          <span className="block text-[11px] font-medium text-gray-600 mb-0.5">Nama Produk Isi Paket</span>
-                          <input
-                            type="text"
-                            placeholder="Contoh: Beras Premium 5kg / Minyak Goreng 2L"
-                            value={addonForm.name}
-                            onChange={(e) => setAddonForm({ ...addonForm, name: e.target.value })}
-                            className="w-full px-3 py-1.5 text-sm bg-white border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500"
-                          />
-                        </label>
-                        <label className="w-full sm:w-32">
-                          <span className="block text-[11px] font-medium text-gray-600 mb-0.5">Biaya Tambahan (Rp)</span>
-                          <input
-                            type="number"
-                            placeholder="0"
-                            value={addonForm.price}
-                            onChange={(e) => setAddonForm({ ...addonForm, price: e.target.value })}
-                            className="w-full px-3 py-1.5 text-sm bg-white border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500"
-                          />
-                        </label>
-                        <div className="flex items-center gap-1.5">
+                    <div className="p-4 bg-emerald-50/80 border border-emerald-200 rounded-2xl space-y-3 animate-in fade-in duration-150">
+                      <div className="flex justify-between items-center">
+                        <p className="text-xs font-bold text-emerald-900">
+                          {editingAddon ? 'Edit Komponen Produk Paket' : 'Pilih Produk untuk Ditambahkan ke Paket'}
+                        </p>
+                        <button type="button" onClick={resetAddonPicker} className="text-gray-400 hover:text-gray-600">
+                          <X size={16} />
+                        </button>
+                      </div>
+
+                      {/* Product Search Input */}
+                      <div className="relative">
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                        <input
+                          type="text"
+                          placeholder="Ketik nama produk atau scan barcode..."
+                          value={productSearchQuery}
+                          onChange={(e) => handleProductSearch(e.target.value)}
+                          className="w-full pl-9 pr-4 py-2 text-sm bg-white border border-gray-300 rounded-xl focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                        />
+                        {isSearchingProduct && (
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                            <div className="w-4 h-4 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+                          </div>
+                        )}
+
+                        {/* Search Dropdown Results */}
+                        {productSearchResults.length > 0 && (
+                          <div className="absolute left-0 right-0 top-full mt-1 bg-white rounded-xl border border-gray-200 shadow-xl z-20 max-h-48 overflow-y-auto divide-y divide-gray-100">
+                            {productSearchResults.map((prod) => (
+                              <button
+                                key={prod.id}
+                                type="button"
+                                onClick={() => selectProductForAddon(prod)}
+                                className="w-full px-3.5 py-2.5 text-left hover:bg-emerald-50 flex items-center justify-between transition-colors"
+                              >
+                                <div>
+                                  <p className="text-xs font-bold text-gray-900">{prod.name}</p>
+                                  <p className="text-[11px] text-gray-400">
+                                    Barcode: {prod.barcode || '—'} • Stok: {prod.stock_quantity} {prod.unit || 'pcs'}
+                                  </p>
+                                </div>
+                                <span className="text-xs font-bold text-emerald-700">
+                                  {fmt(Number(prod.price))}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Selected Product Banner */}
+                      {selectedProduct && (
+                        <div className="p-3 bg-white rounded-xl border border-emerald-300 flex items-center justify-between">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <CheckCircle2 size={15} className="text-emerald-600" />
+                              <span className="text-xs font-bold text-gray-900">{selectedProduct.name}</span>
+                            </div>
+                            <p className="text-[11px] text-gray-500 pl-5">
+                              Harga Satuan: {fmt(Number(selectedProduct.price))} • Stok: {selectedProduct.stock_quantity} {selectedProduct.unit || 'pcs'}
+                            </p>
+                          </div>
                           <button
                             type="button"
-                            onClick={() => handleAddAddon(group.id)}
-                            className="px-4 py-1.5 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 shadow-sm"
+                            onClick={() => setSelectedProduct(null)}
+                            className="text-xs text-red-600 hover:underline"
                           >
-                            Tambahkan
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAddingAddonTo(null);
-                              setAddonForm({ name: '', price: '0' });
-                            }}
-                            className="p-1.5 text-gray-400 hover:text-gray-600"
-                          >
-                            <X size={16} />
+                            Ganti
                           </button>
                         </div>
+                      )}
+
+                      {/* Quantity & Extra Price Input */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <label>
+                          <span className="block text-[11px] font-semibold text-gray-700 mb-1">
+                            Jumlah / Kuantitas dalam 1 Paket <span className="text-red-500">*</span>
+                          </span>
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="any"
+                            value={componentQuantity}
+                            onChange={(e) => setComponentQuantity(e.target.value)}
+                            className="w-full px-3 py-1.5 text-sm bg-white border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500"
+                            required
+                          />
+                        </label>
+
+                        <label>
+                          <span className="block text-[11px] font-semibold text-gray-700 mb-1">
+                            Nama Custom (Opsional)
+                          </span>
+                          <input
+                            type="text"
+                            placeholder={selectedProduct?.name || 'Sesuai nama produk'}
+                            value={componentName}
+                            onChange={(e) => setComponentName(e.target.value)}
+                            className="w-full px-3 py-1.5 text-sm bg-white border border-gray-300 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="flex justify-end gap-2 pt-1">
+                        <Button type="button" variant="outline" size="sm" onClick={resetAddonPicker}>
+                          Batal
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => (editingAddon ? handleUpdateAddon() : handleAddAddon(group.id))}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+                        >
+                          {editingAddon ? 'Simpan Perubahan' : 'Tambahkan ke Paket'}
+                        </Button>
                       </div>
                     </div>
                   ) : (
                     <button
                       type="button"
                       onClick={() => {
+                        resetAddonPicker();
                         setAddingAddonTo(group.id);
-                        setAddonForm({ name: '', price: '0' });
                       }}
-                      className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-white hover:bg-emerald-50 px-3 py-2 rounded-xl border border-emerald-200 shadow-2xs transition-colors"
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-white hover:bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-200 shadow-2xs transition-colors"
                     >
-                      <Plus size={14} /> + Tambah Pilihan Produk Isi Paket
+                      <Plus size={14} /> + Tambah Produk Komponen ke Paket
                     </button>
                   )}
                 </div>
@@ -610,7 +816,7 @@ export default function AddonGroupsPage() {
                   <h2 className="text-base font-bold text-gray-900">
                     {editingGroup ? 'Edit Paket & Promo' : 'Buat Paket & Promo Baru'}
                   </h2>
-                  <p className="text-[11px] text-gray-400">Atur rincian bundling sembako dan masa berlaku promo</p>
+                  <p className="text-[11px] text-gray-400">Atur rincian bundling sembako, harga paket, dan masa berlaku promo</p>
                 </div>
               </div>
               <button
@@ -636,6 +842,52 @@ export default function AddonGroupsPage() {
                   className="w-full px-3.5 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none"
                   required
                 />
+              </div>
+
+              {/* Harga Paket Bundling (Wajib diisi agar bisa ditransaksikan) */}
+              <div className="p-3.5 rounded-2xl bg-emerald-50/60 border border-emerald-200 space-y-1.5">
+                <label className="block text-xs font-bold text-emerald-900">
+                  Harga Paket Bundling (Rp) <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-emerald-700">Rp</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={form.bundle_price}
+                    onChange={(e) => setForm({ ...form, bundle_price: e.target.value })}
+                    placeholder="Contoh: 100000"
+                    className="w-full pl-10 pr-3.5 py-2 text-sm font-bold text-emerald-900 bg-white border border-emerald-300 rounded-xl focus:border-emerald-600 focus:ring-2 focus:ring-emerald-600/20 outline-none"
+                    required
+                  />
+                </div>
+                <p className="text-[11px] text-emerald-700">
+                  Harga total paket yang akan dimasukkan ke keranjang kasir POS saat dibeli.
+                </p>
+              </div>
+
+              {/* Toggle Tampilkan di POS */}
+              <div className="p-3.5 rounded-2xl bg-gray-50 border border-gray-200 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-gray-900">Tampilkan di Kasir POS</p>
+                  <p className="text-[11px] text-gray-500">
+                    Aktifkan agar paket ini langsung muncul di tab Promo & Bundling pada kasir.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, show_in_pos: !form.show_in_pos })}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    form.show_in_pos ? 'bg-emerald-600' : 'bg-gray-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                      form.show_in_pos ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
               </div>
 
               {/* Kategori Paket */}
@@ -722,32 +974,6 @@ export default function AddonGroupsPage() {
                     </div>
                   </div>
                 )}
-              </div>
-
-              {/* Ketentuan Jumlah Pilihan Kasir */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Min. Pilihan Produk</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={form.min_selection}
-                    onChange={(e) => setForm({ ...form, min_selection: e.target.value })}
-                    className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
-                  <span className="text-[10px] text-gray-400">0 = Opsional / bebas</span>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Maks. Pilihan Produk</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={form.max_selection}
-                    onChange={(e) => setForm({ ...form, max_selection: e.target.value })}
-                    className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-1 focus:ring-emerald-500"
-                  />
-                  <span className="text-[10px] text-gray-400">Batas maks item dipilih</span>
-                </div>
               </div>
 
               <div className="pt-2">

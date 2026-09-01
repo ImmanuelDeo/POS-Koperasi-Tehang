@@ -89,10 +89,20 @@ export const useCartStore = create<CartState>((set, get) => ({
   orderNotes: '',
 
   addItem: (product, quantity = 1, addons = [], specialInstructions = '') => {
+    let finalAddons = addons;
+    if (product.is_bundle && Array.isArray((product as any).components) && finalAddons.length === 0) {
+      finalAddons = (product as any).components.map((c: any) => ({
+        id: c.id || c.product_id,
+        name: c.product_name || c.name,
+        quantity: Number(c.quantity || 1),
+        price: 0,
+      }));
+    }
+
     const items = get().items;
     const hasMember = !!get().member;
     const unitPrice = getEffectiveUnitPrice(product, hasMember);
-    const itemId = generateCartItemId(product.id, addons, specialInstructions);
+    const itemId = generateCartItemId(product.id, finalAddons, specialInstructions);
     const existing = items.find((i) => i.id === itemId);
 
     const isDecimal = Boolean(product.allow_decimal);
@@ -147,7 +157,7 @@ export const useCartStore = create<CartState>((set, get) => ({
             product,
             quantity: safeNewTotal,
             unit_price: unitPrice,
-            addons,
+            addons: finalAddons,
             special_instructions: specialInstructions,
           },
         ],

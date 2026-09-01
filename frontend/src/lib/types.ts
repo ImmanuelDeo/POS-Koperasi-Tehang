@@ -32,17 +32,18 @@ export interface Tenant {
 }
 
 export interface Category {
-  id: number;
+  id: number | string;
   name: string;
   slug: string;
   description: string | null;
-  parent_id: number | null;
+  parent_id: number | string | null;
   sort_order: number;
   is_active: boolean;
   color: string | null;
   icon: string | null;
   children?: Category[];
   products?: Product[];
+  is_bundle_category?: boolean;
 }
 
 export interface LoyaltyLedger {
@@ -57,8 +58,8 @@ export interface LoyaltyLedger {
 }
 
 export interface Product {
-  id: number;
-  category_id: number;
+  id: number | string;
+  category_id: number | string;
   name: string;
   sku: string | null;
   barcode: string | null;
@@ -85,6 +86,9 @@ export interface Product {
   sort_order: number;
   category?: Category;
   addon_groups?: AddonGroup[];
+  is_bundle?: boolean;
+  addon_group_id?: string | number;
+  components?: any[];
 }
 
 export interface AddonGroup {

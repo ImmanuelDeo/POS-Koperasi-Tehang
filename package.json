@@ -1,6 +1,6 @@
 {
   "name": "flo-desktop",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "description": "POS Koperasi - Sistem Kasir dan Manajemen Koperasi",
   "main": "dist/index.js",
   "scripts": {
@@ -92,7 +92,8 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "artifactName": "POSKoperasiTehang-Setup-v${version}-20260831.${ext}"
     },
     "mac": {
       "target": [
@@ -134,7 +135,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
     }
   }
 }

@@ -139,11 +139,20 @@ export function maskNikEightPrefix(nik: string | null | undefined): string | nul
   return maskNik(nik);
 }
 
+let lastDetectedPrinters: PrinterInfo[] = [];
+let lastDetectionTime: number = 0;
+const PRINTER_CACHE_TTL_MS = 60 * 1000; // 60 seconds TTL
+
+export function clearPrinterCache(): void {
+  lastDetectedPrinters = [];
+  lastDetectionTime = 0;
+}
+
 // ── Printer Detection (Windows, macOS, Linux) ───────────────────────────────
 
-export async function detectConnectedPrinters(): Promise<PrinterInfo[]> {
+export async function detectConnectedPrinters(forceRefresh: boolean = false): Promise<PrinterInfo[]> {
   if (process.platform === 'win32') {
-    return detectWindowsPrinters();
+    return detectWindowsPrinters(forceRefresh);
   }
   if (process.platform === 'darwin') {
     return detectMacOSPrinters();
@@ -154,7 +163,11 @@ export async function detectConnectedPrinters(): Promise<PrinterInfo[]> {
   return [];
 }
 
-export function detectWindowsPrinters(): PrinterInfo[] {
+export function detectWindowsPrinters(forceRefresh: boolean = false): PrinterInfo[] {
+  if (!forceRefresh && lastDetectedPrinters.length > 0 && Date.now() - lastDetectionTime < PRINTER_CACHE_TTL_MS) {
+    return lastDetectedPrinters;
+  }
+
   const printers: PrinterInfo[] = [];
 
   // 1. Detect physical USB port from active PnP devices and auto-heal printer port
@@ -223,8 +236,8 @@ export function detectWindowsPrinters(): PrinterInfo[] {
       for (const dev of pnpList) {
         if (!dev || !dev.FriendlyName) continue;
         const fName = String(dev.FriendlyName).trim();
-        const exists = printers.some(p => 
-          p.name.toLowerCase() === fName.toLowerCase() || 
+        const exists = printers.some(p =>
+          p.name.toLowerCase() === fName.toLowerCase() ||
           (p.name.toLowerCase().includes('blueprint') && fName.toLowerCase().includes('blueprint')) ||
           (p.name.toLowerCase().includes('eco-58') && fName.toLowerCase().includes('eco58')) ||
           (p.name.toLowerCase().includes('blueprint') && fName.toLowerCase().includes('haoyin'))
@@ -245,6 +258,8 @@ export function detectWindowsPrinters(): PrinterInfo[] {
     }
   } catch {}
 
+  lastDetectedPrinters = printers;
+  lastDetectionTime = Date.now();
   return printers;
 }
 
@@ -686,6 +701,12 @@ export function generateKoperasiReceipt(
   if (isMember) {
     lines.push(dashBar);
     lines.push(leftRight('Anggota   :', customer.name, cols));
+    if (customer.nik) {
+      const masked = maskNik(customer.nik);
+      if (masked) {
+        lines.push(leftRight('NIK       :', masked, cols));
+      }
+    }
   } else {
     lines.push(leftRight('Pelanggan :', customer?.name || 'Pembeli Umum', cols));
   }
@@ -703,6 +724,25 @@ export function generateKoperasiReceipt(
       const itemLines = formatItem2Lines(pName, qty, unit, unitPrice, subtotal, cols);
       for (const il of itemLines) {
         lines.push(il);
+      }
+
+      // If bundle item, print indented component list
+      if (item.addons) {
+        try {
+          const comps = typeof item.addons === 'string' ? JSON.parse(item.addons) : item.addons;
+          if (Array.isArray(comps) && comps.length > 0) {
+            for (const c of comps) {
+              const cName = c.name || c.product_name;
+              const cQty = Number(c.quantity || 1);
+              const cUnit = c.unit || 'pcs';
+              if (cName) {
+                lines.push(`  + ${cQty} ${cUnit} ${cName}`);
+              }
+            }
+          }
+        } catch {
+          // Non-fatal
+        }
       }
     }
   }
@@ -842,11 +882,11 @@ $bytes = [System.IO.File]::ReadAllBytes($binFile)
 Get-CimInstance Win32_PrintJob -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*$requested*" -or $_.Name -like "*Blueprint*" -or $_.Name -like "*ECO58*" -or $_.Name -like "*POS*" } | Remove-CimInstance -ErrorAction SilentlyContinue
 
 # 2. Detect physical USB port from active USBPRINT PnP devices
-$pnpDevices = @(Get-PnpDevice -Status OK -ErrorAction SilentlyContinue | Where-Object { 
-    $_.InstanceId -like '*USBPRINT*' -or 
-    $_.FriendlyName -like '*ECO58*' -or 
-    $_.FriendlyName -like '*HaoYin*' -or 
-    $_.FriendlyName -like '*Blueprint*' -or 
+$pnpDevices = @(Get-PnpDevice -Status OK -ErrorAction SilentlyContinue | Where-Object {
+    $_.InstanceId -like '*USBPRINT*' -or
+    $_.FriendlyName -like '*ECO58*' -or
+    $_.FriendlyName -like '*HaoYin*' -or
+    $_.FriendlyName -like '*Blueprint*' -or
     $_.FriendlyName -like '*POS*'
 })
 
@@ -1096,6 +1136,9 @@ export async function initPrinter(): Promise<void> {
     } else {
       console.log('[Printer] No printer configured');
     }
+
+    // Start background print queue runner (checks every 30s)
+    startPrintQueueRunner();
   } catch (error) {
     console.error('[Printer] Init error:', error);
   }
@@ -1186,6 +1229,7 @@ export async function printReceiptById(
   _actorUserId?: string
 ): Promise<{
   success: boolean;
+  queued?: boolean;
   jobId?: string;
   printerName?: string;
   printedAt?: string;
@@ -1268,6 +1312,35 @@ export async function printReceiptById(
     };
   }
 
+  // ── Offline / Failure: Hold in print_jobs queue for auto-retry when printer is back online ──
+  const queuedJobId = `PJ-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  try {
+    db.prepare(`
+      INSERT INTO print_jobs (id, bill_id, receipt_data, printer_id, status, retry_count, max_retries, error_message, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'pending', 0, 10, ?, ?, ?)
+    `).run(
+      queuedJobId,
+      bill.id,
+      receiptBytes.toString('base64'),
+      printer.id || null,
+      printRes.message || 'Printer offline saat transaksi',
+      now(),
+      now()
+    );
+    console.log(`[Printer Queue] Enqueued print job ${queuedJobId} for bill ${bill.id} (printer offline/error)`);
+
+    return {
+      success: false,
+      queued: true,
+      jobId: queuedJobId,
+      printerName: printer.name,
+      code: 'PRINT_QUEUED',
+      message: 'Printer sedang offline / terputus. Struk transaksi telah disimpan di antrean cetak (HOLD) dan akan dicetak otomatis saat printer kembali online.',
+    };
+  } catch (queueErr: any) {
+    console.error('[Printer Queue] Failed to enqueue print job:', queueErr.message);
+  }
+
   return {
     success: false,
     code: printRes.code || 'PRINT_FAILED',
@@ -1298,7 +1371,226 @@ export async function printKOT(_order: any, _items: any[], _stationName: string)
   return false;
 }
 
-export function getPrinterHardwareStatus(printer?: any): {
+// ── Print Queue Processor & Retention Management ────────────────────────────
+
+let isProcessingQueue = false;
+let queueIntervalId: any = null;
+
+export async function processPrintQueue(): Promise<{ processed: number; successful: number; failed: number }> {
+  if (isProcessingQueue) {
+    return { processed: 0, successful: 0, failed: 0 };
+  }
+
+  let db: any;
+  try {
+    db = getDatabase();
+  } catch {
+    return { processed: 0, successful: 0, failed: 0 };
+  }
+
+  const printer = getPrinterConfig();
+  if (!printer) {
+    return { processed: 0, successful: 0, failed: 0 };
+  }
+
+  // Quick check if printer is online (using cached status to avoid blocking catalog)
+  const hwStatus = getPrinterHardwareStatus(printer);
+  if (!hwStatus.isOnline) {
+    return { processed: 0, successful: 0, failed: 0 };
+  }
+
+  isProcessingQueue = true;
+  let processed = 0;
+  let successful = 0;
+  let failed = 0;
+
+  try {
+    const pendingJobs = db.prepare(`
+      SELECT * FROM print_jobs
+      WHERE status = 'pending' AND retry_count < max_retries
+      ORDER BY created_at ASC
+      LIMIT 10
+    `).all() as any[];
+
+    for (const job of pendingJobs) {
+      processed++;
+      if (!job.receipt_data) {
+        db.prepare("UPDATE print_jobs SET status = 'failed', error_message = 'Data struk kosong atau sudah dibersihkan', updated_at = ? WHERE id = ?")
+          .run(now(), job.id);
+        failed++;
+        continue;
+      }
+
+      // Mark status as printing with lock
+      db.prepare("UPDATE print_jobs SET status = 'printing', updated_at = ? WHERE id = ?").run(now(), job.id);
+
+      const buffer = Buffer.from(job.receipt_data, 'base64');
+      const res = await dispatchPrint(printer, buffer);
+
+      if (res.success) {
+        successful++;
+        db.prepare(`
+          UPDATE print_jobs
+          SET status = 'completed', completed_at = ?, updated_at = ?, error_message = NULL
+          WHERE id = ?
+        `).run(now(), now(), job.id);
+
+        db.prepare('UPDATE bills SET printed_at = ?, updated_at = ? WHERE id = ?').run(now(), now(), job.bill_id);
+        console.log(`[Printer Queue] Job ${job.id} for bill ${job.bill_id} printed successfully.`);
+      } else {
+        failed++;
+        const newRetryCount = (job.retry_count || 0) + 1;
+        const newStatus = newRetryCount >= (job.max_retries || 10) ? 'failed' : 'pending';
+        db.prepare(`
+          UPDATE print_jobs
+          SET status = ?, retry_count = ?, error_message = ?, updated_at = ?
+          WHERE id = ?
+        `).run(newStatus, newRetryCount, res.message || 'Cetak gagal', now(), job.id);
+        console.log(`[Printer Queue] Job ${job.id} attempt ${newRetryCount} failed: ${res.message}`);
+
+        // If printer went offline, abort remaining queue iteration
+        const currentCheck = getPrinterHardwareStatus(printer, true);
+        if (!currentCheck.isOnline) {
+          break;
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('[Printer Queue] Processing error:', err.message);
+  } finally {
+    isProcessingQueue = false;
+  }
+
+  return { processed, successful, failed };
+}
+
+export function purgeOldCompletedPrintJobs(): number {
+  try {
+    const db = getDatabase();
+    // Retention policy: null-kan receipt_data untuk job completed setelah 24 jam, metadata tetap tersimpan
+    const res = db.prepare(`
+      UPDATE print_jobs
+      SET receipt_data = NULL, updated_at = ?
+      WHERE status = 'completed'
+        AND receipt_data IS NOT NULL
+        AND datetime(completed_at) < datetime('now', '-24 hours')
+    `).run(now());
+    return res.changes;
+  } catch (err: any) {
+    console.error('[Printer Queue] Purge error:', err.message);
+    return 0;
+  }
+}
+
+export function getPrintQueueSummary(): {
+  total: number;
+  pending: number;
+  printing: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+} {
+  try {
+    const db = getDatabase();
+    const rows = db.prepare(`
+      SELECT status, COUNT(*) as count
+      FROM print_jobs
+      GROUP BY status
+    `).all() as any[];
+
+    const counts: any = { pending: 0, printing: 0, completed: 0, failed: 0, cancelled: 0 };
+    let total = 0;
+    for (const r of rows) {
+      if (counts[r.status] !== undefined) {
+        counts[r.status] = r.count;
+      }
+      total += r.count;
+    }
+    return { total, ...counts };
+  } catch {
+    return { total: 0, pending: 0, printing: 0, completed: 0, failed: 0, cancelled: 0 };
+  }
+}
+
+export function getPrintQueueJobs(limit = 50): any[] {
+  try {
+    const db = getDatabase();
+    // NEVER expose raw receipt_data in list queries for privacy and payload safety
+    const jobs = db.prepare(`
+      SELECT pj.id, pj.bill_id, pj.printer_id, pj.status, pj.retry_count, pj.max_retries,
+             pj.error_message, pj.created_at, pj.updated_at, pj.completed_at,
+             b.bill_number, b.total, b.payment_status,
+             o.order_number, c.name as customer_name
+      FROM print_jobs pj
+      LEFT JOIN bills b ON pj.bill_id = b.id
+      LEFT JOIN orders o ON b.order_id = o.id
+      LEFT JOIN customers c ON b.customer_id = c.id
+      ORDER BY pj.created_at DESC
+      LIMIT ?
+    `).all(limit) as any[];
+    return jobs;
+  } catch {
+    return [];
+  }
+}
+
+export async function retryAllPrintJobs(): Promise<{ queued: number }> {
+  const db = getDatabase();
+  // Reset all failed / pending jobs to pending with retry_count = 0 and start queue
+  const res = db.prepare(`
+    UPDATE print_jobs
+    SET status = 'pending', retry_count = 0, error_message = NULL, updated_at = ?
+    WHERE (status = 'failed' OR status = 'pending') AND receipt_data IS NOT NULL
+  `).run(now());
+
+  // Trigger processing immediately in background
+  processPrintQueue().catch(() => {});
+  return { queued: res.changes };
+}
+
+export async function retrySinglePrintJob(id: string): Promise<{ success: boolean; message: string }> {
+  const db = getDatabase();
+  const job = db.prepare('SELECT * FROM print_jobs WHERE id = ?').get(id) as any;
+  if (!job) return { success: false, message: 'Print job tidak ditemukan' };
+  if (!job.receipt_data) return { success: false, message: 'Data struk telah dibersihkan oleh kebijakan retensi (expired)' };
+
+  db.prepare(`
+    UPDATE print_jobs
+    SET status = 'pending', retry_count = 0, error_message = NULL, updated_at = ?
+    WHERE id = ?
+  `).run(now(), id);
+
+  processPrintQueue().catch(() => {});
+  return { success: true, message: 'Print job dimasukkan kembali ke antrean' };
+}
+
+export function cancelPrintJob(id: string): { success: boolean; message: string } {
+  const db = getDatabase();
+  const res = db.prepare(`
+    UPDATE print_jobs
+    SET status = 'cancelled', receipt_data = NULL, updated_at = ?
+    WHERE id = ? AND status IN ('pending', 'failed')
+  `).run(now(), id);
+
+  if (res.changes > 0) {
+    return { success: true, message: 'Print job dibatalkan' };
+  }
+  return { success: false, message: 'Print job tidak dapat dibatalkan (sudah selesai atau tidak ditemukan)' };
+}
+
+export function startPrintQueueRunner(): void {
+  if (queueIntervalId) return;
+  // Interval 30 seconds
+  queueIntervalId = setInterval(() => {
+    processPrintQueue().catch(() => {});
+    purgeOldCompletedPrintJobs();
+  }, 30000);
+  console.log('[Printer Queue] Background queue processor started (30s interval)');
+}
+
+// ── Hardware Status & Online Checks ──────────────────────────────────────────
+
+export function getPrinterHardwareStatus(printer?: any, forceRefresh: boolean = false): {
   isConfigured: boolean;
   isOnline: boolean;
   status: 'online' | 'offline' | 'error' | 'not_configured';
@@ -1328,9 +1620,9 @@ export function getPrinterHardwareStatus(printer?: any): {
 
   if (process.platform === 'win32') {
     try {
-      const detected = detectWindowsPrinters();
+      const detected = detectWindowsPrinters(forceRefresh);
       const pName = (p.name || 'Blueprint ECO-58D').toLowerCase();
-      
+
       const match = detected.find(d => {
         const dName = d.name.toLowerCase();
         if (dName === pName || dName.includes(pName) || pName.includes(dName)) return true;
@@ -1370,7 +1662,7 @@ export function getPrinterHardwareStatus(printer?: any): {
   };
 }
 
-export function getPrinterStatus(): { connected: boolean; printer: any } {
-  const hw = getPrinterHardwareStatus();
+export function getPrinterStatus(forceRefresh: boolean = false): { connected: boolean; printer: any } {
+  const hw = getPrinterHardwareStatus(undefined, forceRefresh);
   return { connected: hw.isOnline, printer: hw.printer };
 }

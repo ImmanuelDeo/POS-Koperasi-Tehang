@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import ExcelJS from 'exceljs';
 import { normalizeNik, validateNik, maskNik } from './privacy';
 import { createAuditLog } from './audit';
 import { now } from '../db';
@@ -43,7 +44,7 @@ export interface MemberCsvImportResult {
 }
 
 /**
- * Generate standard CSV template for cooperative member import
+ * Generate standard CSV template for cooperative member import with formula text-force
  */
 export function generateMemberCsvTemplate(): string {
   const headers = [
@@ -64,11 +65,11 @@ export function generateMemberCsvTemplate(): string {
   const sampleRows = [
     [
       'Ahmad Subarjo',
-      '6472010101900001',
-      'EMP-001',
-      'MBR-1001',
+      '="6472010101900001"',
+      '="EMP-001"',
+      '="MBR-1001"',
       'Produksi',
-      '081234567890',
+      '="081234567890"',
       'ahmad@koperasi.local',
       'Perumahan Karyawan Blok A1',
       '500000',
@@ -78,11 +79,11 @@ export function generateMemberCsvTemplate(): string {
     ],
     [
       'Siti Nurhaliza',
-      '6472010202920002',
-      'EMP-002',
-      'MBR-1002',
+      '="6472010202920002"',
+      '="EMP-002"',
+      '="MBR-1002"',
       'Gudang',
-      '081298765432',
+      '="081298765432"',
       'siti@koperasi.local',
       'Perumahan Karyawan Blok B4',
       '750000',
@@ -92,11 +93,11 @@ export function generateMemberCsvTemplate(): string {
     ],
     [
       'Budi Santoso',
-      '6472010303880003',
-      'EMP-003',
-      'MBR-1003',
+      '="6472010303880003"',
+      '="EMP-003"',
+      '="MBR-1003"',
       'Keuangan & HR',
-      '085612345678',
+      '="085612345678"',
       'budi@koperasi.local',
       'Jl. Melati No. 12',
       '1000000',
@@ -107,10 +108,10 @@ export function generateMemberCsvTemplate(): string {
     [
       'Dewi Lestari',
       '',
-      'EMP-004',
-      'MBR-1004',
+      '="EMP-004"',
+      '="MBR-1004"',
       'Umum',
-      '087812349988',
+      '="087812349988"',
       'dewi@koperasi.local',
       '',
       '0',
@@ -127,9 +128,155 @@ export function generateMemberCsvTemplate(): string {
 }
 
 /**
+ * Generate standard XLSX Excel template for cooperative member import with explicit Text Cell Formatting (@)
+ * ensuring NIK, employee_id, member_no, and phone never lose leading zeroes.
+ */
+export async function generateMemberXlsxTemplate(): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'POS Koperasi';
+  workbook.lastModifiedBy = 'POS Koperasi';
+  workbook.created = new Date();
+  workbook.modified = new Date();
+
+  const worksheet = workbook.addWorksheet('Data Anggota');
+
+  worksheet.columns = [
+    { header: 'Nama Lengkap', key: 'name', width: 28 },
+    { header: 'NIK (16 Digit)', key: 'nik', width: 22 },
+    { header: 'NIK Karyawan (Emp ID)', key: 'employee_id', width: 22 },
+    { header: 'Nomor Anggota', key: 'member_no', width: 18 },
+    { header: 'Departemen / Divisi', key: 'department', width: 22 },
+    { header: 'No HP / WhatsApp', key: 'phone', width: 20 },
+    { header: 'Email', key: 'email', width: 25 },
+    { header: 'Alamat', key: 'address', width: 32 },
+    { header: 'Limit Bulanan (Rp)', key: 'monthly_deduction_limit', width: 20 },
+    { header: 'Potong Gaji Aktif (0/1)', key: 'salary_deduction_enabled', width: 22 },
+    { header: 'Opt-in Promo WA (0/1)', key: 'whatsapp_marketing_opt_in', width: 22 },
+    { header: 'Catatan', key: 'notes', width: 25 },
+  ];
+
+  const headerRow = worksheet.getRow(1);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FF1E293B' },
+  };
+  headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+  headerRow.height = 28;
+
+  const sampleMembers = [
+    {
+      name: 'Ahmad Subarjo',
+      nik: '6472010101900001',
+      employee_id: 'EMP-001',
+      member_no: 'MBR-1001',
+      department: 'Produksi',
+      phone: '081234567890',
+      email: 'ahmad@koperasi.local',
+      address: 'Perumahan Karyawan Blok A1',
+      monthly_deduction_limit: 500000,
+      salary_deduction_enabled: 1,
+      whatsapp_marketing_opt_in: 1,
+      notes: 'Staff Senior Pabrik',
+    },
+    {
+      name: 'Siti Nurhaliza',
+      nik: '6472010202920002',
+      employee_id: 'EMP-002',
+      member_no: 'MBR-1002',
+      department: 'Gudang',
+      phone: '081298765432',
+      email: 'siti@koperasi.local',
+      address: 'Perumahan Karyawan Blok B4',
+      monthly_deduction_limit: 750000,
+      salary_deduction_enabled: 1,
+      whatsapp_marketing_opt_in: 1,
+      notes: 'Supervisor Logistik',
+    },
+    {
+      name: 'Budi Santoso',
+      nik: '6472010303880003',
+      employee_id: 'EMP-003',
+      member_no: 'MBR-1003',
+      department: 'Keuangan & HR',
+      phone: '085612345678',
+      email: 'budi@koperasi.local',
+      address: 'Jl. Melati No. 12',
+      monthly_deduction_limit: 1000000,
+      salary_deduction_enabled: 1,
+      whatsapp_marketing_opt_in: 0,
+      notes: 'Staff HRD',
+    },
+    {
+      name: 'Dewi Lestari',
+      nik: '',
+      employee_id: 'EMP-004',
+      member_no: 'MBR-1004',
+      department: 'Umum',
+      phone: '087812349988',
+      email: 'dewi@koperasi.local',
+      address: '',
+      monthly_deduction_limit: 0,
+      salary_deduction_enabled: 1,
+      whatsapp_marketing_opt_in: 1,
+      notes: 'Member Toko Sembako',
+    },
+  ];
+
+  for (const m of sampleMembers) {
+    const row = worksheet.addRow(m);
+    row.getCell('nik').numFmt = '@';
+    row.getCell('employee_id').numFmt = '@';
+    row.getCell('member_no').numFmt = '@';
+    row.getCell('phone').numFmt = '@';
+  }
+
+  worksheet.getColumn('nik').numFmt = '@';
+  worksheet.getColumn('employee_id').numFmt = '@';
+  worksheet.getColumn('member_no').numFmt = '@';
+  worksheet.getColumn('phone').numFmt = '@';
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
+}
+
+/**
+ * Parses XLSX buffer for Member import preserving raw strings with leading zeroes
+ */
+export async function parseMemberXlsxBuffer(buffer: Buffer): Promise<string[][]> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer as any);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) return [];
+
+  const rows: string[][] = [];
+  worksheet.eachRow({ includeEmpty: false }, (row) => {
+    const rowValues: string[] = [];
+    const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+    for (const val of values) {
+      if (val === null || val === undefined) {
+        rowValues.push('');
+      } else if (typeof val === 'object' && 'text' in val) {
+        rowValues.push(String((val as any).text || '').trim());
+      } else if (typeof val === 'object' && 'result' in val) {
+        rowValues.push(String((val as any).result || '').trim());
+      } else {
+        rowValues.push(String(val).trim());
+      }
+    }
+    if (rowValues.some(c => c.length > 0)) {
+      rows.push(rowValues);
+    }
+  });
+
+  return rows;
+}
+
+/**
  * Helper to split CSV lines while respecting quoted fields containing newlines or commas
  */
-function parseCsvLines(csvText: string): string[][] {
+export function parseCsvLines(csvText: string): string[][] {
   const lines: string[][] = [];
   let currentRow: string[] = [];
   let currentField = '';
@@ -137,7 +284,6 @@ function parseCsvLines(csvText: string): string[][] {
 
   const normalized = csvText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-  // Detect delimiter (, or ;) from first line
   const firstLine = normalized.split('\n')[0] || '';
   const delimiter = (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length ? ';' : ',';
 
@@ -148,7 +294,7 @@ function parseCsvLines(csvText: string): string[][] {
     if (char === '"') {
       if (insideQuotes && nextChar === '"') {
         currentField += '"';
-        i++; // skip escaped quote
+        i++;
       } else {
         insideQuotes = !insideQuotes;
       }
@@ -178,11 +324,9 @@ function parseCsvLines(csvText: string): string[][] {
 }
 
 /**
- * Validate Member CSV text against database constraints
+ * Validate Member Grid data (CSV or XLSX) against database constraints
  */
-export function validateMemberCsv(db: Database.Database, csvContent: string): MemberCsvValidationResult {
-  const rawRows = parseCsvLines(csvContent);
-
+export function validateMemberGrid(db: Database.Database, rawRows: string[][]): MemberCsvValidationResult {
   if (rawRows.length === 0) {
     return {
       valid: false,
@@ -190,27 +334,27 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
       valid_count: 0,
       error_count: 1,
       rows: [],
-      errors: [{ row_number: 1, field: 'csv', message: 'File CSV kosong atau tidak memiliki data' }],
+      errors: [{ row_number: 1, field: 'file', message: 'File kosong atau tidak memiliki data' }],
     };
   }
 
-  const rawHeader = rawRows[0].map((h) => h.trim().toLowerCase().replace(/[\s_-]+/g, ''));
+  const rawHeader = rawRows[0].map((h) => h.trim().toLowerCase().replace(/[\s_()\-]+/g, ''));
   const dataRows = rawRows.slice(1);
 
   // Map header indexes
   const colMap: Record<string, number> = {};
   rawHeader.forEach((h, idx) => {
-    if (['nama', 'name', 'namamember', 'namalengkap'].includes(h)) colMap.name = idx;
-    else if (['nik', 'nikktp', 'nomorktp'].includes(h)) colMap.nik = idx;
-    else if (['nikkaryawan', 'employeeid', 'empid', 'idkaryawan'].includes(h)) colMap.employee_id = idx;
-    else if (['nomoranggota', 'memberno', 'noanggota', 'idmember'].includes(h)) colMap.member_no = idx;
-    else if (['departemen', 'department', 'divisi', 'dept'].includes(h)) colMap.department = idx;
-    else if (['nohp', 'phone', 'telepon', 'notelepon', 'whatsapp', 'wa'].includes(h)) colMap.phone = idx;
+    if (['nama', 'name', 'namamember', 'namalengkap'].includes(h) || h.startsWith('nama')) colMap.name = idx;
+    else if (['nik', 'nikktp', 'nomorktp', 'nik16digit'].includes(h) || h.startsWith('nik16')) colMap.nik = idx;
+    else if (['nikkaryawan', 'employeeid', 'empid', 'idkaryawan', 'nikkaryawanempid'].includes(h) || h.startsWith('nikkaryawan')) colMap.employee_id = idx;
+    else if (['nomoranggota', 'memberno', 'noanggota', 'idmember'].includes(h) || h.startsWith('nomoranggota')) colMap.member_no = idx;
+    else if (['departemen', 'department', 'divisi', 'dept', 'departemendivisi'].includes(h) || h.startsWith('departemen')) colMap.department = idx;
+    else if (['nohp', 'phone', 'telepon', 'notelepon', 'whatsapp', 'wa', 'nohpwhatsapp'].includes(h) || h.startsWith('nohp')) colMap.phone = idx;
     else if (['email', 'surel'].includes(h)) colMap.email = idx;
     else if (['alamat', 'address'].includes(h)) colMap.address = idx;
-    else if (['limitbulanan', 'monthlydeductionlimit', 'limit', 'limitpotongangaji', 'limitgaji'].includes(h)) colMap.limit = idx;
-    else if (['potonggajiaktif', 'salarydeductionenabled', 'potonggaji', 'statusbon', 'bonaktif'].includes(h)) colMap.salary_deduction_enabled = idx;
-    else if (['optinwhatsapp', 'optinwa', 'whatsapppromo', 'promowa', 'optinpromowa', 'optin'].includes(h)) colMap.whatsapp_optin = idx;
+    else if (['limitbulanan', 'monthlydeductionlimit', 'limit', 'limitpotongangaji', 'limitgaji', 'limitbulananrp'].includes(h) || h.startsWith('limitbulanan')) colMap.limit = idx;
+    else if (['potonggajiaktif', 'salarydeductionenabled', 'potonggaji', 'statusbon', 'bonaktif', 'potonggajiaktif01'].includes(h) || h.startsWith('potonggajiaktif')) colMap.salary_deduction_enabled = idx;
+    else if (['optinwhatsapp', 'optinwa', 'whatsapppromo', 'promowa', 'optinpromowa', 'optin', 'optinpromowa01'].includes(h) || h.startsWith('optinpromo')) colMap.whatsapp_optin = idx;
     else if (['catatan', 'notes', 'keterangan'].includes(h)) colMap.notes = idx;
   });
 
@@ -225,7 +369,7 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
         {
           row_number: 1,
           field: 'header',
-          message: "Header CSV wajib memiliki kolom nama/name (contoh: 'nama,nik,nik_karyawan,nomor_anggota,limit_bulanan')",
+          message: "Header file wajib memiliki kolom nama (contoh: 'nama, nik, nik_karyawan, nomor_anggota, limit_bulanan')",
         },
       ],
     };
@@ -250,23 +394,31 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
   const errors: MemberCsvError[] = [];
 
   dataRows.forEach((row, index) => {
-    const rowNum = index + 2; // 1-based, accounts for header row
+    const rowNum = index + 2;
 
     // Skip blank rows
-    if (row.every((f) => f.trim().length === 0)) return;
+    if (row.every((f) => String(f).trim().length === 0)) return;
 
-    const rawName = colMap.name !== undefined ? (row[colMap.name] || '').trim() : '';
-    const rawNik = colMap.nik !== undefined ? (row[colMap.nik] || '').trim() : '';
-    const rawEmpId = colMap.employee_id !== undefined ? (row[colMap.employee_id] || '').trim() : '';
-    const rawMemberNo = colMap.member_no !== undefined ? (row[colMap.member_no] || '').trim() : '';
-    const rawDept = colMap.department !== undefined ? (row[colMap.department] || '').trim() : '';
-    const rawPhone = colMap.phone !== undefined ? (row[colMap.phone] || '').trim() : '';
-    const rawEmail = colMap.email !== undefined ? (row[colMap.email] || '').trim() : '';
-    const rawAddress = colMap.address !== undefined ? (row[colMap.address] || '').trim() : '';
-    const rawLimit = colMap.limit !== undefined ? (row[colMap.limit] || '').trim() : '';
-    const rawDeductEnabled = colMap.salary_deduction_enabled !== undefined ? (row[colMap.salary_deduction_enabled] || '').trim() : '';
-    const rawWhatsappOptin = colMap.whatsapp_optin !== undefined ? (row[colMap.whatsapp_optin] || '').trim() : '';
-    const rawNotes = colMap.notes !== undefined ? (row[colMap.notes] || '').trim() : '';
+    const cleanField = (val: any) => {
+      if (!val) return '';
+      let s = String(val).trim();
+      const formulaMatch = s.match(/^="([^"]+)"$/);
+      if (formulaMatch) s = formulaMatch[1].trim();
+      return s;
+    };
+
+    const rawName = colMap.name !== undefined ? cleanField(row[colMap.name]) : '';
+    const rawNik = colMap.nik !== undefined ? cleanField(row[colMap.nik]) : '';
+    const rawEmpId = colMap.employee_id !== undefined ? cleanField(row[colMap.employee_id]) : '';
+    const rawMemberNo = colMap.member_no !== undefined ? cleanField(row[colMap.member_no]) : '';
+    const rawDept = colMap.department !== undefined ? cleanField(row[colMap.department]) : '';
+    const rawPhone = colMap.phone !== undefined ? cleanField(row[colMap.phone]) : '';
+    const rawEmail = colMap.email !== undefined ? cleanField(row[colMap.email]) : '';
+    const rawAddress = colMap.address !== undefined ? cleanField(row[colMap.address]) : '';
+    const rawLimit = colMap.limit !== undefined ? cleanField(row[colMap.limit]) : '';
+    const rawDeductEnabled = colMap.salary_deduction_enabled !== undefined ? cleanField(row[colMap.salary_deduction_enabled]) : '';
+    const rawWhatsappOptin = colMap.whatsapp_optin !== undefined ? cleanField(row[colMap.whatsapp_optin]) : '';
+    const rawNotes = colMap.notes !== undefined ? cleanField(row[colMap.notes]) : '';
 
     let rowHasError = false;
 
@@ -289,7 +441,7 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
         maskedNik = maskNik(cleanNik);
 
         if (seenCsvNiks.has(cleanNik)) {
-          errors.push({ row_number: rowNum, field: 'nik', message: `NIK '${cleanNik}' duplikat dalam file CSV ini`, value: cleanNik });
+          errors.push({ row_number: rowNum, field: 'nik', message: `NIK '${cleanNik}' duplikat dalam file ini`, value: cleanNik });
           rowHasError = true;
         } else if (existingNiks.has(cleanNik)) {
           errors.push({ row_number: rowNum, field: 'nik', message: `NIK '${cleanNik}' sudah terdaftar dalam database koperasi`, value: cleanNik });
@@ -306,7 +458,7 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
       cleanEmpId = rawEmpId;
       const lowerEmp = cleanEmpId.toLowerCase();
       if (seenCsvEmpIds.has(lowerEmp)) {
-        errors.push({ row_number: rowNum, field: 'nik_karyawan', message: `NIK Karyawan (Employee ID) '${cleanEmpId}' duplikat dalam file CSV`, value: cleanEmpId });
+        errors.push({ row_number: rowNum, field: 'nik_karyawan', message: `NIK Karyawan (Employee ID) '${cleanEmpId}' duplikat dalam file`, value: cleanEmpId });
         rowHasError = true;
       } else if (existingEmpIds.has(lowerEmp)) {
         errors.push({ row_number: rowNum, field: 'nik_karyawan', message: `NIK Karyawan (Employee ID) '${cleanEmpId}' sudah ada di database`, value: cleanEmpId });
@@ -320,46 +472,67 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
     let cleanMemberNo: string | null = null;
     if (rawMemberNo) {
       cleanMemberNo = rawMemberNo;
-      const lowerNo = cleanMemberNo.toLowerCase();
-      if (seenCsvMemberNos.has(lowerNo)) {
-        errors.push({ row_number: rowNum, field: 'nomor_anggota', message: `Nomor anggota '${cleanMemberNo}' duplikat dalam file CSV`, value: cleanMemberNo });
+      const lowerMbr = cleanMemberNo.toLowerCase();
+      if (seenCsvMemberNos.has(lowerMbr)) {
+        errors.push({ row_number: rowNum, field: 'nomor_anggota', message: `Nomor Anggota '${cleanMemberNo}' duplikat dalam file`, value: cleanMemberNo });
         rowHasError = true;
-      } else if (existingMemberNos.has(lowerNo)) {
-        errors.push({ row_number: rowNum, field: 'nomor_anggota', message: `Nomor anggota '${cleanMemberNo}' sudah terdaftar di database`, value: cleanMemberNo });
+      } else if (existingMemberNos.has(lowerMbr)) {
+        errors.push({ row_number: rowNum, field: 'nomor_anggota', message: `Nomor Anggota '${cleanMemberNo}' sudah ada di database`, value: cleanMemberNo });
         rowHasError = true;
       } else {
-        seenCsvMemberNos.add(lowerNo);
+        seenCsvMemberNos.add(lowerMbr);
       }
     }
 
-    // 5. Parse Monthly Deduction Limit
-    let monthlyLimit = 0;
+    // 5. Validate Phone
+    let cleanPhone: string | null = null;
+    if (rawPhone) {
+      const sanitizedPhone = rawPhone.replace(/[^\d+]/g, '');
+      if (sanitizedPhone.length < 8 || sanitizedPhone.length > 20) {
+        errors.push({ row_number: rowNum, field: 'no_hp', message: `Format nomor HP '${rawPhone}' tidak valid (8-20 digit)`, value: rawPhone });
+        rowHasError = true;
+      } else {
+        cleanPhone = sanitizedPhone;
+      }
+    }
+
+    // 6. Validate Limit
+    let limitValue = 0;
     if (rawLimit) {
-      const cleanedLimit = rawLimit.replace(/[^0-9]/g, '');
-      const parsedLimit = Number(cleanedLimit);
+      const parsedLimit = Number(rawLimit.replace(/[^0-9.-]+/g, ''));
       if (isNaN(parsedLimit) || parsedLimit < 0) {
-        errors.push({ row_number: rowNum, field: 'limit_bulanan', message: 'Limit bulanan harus berupa angka rupiah positif (0 = bebas limit)', value: rawLimit });
+        errors.push({ row_number: rowNum, field: 'limit_bulanan', message: `Limit bulanan '${rawLimit}' harus angka positif >= 0`, value: rawLimit });
         rowHasError = true;
       } else {
-        monthlyLimit = Math.round(parsedLimit);
+        limitValue = parsedLimit;
       }
     }
 
-    // 6. Parse Salary Deduction Enabled
-    let deductEnabled = 1;
+    // 7. Validate Deduction Enabled
+    let deductEnabledValue = 1;
     if (rawDeductEnabled) {
-      const val = rawDeductEnabled.toLowerCase();
-      if (['0', 'false', 'tidak', 'nonaktif', 'no', 'off'].includes(val)) {
-        deductEnabled = 0;
+      const lower = rawDeductEnabled.toLowerCase();
+      if (['1', 'true', 'ya', 'yes', 'aktif', 'y'].includes(lower)) {
+        deductEnabledValue = 1;
+      } else if (['0', 'false', 'tidak', 'no', 'nonaktif', 't', 'n'].includes(lower)) {
+        deductEnabledValue = 0;
+      } else {
+        errors.push({ row_number: rowNum, field: 'potong_gaji_aktif', message: `Status potong gaji '${rawDeductEnabled}' harus 1 (Ya) atau 0 (Tidak)`, value: rawDeductEnabled });
+        rowHasError = true;
       }
     }
 
-    // 7. Parse WhatsApp Marketing Opt-In (default 0)
-    let waOptIn = 0;
+    // 8. Validate WhatsApp Marketing Opt-In
+    let waOptinValue = 1;
     if (rawWhatsappOptin) {
-      const val = rawWhatsappOptin.toLowerCase();
-      if (['1', 'true', 'ya', 'yes', 'setuju', 'aktif', 'optin'].includes(val)) {
-        waOptIn = 1;
+      const lower = rawWhatsappOptin.toLowerCase();
+      if (['1', 'true', 'ya', 'yes', 'aktif', 'y'].includes(lower)) {
+        waOptinValue = 1;
+      } else if (['0', 'false', 'tidak', 'no', 'nonaktif', 't', 'n'].includes(lower)) {
+        waOptinValue = 0;
+      } else {
+        errors.push({ row_number: rowNum, field: 'opt_in_whatsapp_promo', message: `Status opt-in WA '${rawWhatsappOptin}' harus 1 (Ya) atau 0 (Tidak)`, value: rawWhatsappOptin });
+        rowHasError = true;
       }
     }
 
@@ -372,19 +545,19 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
         employee_id: cleanEmpId,
         member_no: cleanMemberNo,
         department: rawDept || 'Umum',
-        phone: rawPhone || null,
+        phone: cleanPhone,
         email: rawEmail || null,
         address: rawAddress || null,
-        monthly_deduction_limit: monthlyLimit,
-        salary_deduction_enabled: deductEnabled,
-        whatsapp_marketing_opt_in: waOptIn,
+        monthly_deduction_limit: limitValue,
+        salary_deduction_enabled: deductEnabledValue,
+        whatsapp_marketing_opt_in: waOptinValue,
         notes: rawNotes || null,
       });
     }
   });
 
   return {
-    valid: errors.length === 0,
+    valid: errors.length === 0 && validatedRows.length > 0,
     total_rows: dataRows.length,
     valid_count: validatedRows.length,
     error_count: errors.length,
@@ -394,9 +567,17 @@ export function validateMemberCsv(db: Database.Database, csvContent: string): Me
 }
 
 /**
- * Execute atomic database insertion for validated member rows
+ * Validate Member CSV text against database constraints
  */
-export function executeMemberImport(
+export function validateMemberCsv(db: Database.Database, csvContent: string): MemberCsvValidationResult {
+  const rawRows = parseCsvLines(csvContent);
+  return validateMemberGrid(db, rawRows);
+}
+
+/**
+ * Execute Member CSV/XLSX Import atomically
+ */
+export function executeMemberCsvImport(
   db: Database.Database,
   rows: ValidatedMemberRow[],
   actorUserId?: string,
@@ -459,7 +640,7 @@ export function executeMemberImport(
     createAuditLog(db, {
       actor_user_id: actorUserId,
       actor_role: actorRole,
-      action: 'member.csv_imported',
+      action: 'member.imported',
       target_type: 'member',
       details: JSON.stringify({
         total_rows_imported: createdCount,

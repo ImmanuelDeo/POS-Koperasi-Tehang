@@ -30,6 +30,36 @@ router.get('/', (req: Request, res: Response) => {
       return { ...cat, children };
     });
 
+    // Check if there are active bundles configured for POS
+    const activeBundleCount = db.prepare(`
+      SELECT COUNT(*) as count FROM addon_groups
+      WHERE (show_in_pos = 1 OR show_in_pos = '1')
+        AND (is_active IS NULL OR is_active = 1 OR is_active = '1')
+        AND (
+          is_forever = 1 OR is_forever = '1'
+          OR (
+            (promo_end_date IS NULL OR date(promo_end_date) >= date('now', 'localtime') OR promo_end_date >= date('now', 'localtime'))
+            AND (promo_start_date IS NULL OR date(promo_start_date) <= date('now', 'localtime') OR promo_start_date <= date('now', 'localtime'))
+          )
+        )
+    `).get() as { count: number };
+
+    if (activeBundleCount && activeBundleCount.count > 0) {
+      const bundleCategory = {
+        id: '__bundles__',
+        name: '🎁 Promo & Bundling',
+        slug: 'promo-bundling',
+        description: 'Paket sembako hemat & promo bundling',
+        sort_order: -999,
+        is_active: 1,
+        color: 'emerald',
+        icon: 'Layers',
+        children: [],
+        is_bundle_category: true,
+      };
+      categoriesWithChildren.unshift(bundleCategory);
+    }
+
     res.json({ categories: categoriesWithChildren });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
