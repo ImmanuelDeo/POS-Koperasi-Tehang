@@ -66,6 +66,27 @@ export function initDatabase(): void {
   runMigrations();
 
   db.pragma('foreign_keys = ON');
+  startWalCheckpointDaemon();
+}
+
+let walCheckpointTimer: NodeJS.Timeout | null = null;
+
+export function startWalCheckpointDaemon(): void {
+  if (walCheckpointTimer) return;
+  walCheckpointTimer = setInterval(() => {
+    try {
+      if (db) {
+        db.exec('PRAGMA wal_checkpoint(PASSIVE);');
+      }
+    } catch {}
+  }, 5 * 60 * 1000); // Checkpoint every 5 minutes in background
+}
+
+export function stopWalCheckpointDaemon(): void {
+  if (walCheckpointTimer) {
+    clearInterval(walCheckpointTimer);
+    walCheckpointTimer = null;
+  }
 }
 
 export function getDatabase(): Database.Database {
@@ -74,9 +95,16 @@ export function getDatabase(): Database.Database {
 }
 
 export function closeDatabase(): void {
+  stopWalCheckpointDaemon();
   if (db) {
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      db.exec('PRAGMA optimize;');
+    } catch (err: any) {
+      console.warn('[DB] Checkpoint on close warning:', err.message);
+    }
     db.close();
-    console.log('[DB] Database closed');
+    console.log('[DB] Database closed cleanly');
   }
 }
 
@@ -85,19 +113,36 @@ export async function createBackup(): Promise<string> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = path.join(getBackupDir(), `flo-backup-${timestamp}.db`);
   console.log('[DB] createBackup: Target path:', backupPath);
+  try {
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+  } catch {}
   await db.backup(backupPath);
   console.log(`[DB] Backup created: ${backupPath}`);
   return backupPath;
 }
 
 export function restoreBackup(backupPath: string): void {
-  db.close();
+  if (db) {
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    } catch {}
+    db.close();
+  }
   const dbPath = getDbPath();
+  // Remove companion WAL & SHM files so old transaction logs don't contaminate the restored database
+  if (fs.existsSync(dbPath + '-wal')) {
+    try { fs.unlinkSync(dbPath + '-wal'); } catch {}
+  }
+  if (fs.existsSync(dbPath + '-shm')) {
+    try { fs.unlinkSync(dbPath + '-shm'); } catch {}
+  }
   fs.copyFileSync(backupPath, dbPath);
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = OFF');
+  runMigrations();
   db.pragma('foreign_keys = ON');
-  console.log(`[DB] Restored from: ${backupPath}`);
+  console.log(`[DB] Restored and auto-migrated from: ${backupPath}`);
 }
 
 function getCurrentSchemaVersion(): number {
@@ -153,6 +198,11 @@ function runMigrations(): void {
     value TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`);
+  if (!columnExists('settings', 'updated_at')) {
+    try {
+      db.exec(`ALTER TABLE settings ADD COLUMN updated_at TEXT`);
+    } catch {}
+  }
 
   const currentVersion = getCurrentSchemaVersion();
   console.log(`[DB] Schema version: ${currentVersion} → ${SCHEMA_VERSION}`);
@@ -484,6 +534,15 @@ function runMigrations(): void {
     }
     if (!columnExists('customers', 'is_active')) {
       db.exec(`ALTER TABLE customers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1`);
+    }
+
+    // 6. Invariant enforcement: Permanently drop unique barcode indexes across all databases
+    try {
+      db.exec(`DROP INDEX IF EXISTS idx_products_barcode_unique`);
+      db.exec(`DROP INDEX IF EXISTS idx_products_barcode_clean`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode) WHERE barcode IS NOT NULL AND trim(barcode) != ''`);
+    } catch (err: any) {
+      console.warn('[DB] Self-healing barcode index notice:', err.message);
     }
   } catch (err: any) {
     console.warn('[DB] Self-healing table check notice:', err.message);
@@ -1171,10 +1230,17 @@ function runIncrementalMigrations(fromVersion: number): void {
   }
 
   // Update schema version
-  db.prepare(`
-    INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-  `).run(String(SCHEMA_VERSION));
+  if (columnExists('settings', 'updated_at')) {
+    db.prepare(`
+      INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(String(SCHEMA_VERSION));
+  } else {
+    db.prepare(`
+      INSERT INTO settings (key, value) VALUES ('schema_version', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(String(SCHEMA_VERSION));
+  }
   console.log('[DB] Incremental migration complete');
 }
 
