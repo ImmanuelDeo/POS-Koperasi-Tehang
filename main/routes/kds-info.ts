@@ -5,19 +5,15 @@
  */
 import { Router, Request, Response } from 'express';
 import QRCode from 'qrcode';
-import { getLocalIP } from '../server';
 import { getKdsPort } from '../kds-server';
 
 const router = Router();
 
 router.get('/', async (_req: Request, res: Response) => {
   const kdsPort = getKdsPort();
-  const ip = getLocalIP();
-
-  const mdnsUrl = `http://flo.local:${kdsPort}`;
-  const ipUrl   = `http://${ip}:${kdsPort}`;
-  // Prefer IP URL for QR — mDNS may not resolve on Android
-  const qrUrl   = ipUrl;
+  const mdnsUrl = `http://localhost:${kdsPort}`;
+  const ipUrl = `http://127.0.0.1:${kdsPort}`;
+  const qrUrl = ipUrl;
 
   let qrDataUrl: string | null = null;
   try {

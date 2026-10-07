@@ -525,14 +525,12 @@ router.post('/', (req: Request, res: Response) => {
     const parsedTags = Array.isArray(tags) ? tags : typeof tags === 'string' ? [tags] : [];
     const cleanUnit = unit ? String(unit).trim() : 'pcs';
 
-    // Auto-register unit into product_units if non-empty
-    if (cleanUnit) {
-      try {
+    const createProductTx = db.transaction(() => {
+      if (cleanUnit) {
         db.prepare('INSERT OR IGNORE INTO product_units (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run(uuidv4(), cleanUnit);
-      } catch {}
-    }
+      }
 
-    const result = db.prepare(`
+      db.prepare(`
       INSERT INTO products (id, category_id, name, sku, barcode, description, price, cost,
         tax_type, tax_rate, track_inventory, stock_quantity, low_stock_threshold,
         is_active, image_url, sort_order, cb_percent, tags,
@@ -542,7 +540,7 @@ router.post('/', (req: Request, res: Response) => {
     `).run(
       id, category_id || null, name, sku || null, cleanBarcode, description || null, parsedPrice, parsedCostPrice,
       'none', 0,
-      track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
+      track_inventory ? 1 : 0, track_inventory ? 0 : (stock_quantity || 0), low_stock_threshold || 0,
       is_active !== false ? 1 : 0, image_url || null,
       sort_order || 0, cb_percent || 0, JSON.stringify(parsedTags),
       cleanUnit,
@@ -550,38 +548,41 @@ router.post('/', (req: Request, res: Response) => {
       parsedMemberPrice,
       parsedMinReorderQty,
       now(), now()
-    );
+      );
 
-    if (addon_group_ids && addon_group_ids.length > 0) {
-      const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
-      for (const agId of addon_group_ids) {
-        insertAgp.run(agId, id);
+      if (addon_group_ids && addon_group_ids.length > 0) {
+        const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
+        for (const agId of addon_group_ids) {
+          insertAgp.run(agId, id);
+        }
       }
-    }
 
-    // Auto-record initial stock movement in ledger for full auditability
-    if (track_inventory && Number(stock_quantity) > 0) {
-      const initQty = Math.max(0, Math.round(Number(stock_quantity)));
-      db.prepare(`
+      if (track_inventory && Number(stock_quantity) > 0) {
+        const initQty = Math.max(0, Math.round(Number(stock_quantity)));
+        db.prepare('UPDATE products SET stock_quantity = ?, updated_at = ? WHERE id = ?').run(initQty, now(), id);
+        db.prepare(`
         INSERT INTO stock_movements (
           product_id, movement_type, quantity,
           balance_before, balance_after, unit_cost,
           reference_type, reference_id, notes,
           created_by, created_at
-        ) VALUES (?, 'in', ?, 0, ?, ?, 'initial_stock', ?, ?, ?, ?)
-      `).run(
-        id,
-        initQty,
-        initQty,
-        parsedCostPrice,
-        `INIT-${id.slice(0, 8)}`,
-        'Stok Awal Produk Baru (Manual Input)',
-        (req as any).user?.id || 'system',
-        now()
-      );
-    }
+        ) VALUES (?, 'initial', ?, 0, ?, ?, 'initial_stock', ?, ?, ?, ?)
+        `).run(
+          id,
+          initQty,
+          initQty,
+          parsedCostPrice,
+          `INIT-${id.slice(0, 8)}`,
+          'Stok Awal Produk Baru (Manual Input)',
+          (req as any).user?.id || 'system',
+          now()
+        );
+      }
 
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+      return db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+    });
+
+    const product = createProductTx();
     res.status(201).json({ product: formatProductResponse(product, db), warnings });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -657,41 +658,38 @@ router.put('/:id', (req: Request, res: Response) => {
     }
 
     const cleanUnit = unit !== undefined ? (unit ? String(unit).trim() : 'pcs') : product.unit;
-    if (cleanUnit) {
-      try {
+    const updateProductTx = db.transaction(() => {
+      if (cleanUnit) {
         db.prepare('INSERT OR IGNORE INTO product_units (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)').run(uuidv4(), cleanUnit);
-      } catch {}
-    }
+      }
 
-    // Auto-record stock movement if stock quantity changed during edit
-    if (track_inventory && stock_quantity !== undefined && stock_quantity !== null) {
-      const newStock = Math.max(0, Math.round(Number(stock_quantity)));
-      const oldStock = Math.max(0, Math.round(Number(product.stock_quantity || 0)));
-      const diff = newStock - oldStock;
-      if (diff !== 0) {
-        db.prepare(`
+      if (track_inventory && stock_quantity !== undefined && stock_quantity !== null) {
+        const newStock = Math.max(0, Math.round(Number(stock_quantity)));
+        const oldStock = Math.max(0, Math.round(Number(product.stock_quantity || 0)));
+        const diff = newStock - oldStock;
+        if (diff !== 0) {
+          db.prepare(`
           INSERT INTO stock_movements (
             product_id, movement_type, quantity,
             balance_before, balance_after, unit_cost,
             reference_type, reference_id, notes,
             created_by, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'manual_adjustment', ?, ?, ?, ?)
-        `).run(
-          req.params.id,
-          diff > 0 ? 'in' : 'out',
-          Math.abs(diff),
-          oldStock,
-          newStock,
-          parsedCostPrice || 0,
-          `ADJ-${Date.now()}`,
-          diff > 0 ? `Penambahan stok manual (+${diff})` : `Pengurangan stok manual (${diff})`,
-          (req as any).user?.id || 'system',
-          now()
-        );
+          ) VALUES (?, 'adjustment', ?, ?, ?, ?, 'manual_adjustment', ?, ?, ?, ?)
+          `).run(
+            req.params.id,
+            diff,
+            oldStock,
+            newStock,
+            parsedCostPrice || 0,
+            `ADJ-${Date.now()}`,
+            diff > 0 ? `Penambahan stok manual (+${diff})` : `Pengurangan stok manual (${diff})`,
+            (req as any).user?.id || 'system',
+            now()
+          );
+        }
       }
-    }
 
-    db.prepare(`
+      db.prepare(`
       UPDATE products SET category_id = COALESCE(?, category_id), name = COALESCE(?, name),
         sku = COALESCE(?, sku), barcode = ?, description = COALESCE(?, description), price = COALESCE(?, price),
         cost = COALESCE(?, cost),
@@ -709,7 +707,7 @@ router.put('/:id', (req: Request, res: Response) => {
         min_reorder_qty = COALESCE(?, min_reorder_qty),
         updated_at = ?
       WHERE id = ?
-    `).run(
+      `).run(
       category_id, name, sku, cleanBarcode, description, parsedPrice, parsedCostPrice,
       track_inventory !== undefined ? (track_inventory ? 1 : 0) : null,
       stock_quantity, low_stock_threshold,
@@ -721,17 +719,20 @@ router.put('/:id', (req: Request, res: Response) => {
       parsedMinReorderQty,
       now(),
       req.params.id
-    );
+      );
 
-    if (addon_group_ids && Array.isArray(addon_group_ids)) {
-      db.prepare('DELETE FROM addon_group_product WHERE product_id = ?').run(req.params.id);
-      const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
-      for (const agId of addon_group_ids) {
-        insertAgp.run(agId, req.params.id);
+      if (addon_group_ids && Array.isArray(addon_group_ids)) {
+        db.prepare('DELETE FROM addon_group_product WHERE product_id = ?').run(req.params.id);
+        const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
+        for (const agId of addon_group_ids) {
+          insertAgp.run(agId, req.params.id);
+        }
       }
-    }
 
-    const updatedProduct = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+      return db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    });
+
+    const updatedProduct = updateProductTx();
     res.json({ product: formatProductResponse(updatedProduct, db), warnings });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

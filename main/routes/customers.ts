@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { getDatabase, now } from '../db';
 import { normalizeNik, maskNik } from '../services/privacy';
 import { createAuditLog } from '../services/audit';
+import { findMemberIdentifierConflict } from '../services/member-identifiers';
 import {
   calculatePayrollPeriod,
   getMemberMonthlyUsage,
@@ -210,14 +211,15 @@ router.post('/', (req: Request, res: Response) => {
       is_member, salary_deduction_enabled, monthly_deduction_limit, outstanding_deduction_limit
     } = req.body;
 
-    if (!name || !name.trim()) {
+    if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ message: 'Name is required' });
     }
 
     const db = getDatabase();
 
-    if (phone) {
-      const existing = db.prepare('SELECT * FROM customers WHERE phone = ?').get(phone);
+    const cleanPhoneForCheck = phone && String(phone).trim().length > 0 ? String(phone).trim() : null;
+    if (cleanPhoneForCheck) {
+      const existing = db.prepare('SELECT * FROM customers WHERE phone = ?').get(cleanPhoneForCheck);
       if (existing) {
         return res.status(400).json({ message: 'Customer with this phone already exists' });
       }
@@ -225,13 +227,34 @@ router.post('/', (req: Request, res: Response) => {
 
     const cleanNik = nik ? normalizeNik(nik) : null;
     if (cleanNik) {
-      const existingNik = db.prepare('SELECT id, name FROM customers WHERE nik = ?').get(cleanNik) as any;
+      const existingNik = findMemberIdentifierConflict(db, 'nik', cleanNik);
       if (existingNik) {
         return res.status(400).json({ message: `NIK '${cleanNik}' sudah terdaftar pada anggota ${existingNik.name}` });
       }
     }
 
+    // Normalisasi string kosong menjadi NULL agar tidak tabrakan partial UNIQUE index
+    // ('' IS NOT NULL sehingga 2 baris berisi '' akan UNIQUE conflict).
+    const cleanMemberNo = member_no && String(member_no).trim().length > 0 ? String(member_no).trim() : null;
+    const cleanEmployeeId = employee_id && String(employee_id).trim().length > 0 ? String(employee_id).trim() : null;
+    const cleanPhone = phone && String(phone).trim().length > 0 ? String(phone).trim() : null;
+
     const id = 'cust-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+
+    // Cek duplikat eksplisit sebelum INSERT agar pesan ramah (bukan SQLITE error mentah)
+    if (cleanMemberNo) {
+      const existingNo = findMemberIdentifierConflict(db, 'member_no', cleanMemberNo);
+      if (existingNo) {
+        return res.status(409).json({ message: `Nomor anggota '${cleanMemberNo}' sudah digunakan oleh ${existingNo.name}` });
+      }
+    }
+    if (cleanEmployeeId) {
+      const existingEmp = findMemberIdentifierConflict(db, 'employee_id', cleanEmployeeId);
+      if (existingEmp) {
+        return res.status(409).json({ message: `NIK Karyawan '${cleanEmployeeId}' sudah digunakan oleh ${existingEmp.name}` });
+      }
+    }
+
     db.prepare(`
       INSERT INTO customers (
         id, phone, name, email, address, notes, nik, member_no, employee_id, department,
@@ -240,14 +263,14 @@ router.post('/', (req: Request, res: Response) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       id,
-      phone ? String(phone).trim() : null,
+      cleanPhone,
       String(name).trim(),
       email ? String(email).trim() : null,
       address ? String(address).trim() : null,
       notes ? String(notes).trim() : null,
       cleanNik,
-      member_no ? String(member_no).trim() : null,
-      employee_id ? String(employee_id).trim() : null,
+      cleanMemberNo,
+      cleanEmployeeId,
       department ? String(department).trim() : 'Umum',
       is_member !== undefined ? (is_member ? 1 : 0) : 1,
       salary_deduction_enabled !== undefined ? (salary_deduction_enabled ? 1 : 0) : 1,
@@ -261,6 +284,9 @@ router.post('/', (req: Request, res: Response) => {
     res.status(201).json({ customer: formatCustomerResponse(customer) });
   } catch (error: any) {
     console.error('[Customer POST error]', error);
+    if (error?.message?.includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ message: 'Terjadi konflik data unik (NIK, No. Anggota, atau NIK Karyawan sudah digunakan)' });
+    }
     res.status(500).json({ message: 'Failed to create customer: ' + error.message });
   }
 });
@@ -282,11 +308,29 @@ router.put('/:id', (req: Request, res: Response) => {
     if (nik !== undefined) {
       cleanNik = nik && String(nik).trim() ? normalizeNik(nik) : null;
       if (cleanNik && cleanNik !== customer.nik) {
-        const existingNik = db.prepare('SELECT id, name FROM customers WHERE nik = ? AND id != ?').get(cleanNik, req.params.id) as any;
+        const existingNik = findMemberIdentifierConflict(db, 'nik', cleanNik, req.params.id);
         if (existingNik) {
           return res.status(400).json({ error: `NIK '${cleanNik}' sudah digunakan oleh anggota lain: ${existingNik.name}` });
         }
       }
+    }
+
+    // Normalisasi '' -> NULL + cek duplikat member_no/employee_id/phone (abaikan milik sendiri).
+    const normOrUndef = (v: any) => (v === undefined ? undefined : (v && String(v).trim() ? String(v).trim() : null));
+    const newMemberNo = normOrUndef(member_no);
+    const newEmployeeId = normOrUndef(employee_id);
+    const newPhone = normOrUndef(phone);
+    if (newMemberNo) {
+      const dup = findMemberIdentifierConflict(db, 'member_no', newMemberNo, req.params.id);
+      if (dup) return res.status(409).json({ error: `Nomor anggota '${newMemberNo}' sudah digunakan oleh ${dup.name}` });
+    }
+    if (newEmployeeId) {
+      const dup = findMemberIdentifierConflict(db, 'employee_id', newEmployeeId, req.params.id);
+      if (dup) return res.status(409).json({ error: `NIK Karyawan '${newEmployeeId}' sudah digunakan oleh ${dup.name}` });
+    }
+    if (newPhone) {
+      const dup = db.prepare('SELECT id, name FROM customers WHERE phone = ? AND id != ?').get(newPhone, req.params.id) as any;
+      if (dup) return res.status(409).json({ error: `Nomor HP '${newPhone}' sudah digunakan oleh ${dup.name}` });
     }
 
     db.prepare(`
@@ -322,6 +366,9 @@ router.put('/:id', (req: Request, res: Response) => {
     const updated = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
     res.json({ customer: formatCustomerResponse(updated) });
   } catch (error: any) {
+    if (String(error?.message || '').includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ error: 'Konflik data unik: NIK / No. Anggota / NIK Karyawan / HP sudah dipakai anggota lain.' });
+    }
     res.status(500).json({ error: error.message });
   }
 });

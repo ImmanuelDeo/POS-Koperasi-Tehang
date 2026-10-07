@@ -143,6 +143,22 @@ router.get('/backup', async (req: Request, res: Response) => {
   }
 });
 
+// POST alias — frontend settings memanggil POST /db/backup (tanpa PIN).
+// Tanpa gate Master PIN sesuai keputusan: backup/restore tanpa PIN.
+router.post('/backup', async (req: Request, res: Response) => {
+  try {
+    const backupPath = await createBackup();
+    res.json({
+      success: true,
+      path: backupPath,
+      filename: path.basename(backupPath)
+    });
+  } catch (error: any) {
+    console.error('[DB Backup] Error:', error);
+    res.status(500).json({ error: 'Backup failed: ' + error.message });
+  }
+});
+
 router.get('/download', (req: Request, res: Response) => {
   try {
     const dbPath = getDbPath();

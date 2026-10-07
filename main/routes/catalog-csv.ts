@@ -9,8 +9,102 @@ import {
   validateCatalogGrid,
   executeCatalogImport,
 } from '../services/catalog-csv';
+import {
+  executeProductWorkbookImport,
+  generateAllProductsWorkbook,
+  parseEditableWorkbook,
+  validateProductWorkbook,
+} from '../services/bulk-workbooks';
 
 const router = Router();
+const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+async function readEditableWorkbook(body: any): Promise<string[][]> {
+  const encoded = body?.xlsx_base64;
+  if (typeof encoded !== 'string' || !encoded || encoded.length > 14 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw new Error('File Excel (.xlsx) wajib diunggah dan maksimal 10 MB.');
+  }
+  return parseEditableWorkbook(Buffer.from(encoded, 'base64'));
+}
+
+function canManageProducts(req: AuthenticatedRequest, res: Response): boolean {
+  if (['owner', 'admin', 'office_inventory'].includes(req.user?.role || '')) return true;
+  res.status(403).json({ error: 'Akses ekspor/impor massal produk hanya untuk Owner, Admin, atau Inventory.' });
+  return false;
+}
+
+// GET /api/catalog-csv/export-all: export seluruh produk aktif/arsip ke workbook; tanpa parameter.
+router.get('/export-all', async (req: AuthenticatedRequest, res: Response) => {
+  if (!canManageProducts(req, res)) return;
+  try {
+    const buffer = await generateAllProductsWorkbook(getDatabase());
+    res.setHeader('Content-Type', XLSX_CONTENT_TYPE);
+    res.setHeader('Content-Disposition', 'attachment; filename="data-semua-produk-koperasi.xlsx"');
+    return res.status(200).send(buffer);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Gagal mengekspor data produk.' });
+  }
+});
+
+// POST /api/catalog-csv/bulk-preview: validate editable workbook in memory; body: xlsx_base64.
+router.post('/bulk-preview', async (req: AuthenticatedRequest, res: Response) => {
+  if (!canManageProducts(req, res)) return;
+  try {
+    const grid = await readEditableWorkbook(req.body);
+    const validation = validateProductWorkbook(getDatabase(), grid);
+    return res.status(200).json({
+      ...validation,
+      rows: validation.rows.slice(0, 50).map((row) => ({
+        row_number: row.row_number,
+        id: row.id,
+        action: row.action,
+        name: row.values.name || '',
+      })),
+      errors: validation.errors.slice(0, 50),
+      preview_limited: validation.rows.length > 50,
+      errors_limited: validation.errors.length > 50,
+    });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message || 'Gagal membaca workbook produk.' });
+  }
+});
+
+// POST /api/catalog-csv/bulk-import: apply validated edits/deletions atomically; body: xlsx_base64.
+router.post('/bulk-import', async (req: AuthenticatedRequest, res: Response) => {
+  if (!canManageProducts(req, res)) return;
+  let grid: string[][];
+  try {
+    grid = await readEditableWorkbook(req.body);
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message || 'File workbook produk tidak valid.' });
+  }
+
+  const db = getDatabase();
+  let validation;
+  try {
+    validation = validateProductWorkbook(db, grid);
+  } catch (error: any) {
+    console.error('[Catalog XLSX] Bulk import validation failed:', error);
+    return res.status(500).json({ error: error.message || 'Gagal memvalidasi workbook produk.' });
+  }
+  if (!validation.valid) {
+    return res.status(422).json({
+      error: 'Validasi gagal; tidak ada perubahan produk yang disimpan.',
+      validation: { ...validation, rows: validation.rows.slice(0, 50), errors: validation.errors.slice(0, 50) },
+    });
+  }
+  try {
+    const result = executeProductWorkbookImport(db, validation.rows, req.user!.id, req.user!.role);
+    return res.status(200).json({ message: 'Perubahan data produk berhasil diterapkan.', result });
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    if (message.includes('SQLITE_CONSTRAINT_UNIQUE') || message.includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ error: 'Impor dibatalkan karena terjadi konflik data unik. Tidak ada perubahan yang disimpan.' });
+    }
+    console.error('[Catalog XLSX] Bulk import failed:', error);
+    return res.status(500).json({ error: error.message || 'Gagal menerapkan perubahan produk.' });
+  }
+});
 
 // ── GET /api/catalog-csv/template ─────────────────────────────────────────────
 // Download standard CSV catalog template for POS Koperasi

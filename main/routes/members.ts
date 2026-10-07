@@ -10,6 +10,7 @@ import {
 } from '../services/cooperative';
 import { normalizeNik, validateNik, maskNik } from '../services/privacy';
 import { createAuditLog } from '../services/audit';
+import { findMemberIdentifierConflict } from '../services/member-identifiers';
 import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
@@ -292,8 +293,9 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
       return res.status(422).json({ error: 'Nama anggota wajib diisi' });
     }
 
-    // 1. Validate NIK (Mandatory for new members)
-    const nikCheck = validateNik(nik, true);
+    // 1. Validate NIK (Optional for manual add — import juga membolehkan NIK kosong.
+    // Wajib 16 digit HANYA jika diisi, agar tidak ada UNIQUE conflict '' vs NULL.)
+    const nikCheck = validateNik(nik, false);
     if (!nikCheck.valid) {
       return res.status(422).json({ error: nikCheck.error });
     }
@@ -320,7 +322,7 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
 
     // 2. Check duplicate NIK (Safe error without leaking other member identity)
     if (cleanNik) {
-      const existingNik = db.prepare('SELECT id FROM customers WHERE nik = ?').get(cleanNik) as any;
+      const existingNik = findMemberIdentifierConflict(db, 'nik', cleanNik);
       if (existingNik) {
         return res.status(409).json({ error: 'NIK sudah terdaftar pada sistem koperasi' });
       }
@@ -328,14 +330,14 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
 
     // Check unique constraints for member_no and employee_id
     if (cleanMemberNo) {
-      const existingNo = db.prepare('SELECT id, name FROM customers WHERE member_no = ?').get(cleanMemberNo) as any;
+      const existingNo = findMemberIdentifierConflict(db, 'member_no', cleanMemberNo);
       if (existingNo) {
         return res.status(409).json({ error: `Nomor anggota '${cleanMemberNo}' sudah digunakan` });
       }
     }
 
     if (cleanEmployeeId) {
-      const existingEmp = db.prepare('SELECT id, name FROM customers WHERE employee_id = ?').get(cleanEmployeeId) as any;
+      const existingEmp = findMemberIdentifierConflict(db, 'employee_id', cleanEmployeeId);
       if (existingEmp) {
         return res.status(409).json({ error: `NIK Karyawan (Employee ID) '${cleanEmployeeId}' sudah digunakan` });
       }
@@ -344,7 +346,8 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
     const id = uuidv4();
     const deductionEnabled = salary_deduction_enabled === false || salary_deduction_enabled === 0 || salary_deduction_enabled === '0' ? 0 : 1;
 
-    db.prepare(`
+    const createMemberTx = db.transaction(() => {
+      db.prepare(`
       INSERT INTO customers (
         id, nik, name, phone, email, address, notes,
         is_member, member_no, employee_id, department,
@@ -367,30 +370,32 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
       parsedOutstandingLimit,
       now(),
       now()
-    );
+      );
 
-    // Audit logs (No raw NIK stored)
-    createAuditLog(db, {
-      actor_user_id: req.user?.id,
-      actor_role: req.user?.role,
-      action: 'member.created',
-      target_type: 'member',
-      target_id: id,
-      details: { member_id: id, member_no: cleanMemberNo, name: name.trim(), nik_masked: maskNik(cleanNik) },
-      ip_address: req.ip || null,
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'member.created',
+        target_type: 'member',
+        target_id: id,
+        details: { member_id: id, member_no: cleanMemberNo, name: name.trim(), nik_masked: maskNik(cleanNik) },
+        ip_address: req.ip || null,
+      });
+
+      createAuditLog(db, {
+        actor_user_id: req.user?.id,
+        actor_role: req.user?.role,
+        action: 'member.nik.created',
+        target_type: 'member',
+        target_id: id,
+        details: { member_id: id, nik_masked: maskNik(cleanNik) },
+        ip_address: req.ip || null,
+      });
+
+      return db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as any;
     });
 
-    createAuditLog(db, {
-      actor_user_id: req.user?.id,
-      actor_role: req.user?.role,
-      action: 'member.nik.created',
-      target_type: 'member',
-      target_id: id,
-      details: { member_id: id, nik_masked: maskNik(cleanNik) },
-      ip_address: req.ip || null,
-    });
-
-    const created = db.prepare('SELECT * FROM customers WHERE id = ?').get(id) as any;
+    const created = createMemberTx();
     res.status(201).json({
       member: {
         ...created,
@@ -445,7 +450,7 @@ router.put('/:id', (req: AuthenticatedRequest, res: Response) => {
       cleanNik = nikCheck.normalized;
 
       if (cleanNik !== existing.nik) {
-        const dupNik = db.prepare('SELECT id FROM customers WHERE nik = ? AND id != ?').get(cleanNik, req.params.id) as any;
+        const dupNik = findMemberIdentifierConflict(db, 'nik', cleanNik, req.params.id);
         if (dupNik) {
           return res.status(409).json({ error: 'NIK sudah terdaftar pada sistem koperasi' });
         }
@@ -462,14 +467,14 @@ router.put('/:id', (req: AuthenticatedRequest, res: Response) => {
       : existing.employee_id;
 
     if (cleanMemberNo && cleanMemberNo !== existing.member_no) {
-      const dup = db.prepare('SELECT id, name FROM customers WHERE member_no = ? AND id != ?').get(cleanMemberNo, req.params.id) as any;
+      const dup = findMemberIdentifierConflict(db, 'member_no', cleanMemberNo, req.params.id);
       if (dup) {
         return res.status(409).json({ error: `Nomor anggota '${cleanMemberNo}' sudah digunakan` });
       }
     }
 
     if (cleanEmployeeId && cleanEmployeeId !== existing.employee_id) {
-      const dup = db.prepare('SELECT id, name FROM customers WHERE employee_id = ? AND id != ?').get(cleanEmployeeId, req.params.id) as any;
+      const dup = findMemberIdentifierConflict(db, 'employee_id', cleanEmployeeId, req.params.id);
       if (dup) {
         return res.status(409).json({ error: `NIK Karyawan '${cleanEmployeeId}' sudah digunakan` });
       }
@@ -497,65 +502,68 @@ router.put('/:id', (req: AuthenticatedRequest, res: Response) => {
       ? (is_active === false || is_active === 0 || is_active === '0' ? 0 : 1)
       : existing.is_active;
 
-    db.prepare(`
-      UPDATE customers SET
-        nik = ?,
-        name = COALESCE(?, name),
-        member_no = ?,
-        employee_id = ?,
-        department = COALESCE(?, department),
-        phone = COALESCE(?, phone),
-        email = COALESCE(?, email),
-        address = COALESCE(?, address),
-        notes = COALESCE(?, notes),
-        salary_deduction_enabled = ?,
-        monthly_deduction_limit = ?,
-        outstanding_deduction_limit = ?,
-        is_active = ?,
-        updated_at = ?
-      WHERE id = ?
-    `).run(
-      cleanNik,
-      name !== undefined ? name.trim() : null,
-      cleanMemberNo,
-      cleanEmployeeId,
-      department !== undefined ? department?.trim() || null : null,
-      phone !== undefined ? phone?.trim() || null : null,
-      email !== undefined ? email?.trim() || null : null,
-      address !== undefined ? address?.trim() || null : null,
-      notes !== undefined ? notes?.trim() || null : null,
-      deductionEnabled,
-      parsedMonthlyLimit,
-      parsedOutstandingLimit,
-      activeStatus,
-      now(),
-      req.params.id
-    );
+    const updateMemberTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE customers SET
+          nik = ?,
+          name = COALESCE(?, name),
+          member_no = ?,
+          employee_id = ?,
+          department = COALESCE(?, department),
+          phone = COALESCE(?, phone),
+          email = COALESCE(?, email),
+          address = COALESCE(?, address),
+          notes = COALESCE(?, notes),
+          salary_deduction_enabled = ?,
+          monthly_deduction_limit = ?,
+          outstanding_deduction_limit = ?,
+          is_active = ?,
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        cleanNik,
+        name !== undefined ? name.trim() : null,
+        cleanMemberNo,
+        cleanEmployeeId,
+        department !== undefined ? department?.trim() || null : null,
+        phone !== undefined ? phone?.trim() || null : null,
+        email !== undefined ? email?.trim() || null : null,
+        address !== undefined ? address?.trim() || null : null,
+        notes !== undefined ? notes?.trim() || null : null,
+        deductionEnabled,
+        parsedMonthlyLimit,
+        parsedOutstandingLimit,
+        activeStatus,
+        now(),
+        req.params.id
+      );
 
-    // Audit logs
-    if (nikChanged) {
+      if (nikChanged) {
+        createAuditLog(db, {
+          actor_user_id: req.user?.id,
+          actor_role: req.user?.role,
+          action: 'member.nik.updated',
+          target_type: 'member',
+          target_id: req.params.id,
+          details: { member_id: req.params.id, nik_masked: maskNik(cleanNik) },
+          ip_address: req.ip || null,
+        });
+      }
+
       createAuditLog(db, {
         actor_user_id: req.user?.id,
         actor_role: req.user?.role,
-        action: 'member.nik.updated',
+        action: 'member.updated',
         target_type: 'member',
         target_id: req.params.id,
-        details: { member_id: req.params.id, nik_masked: maskNik(cleanNik) },
+        details: { member_id: req.params.id, name: name !== undefined ? name.trim() : existing.name },
         ip_address: req.ip || null,
       });
-    }
 
-    createAuditLog(db, {
-      actor_user_id: req.user?.id,
-      actor_role: req.user?.role,
-      action: 'member.updated',
-      target_type: 'member',
-      target_id: req.params.id,
-      details: { member_id: req.params.id, name: name !== undefined ? name.trim() : existing.name },
-      ip_address: req.ip || null,
+      return db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id) as any;
     });
 
-    const updated = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id) as any;
+    const updated = updateMemberTx();
     res.json({
       member: {
         ...updated,
@@ -637,40 +645,46 @@ router.delete('/:id', (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user?.id;
 
     if (orderCount === 0 && deductionCount === 0) {
-      db.prepare('DELETE FROM loyalty_ledger WHERE customer_id = ?').run(req.params.id);
-      db.prepare('DELETE FROM customers WHERE id = ?').run(req.params.id);
+      const deleteMemberTx = db.transaction(() => {
+        db.prepare('DELETE FROM loyalty_ledger WHERE customer_id = ?').run(req.params.id);
+        db.prepare('DELETE FROM customers WHERE id = ?').run(req.params.id);
 
-      createAuditLog(db, {
-        actor_user_id: userId,
-        actor_role: userRole,
-        action: 'member.deleted',
-        target_type: 'member',
-        target_id: String(req.params.id),
-        details: { name: member.name, member_no: member.member_no, mode: 'hard_delete' },
-        ip_address: req.ip || null,
+        createAuditLog(db, {
+          actor_user_id: userId,
+          actor_role: userRole,
+          action: 'member.deleted',
+          target_type: 'member',
+          target_id: String(req.params.id),
+          details: { name: member.name, member_no: member.member_no, mode: 'hard_delete' },
+          ip_address: req.ip || null,
+        });
       });
+      deleteMemberTx();
 
       return res.json({ success: true, message: `Member ${member.name} berhasil dihapus permanen` });
     }
 
     // Has transactions: soft delete / archive to protect accounting audit trail
-    db.prepare(`
-      UPDATE customers SET
-        is_active = 0,
-        salary_deduction_enabled = 0,
-        updated_at = ?
-      WHERE id = ?
-    `).run(now(), req.params.id);
+    const archiveMemberTx = db.transaction(() => {
+      db.prepare(`
+        UPDATE customers SET
+          is_active = 0,
+          salary_deduction_enabled = 0,
+          updated_at = ?
+        WHERE id = ?
+      `).run(now(), req.params.id);
 
-    createAuditLog(db, {
-      actor_user_id: userId,
-      actor_role: userRole,
-      action: 'member.archived',
-      target_type: 'member',
-      target_id: String(req.params.id),
-      details: { name: member.name, member_no: member.member_no, orders: orderCount, deductions: deductionCount, mode: 'soft_delete' },
-      ip_address: req.ip || null,
+      createAuditLog(db, {
+        actor_user_id: userId,
+        actor_role: userRole,
+        action: 'member.archived',
+        target_type: 'member',
+        target_id: String(req.params.id),
+        details: { name: member.name, member_no: member.member_no, orders: orderCount, deductions: deductionCount, mode: 'soft_delete' },
+        ip_address: req.ip || null,
+      });
     });
+    archiveMemberTx();
 
     return res.json({
       success: true,

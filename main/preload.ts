@@ -2,7 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   backupDatabase: () => ipcRenderer.invoke('backup-database'),
-  restoreBackup: () => ipcRenderer.invoke('restore-backup'),
+  restoreBackup: (pinOrPath?: string, backupPath?: string) =>
+    ipcRenderer.invoke('restore-backup', pinOrPath, backupPath),
 
   getSettings: () => ipcRenderer.invoke('get-settings'),
   setSetting: (key: string, value: string) => ipcRenderer.invoke('set-setting', key, value),

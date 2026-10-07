@@ -2,7 +2,6 @@ import express, { Express, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as http from 'http';
-import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { registerRoutes } from './routes';
@@ -133,7 +132,7 @@ export function startServer(): Promise<void> {
       res.status(500).json({ error: err.message || 'Internal server error' });
     });
 
-    server = app.listen(PORT, '0.0.0.0', () => {
+    server = app.listen(PORT, '127.0.0.1', () => {
       console.log(`[Server] HTTP server running on http://localhost:${PORT}`);
 
       if (server) {
@@ -151,7 +150,7 @@ export function startServer(): Promise<void> {
     server?.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         console.log(`[Server] Port ${PORT} in use, trying ${PORT + 1}`);
-        server?.listen(PORT + 1, '0.0.0.0');
+        server?.listen(PORT + 1, '127.0.0.1');
       } else {
         reject(err);
       }
@@ -164,19 +163,4 @@ export function stopServer(): void {
   if (wss) wss.close();
   if (server) server.close();
   console.log('[Server] HTTP server stopped');
-}
-
-/** Returns the first non-loopback IPv4 address on the machine. */
-export function getLocalIP(): string {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    const iface = interfaces[name];
-    if (!iface) continue;
-    for (const alias of iface) {
-      if (alias.family === 'IPv4' && !alias.internal) {
-        return alias.address;
-      }
-    }
-  }
-  return '127.0.0.1';
 }

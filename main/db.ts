@@ -1844,25 +1844,7 @@ function seedData(): void {
     `).run(id, name, color, icon, sort);
   }
 
-  // Sample products (Koperasi Sembako)
-  // [id, catId, name, price, member_price, unit, stock, sort]
-  const products = [
-    ['prod-1', 'cat-1', 'Beras Ramos 5 kg',        72000.00, 68000.00, 'sak',   50, 1],
-    ['prod-2', 'cat-1', 'Minyak Goreng 2 L',       34000.00, 32000.00, 'pouch', 80, 2],
-    ['prod-3', 'cat-2', 'Gula Pasir 1 kg',         17500.00, 16500.00, 'kg',    100, 1],
-    ['prod-4', 'cat-2', 'Telur Ayam 1 kg',         28000.00, 26000.00, 'kg',    40, 2],
-    ['prod-5', 'cat-2', 'Tepung Terigu 1 kg',      12500.00, 11500.00, 'kg',    60, 3],
-    ['prod-6', 'cat-2', 'Mi Instan Goreng',         3500.00,  3000.00, 'pcs',   240, 4],
-    ['prod-7', 'cat-3', 'Bumbu Racik Sachet',       2500.00,  2000.00, 'pcs',   150, 1],
-    ['prod-8', 'cat-4', 'Teh Celup Kotak',          8500.00,  8000.00, 'box',   75, 1],
-    ['prod-9', 'cat-5', 'Sabun Cuci Piring 750 ml',14000.00, 13000.00, 'pouch', 50, 1],
-  ];
-  for (const [id, catId, name, price, memberPrice, unit, stock, sort] of products) {
-    db.prepare(`
-      INSERT OR IGNORE INTO products (id, category_id, name, price, member_price, unit, stock_quantity, track_inventory, sort_order, is_active)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 1)
-    `).run(id, catId, name, price, memberPrice, unit, stock, sort);
-  }
+  // Clean initial state: No default sample products are seeded. Products catalog starts empty.
 
   // Sample tables (Preserved for compatibility)
   const tables = [
@@ -1917,20 +1899,67 @@ export function getLocalBusinessDateCompact(date: Date = new Date()): string {
 
 export function generateOrderNumber(): string {
   const date = getLocalBusinessDateCompact();
-  const prefix = `ORD-${date}-%`;
-  const result = db.prepare(
-    "SELECT COUNT(*) + 1 as next FROM orders WHERE order_number LIKE ?"
-  ).get(prefix) as { next: number };
-  return `ORD-${date}-${String(result.next).padStart(4, '0')}`;
+  const prefix = `ORD-${date}-`;
+  const activeNumbers = (db.prepare(
+    'SELECT order_number FROM orders WHERE order_number LIKE ?'
+  ).all(`${prefix}%`) as { order_number: string }[]).map((row) => row.order_number);
+  const deletedOrderLogs = db.prepare(`
+    SELECT details
+    FROM audit_logs
+    WHERE action = 'DELETE_ORDER_TRANSACTION'
+      AND target_type = 'order'
+      AND details LIKE ?
+  `).all(`%${prefix}%`) as { details: string | null }[];
+  const deletedNumbers = deletedOrderLogs.flatMap((row) => {
+    if (!row.details) return [];
+    try {
+      const details = JSON.parse(row.details);
+      return typeof details.order_number === 'string' ? [details.order_number] : [];
+    } catch (error) {
+      console.warn('[DB] Ignoring malformed order deletion audit details while generating order number:', error);
+      return [];
+    }
+  });
+  return generateNextDocumentNumber(prefix, [...activeNumbers, ...deletedNumbers]);
 }
 
 export function generateBillNumber(): string {
   const date = getLocalBusinessDateCompact();
-  const prefix = `INV-${date}-%`;
-  const result = db.prepare(
-    "SELECT COUNT(*) + 1 as next FROM bills WHERE bill_number LIKE ?"
-  ).get(prefix) as { next: number };
-  return `INV-${date}-${String(result.next).padStart(4, '0')}`;
+  const prefix = `INV-${date}-`;
+  const activeNumbers = (db.prepare(
+    'SELECT bill_number FROM bills WHERE bill_number LIKE ?'
+  ).all(`${prefix}%`) as { bill_number: string }[]).map((row) => row.bill_number);
+  const deletedBillLogs = db.prepare(`
+    SELECT details
+    FROM audit_logs
+    WHERE action = 'DELETE_ORDER_TRANSACTION'
+      AND target_type = 'order'
+      AND details LIKE ?
+  `).all(`%${prefix}%`) as { details: string | null }[];
+  const deletedNumbers = deletedBillLogs.flatMap((row) => {
+    if (!row.details) return [];
+    try {
+      const details = JSON.parse(row.details);
+      return Array.isArray(details.bill_numbers)
+        ? details.bill_numbers.filter((number: unknown): number is string => typeof number === 'string')
+        : [];
+    } catch (error) {
+      console.warn('[DB] Ignoring malformed bill deletion audit details while generating bill number:', error);
+      return [];
+    }
+  });
+  return generateNextDocumentNumber(prefix, [...activeNumbers, ...deletedNumbers]);
+}
+
+function generateNextDocumentNumber(prefix: string, existingNumbers: string[]): string {
+  const maxSuffix = existingNumbers.reduce((max, number) => {
+    if (!number.startsWith(prefix)) return max;
+    const suffix = number.slice(prefix.length);
+    if (!/^\d+$/.test(suffix)) return max;
+    const parsed = Number(suffix);
+    return Number.isSafeInteger(parsed) ? Math.max(max, parsed) : max;
+  }, 0);
+  return `${prefix}${String(maxSuffix + 1).padStart(4, '0')}`;
 }
 
 export function now(): string {

@@ -258,17 +258,12 @@ export default function SettingsPage() {
   const [initializeDbOpen, setInitializeDbOpen] = useState(false);
   const [shakeSaveBar, setShakeSaveBar] = useState(false);
 
-  // Unified PIN gate: 'set' opens the set/change-PIN dialog; 'backup'/'backup-custom'/
-  // 'import'/'restore' open a verify prompt and, on success, run the pending action.
+  // Unified PIN gate: hanya untuk 'set' (set/ganti Master PIN).
+  // Backup/restore/delete/import berjalan langsung tanpa PIN.
   type ImportPayload = { app: string; schema_version?: string; data: Record<string, unknown[]> };
   type BackupInfo = { fileName: string; path: string; sizeBytes: number; createdAt: string; kind: 'manual' | 'auto'; schemaVersion: number | null };
   type PinGate =
     | { mode: 'set' }
-    | { mode: 'backup' }
-    | { mode: 'backup-custom' }
-    | { mode: 'import'; payload: { data: ImportPayload; overwrite: boolean } }
-    | { mode: 'restore'; payload: { backupPath: string } }
-    | { mode: 'delete-backup'; payload: { fileName: string } }
     | null;
   const [pinGate, setPinGate] = useState<PinGate>(null);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
@@ -339,9 +334,9 @@ export default function SettingsPage() {
     }
   };
 
-  const runImport = async (data: ImportPayload, overwrite: boolean, master_pin?: string) => {
+  const runImport = async (data: ImportPayload, overwrite: boolean) => {
     try {
-      const response = await api.post('/db/import', { data, overwrite, master_pin });
+      const response = await api.post('/db/import', { data, overwrite });
       if (response.data.success) toast.success(response.data.message);
       return { success: true };
     } catch (err: unknown) {
@@ -355,101 +350,28 @@ export default function SettingsPage() {
   const handlePinGateSubmit = async (pin: string): Promise<{ success: boolean; error?: string }> => {
     if (!pinGate) return { success: false, error: t('settings.nothingPending') };
 
-    if (pinGate.mode === 'set') {
-      try {
-        await api.post('/db-tools/master-pin/reset', { pin, confirm_pin: pin });
-        await fetchMasterPinStatus();
-        toast.success(t('settings.masterPinSaved'));
-        setPinGate(null);
-        return { success: true };
-      } catch (err: unknown) {
-        const error = err as { response?: { data?: { error?: string } } };
-        return { success: false, error: error.response?.data?.error || t('settings.savePinFailed') };
-      }
+    // Hanya mode 'set' tersisa — backup/restore/delete/import tanpa PIN.
+    try {
+      await api.post('/db-tools/master-pin/reset', { new_pin: pin });
+      await fetchMasterPinStatus();
+      toast.success(t('settings.masterPinSaved'));
+      setPinGate(null);
+      return { success: true };
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      return { success: false, error: error.response?.data?.error || t('settings.savePinFailed') };
     }
-
-    if (pinGate.mode === 'backup') {
-      try {
-        const response = await api.post('/db/backup', { master_pin: pin });
-        toast.success(`${t('settings.backupCreated')} ${response.data.path}`, { duration: 5000 });
-        setPinGate(null);
-        fetchBackups();
-        return { success: true };
-      } catch (err: unknown) {
-        const error = err as { response?: { data?: { error?: string } } };
-        return { success: false, error: error.response?.data?.error || t('settings.backupFailedGeneric') };
-      }
-    }
-
-    if (pinGate.mode === 'backup-custom') {
-      if (!window.electronAPI?.backupDatabase) {
-        return { success: false, error: t('common.notAvailable') };
-      }
-      const result = await window.electronAPI.backupDatabase(pin);
-      if (result.success) {
-        toast.success(`${t('settings.backupCreated')} ${result.path}`, { duration: 5000 });
-        setPinGate(null);
-        return { success: true };
-      }
-      if (result.error === 'Cancelled') {
-        setPinGate(null);
-        return { success: true };
-      }
-      return { success: false, error: result.error || t('settings.backupFailedGeneric') };
-    }
-
-    if (pinGate.mode === 'restore') {
-      if (!window.electronAPI?.restoreBackup) {
-        return { success: false, error: t('common.notAvailable') };
-      }
-      const result = await window.electronAPI.restoreBackup(pin, pinGate.payload.backupPath);
-      if (result.success) {
-        toast.success(t('restore.success'));
-        setPinGate(null);
-        setTimeout(() => window.location.reload(), 1500);
-        return { success: true };
-      }
-      if (result.error === 'Cancelled') {
-        setPinGate(null);
-        return { success: true };
-      }
-      return { success: false, error: result.error || t('settings.restoreFailedGeneric') };
-    }
-
-    if (pinGate.mode === 'delete-backup') {
-      try {
-        await api.post(`/db-tools/backups/${encodeURIComponent(pinGate.payload.fileName)}/delete`, { master_pin: pin });
-        toast.success(t('settings.backupDeleted'));
-        setPinGate(null);
-        fetchBackups();
-        return { success: true };
-      } catch (err: unknown) {
-        const error = err as { response?: { data?: { error?: string } } };
-        return { success: false, error: error.response?.data?.error || t('settings.backupDeleteFailed') };
-      }
-    }
-
-    // mode === 'import'
-    const result = await runImport(pinGate.payload.data, pinGate.payload.overwrite, pin);
-    if (result.success) setPinGate(null);
-    return result;
   };
 
+  // Backup/restore tanpa PIN: langsung jalan, PIN gate hanya dipakai untuk 'set' + 'import'.
   const handleCreateBackup = async () => {
-    if (masterPinStatus.available && !masterPinStatus.isSet) {
-      toast.error(t('settings.masterPinRequiredForBackup'));
-      return;
+    try {
+      const response = await api.post('/db/backup', {});
+      toast.success(`${t('settings.backupCreated')} ${response.data.path}`, { duration: 5000 });
+      fetchBackups();
+    } catch {
+      toast.error(t('settings.backupFailed'));
     }
-    if (!masterPinStatus.available) {
-      try {
-        const response = await api.post('/db/backup', {});
-        toast.success(`${t('settings.backupCreated')} ${response.data.path}`, { duration: 5000 });
-      } catch {
-        toast.error(t('settings.backupFailed'));
-      }
-      return;
-    }
-    setPinGate({ mode: 'backup' });
   };
 
   // Lets the owner pick a custom save location (external drive, cloud-synced
@@ -457,27 +379,21 @@ export default function SettingsPage() {
   // Backup" action already uses. A backup saved this way does not appear in
   // the Backup History list below — same as it never has for the menu
   // action — since it's outside the managed backups/ directory. See #120.
+  // Tanpa PIN: langsung buka dialog simpan.
   const handleChooseBackupLocation = async () => {
-    if (masterPinStatus.available && !masterPinStatus.isSet) {
-      toast.error(t('settings.masterPinRequiredForBackup'));
+    if (!window.electronAPI?.backupDatabase) {
+      toast.error(t('common.notAvailable'));
       return;
     }
-    if (!masterPinStatus.available) {
-      if (!window.electronAPI?.backupDatabase) {
-        toast.error(t('common.notAvailable'));
-        return;
-      }
-      const result = await window.electronAPI.backupDatabase('');
-      if (result.success) {
-        toast.success(`${t('settings.backupCreated')} ${result.path}`, { duration: 5000 });
-      } else if (result.error !== 'Cancelled') {
-        toast.error(result.error || t('settings.backupFailedGeneric'));
-      }
-      return;
+    const result = await window.electronAPI.backupDatabase();
+    if (result.success) {
+      toast.success(`${t('settings.backupCreated')} ${result.path}`, { duration: 5000 });
+    } else if (result.error !== 'Cancelled') {
+      toast.error(result.error || t('settings.backupFailedGeneric'));
     }
-    setPinGate({ mode: 'backup-custom' });
   };
 
+  // Restore/delete tanpa PIN: langsung jalan setelah konfirmasi dialog.
   const handleRestoreFromHistory = async (backup: BackupInfo) => {
     const ok = await confirm(t('settings.restoreConfirm', { fileName: backup.fileName }), {
       title: t('settings.confirmRestoreTitle'),
@@ -486,25 +402,17 @@ export default function SettingsPage() {
     });
     if (!ok) return;
 
-    if (masterPinStatus.available && !masterPinStatus.isSet) {
-      toast.error(t('settings.setMasterPinFirst'));
+    if (!window.electronAPI?.restoreBackup) {
+      toast.error(t('common.notAvailable'));
       return;
     }
-    if (!masterPinStatus.available) {
-      if (!window.electronAPI?.restoreBackup) {
-        toast.error(t('common.notAvailable'));
-        return;
-      }
-      const result = await window.electronAPI.restoreBackup('', backup.path);
-      if (result.success) {
-        toast.success(t('restore.success'));
-        setTimeout(() => window.location.reload(), 1500);
-      } else if (result.error !== 'Cancelled') {
-        toast.error(result.error || t('settings.restoreFailedGeneric'));
-      }
-      return;
+    const result = await window.electronAPI.restoreBackup('', backup.path);
+    if (result.success) {
+      toast.success(t('restore.success'));
+      setTimeout(() => window.location.reload(), 1500);
+    } else if (result.error !== 'Cancelled') {
+      toast.error(result.error || t('settings.restoreFailedGeneric'));
     }
-    setPinGate({ mode: 'restore', payload: { backupPath: backup.path } });
   };
 
   const handleDeleteBackup = async (backup: BackupInfo) => {
@@ -515,22 +423,14 @@ export default function SettingsPage() {
     });
     if (!ok) return;
 
-    if (masterPinStatus.available && !masterPinStatus.isSet) {
-      toast.error(t('settings.setMasterPinFirst'));
-      return;
+    try {
+      await api.post(`/db-tools/backups/${encodeURIComponent(backup.fileName)}/delete`, {});
+      toast.success(t('settings.backupDeleted'));
+      fetchBackups();
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || t('settings.backupDeleteFailed'));
     }
-    if (!masterPinStatus.available) {
-      try {
-        await api.post(`/db-tools/backups/${encodeURIComponent(backup.fileName)}/delete`, {});
-        toast.success(t('settings.backupDeleted'));
-        fetchBackups();
-      } catch (err: unknown) {
-        const error = err as { response?: { data?: { error?: string } } };
-        toast.error(error.response?.data?.error || t('settings.backupDeleteFailed'));
-      }
-      return;
-    }
-    setPinGate({ mode: 'delete-backup', payload: { fileName: backup.fileName } });
   };
 
   const handleInitializeDatabase = async (pin: string) => {
@@ -3471,15 +3371,6 @@ export default function SettingsPage() {
 
                       const overwrite = await confirm(t('settings.importOverwriteConfirm'), { confirmLabel: t('settings.replaceAll') });
 
-                      if (overwrite && masterPinStatus.available) {
-                        if (!masterPinStatus.isSet) {
-                          toast.error(t('settings.masterPinRequiredForReplace'));
-                          return;
-                        }
-                        setPinGate({ mode: 'import', payload: { data, overwrite } });
-                        return;
-                      }
-
                       await runImport(data, overwrite);
                     } catch {
                       toast.error(t('settings.importFailed'));
@@ -4253,13 +4144,7 @@ export default function SettingsPage() {
 
       <MasterPinPrompt
         open={pinGate !== null}
-        mode={pinGate?.mode === 'set' ? 'set' : 'verify'}
-        title={
-          pinGate?.mode === 'backup' || pinGate?.mode === 'backup-custom' ? t('settings.confirmBackupTitle')
-          : pinGate?.mode === 'import' ? t('settings.confirmImportTitle')
-          : pinGate?.mode === 'restore' ? t('settings.confirmRestoreTitle')
-          : undefined
-        }
+        mode="set"
         onCancel={() => setPinGate(null)}
         onSubmit={handlePinGateSubmit}
       />

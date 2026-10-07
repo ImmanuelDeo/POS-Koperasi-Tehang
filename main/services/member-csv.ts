@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs';
 import { normalizeNik, validateNik, maskNik } from './privacy';
 import { createAuditLog } from './audit';
 import { now } from '../db';
+import { findMemberIdentifierConflict } from './member-identifiers';
 
 export interface ValidatedMemberRow {
   row_number: number;
@@ -377,13 +378,13 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
 
   // Pre-load existing database identifiers to prevent duplicates
   const existingNiks = new Set<string>(
-    (db.prepare("SELECT nik FROM customers WHERE nik IS NOT NULL AND nik != ''").all() as { nik: string }[]).map((r) => r.nik)
+    (db.prepare("SELECT nik FROM customers WHERE nik IS NOT NULL AND TRIM(nik) != ''").all() as { nik: string }[]).map((r) => r.nik.trim())
   );
   const existingEmpIds = new Set<string>(
-    (db.prepare("SELECT employee_id FROM customers WHERE employee_id IS NOT NULL AND employee_id != ''").all() as { employee_id: string }[]).map((r) => r.employee_id.toLowerCase())
+    (db.prepare("SELECT employee_id FROM customers WHERE employee_id IS NOT NULL AND TRIM(employee_id) != ''").all() as { employee_id: string }[]).map((r) => r.employee_id.trim().toLowerCase())
   );
   const existingMemberNos = new Set<string>(
-    (db.prepare("SELECT member_no FROM customers WHERE member_no IS NOT NULL AND member_no != ''").all() as { member_no: string }[]).map((r) => r.member_no.toLowerCase())
+    (db.prepare("SELECT member_no FROM customers WHERE member_no IS NOT NULL AND TRIM(member_no) != ''").all() as { member_no: string }[]).map((r) => r.member_no.trim().toLowerCase())
   );
 
   const seenCsvNiks = new Set<string>();
@@ -456,7 +457,7 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
     let cleanEmpId: string | null = null;
     if (rawEmpId) {
       cleanEmpId = rawEmpId;
-      const lowerEmp = cleanEmpId.toLowerCase();
+      const lowerEmp = cleanEmpId.trim().toLowerCase();
       if (seenCsvEmpIds.has(lowerEmp)) {
         errors.push({ row_number: rowNum, field: 'nik_karyawan', message: `NIK Karyawan (Employee ID) '${cleanEmpId}' duplikat dalam file`, value: cleanEmpId });
         rowHasError = true;
@@ -472,7 +473,7 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
     let cleanMemberNo: string | null = null;
     if (rawMemberNo) {
       cleanMemberNo = rawMemberNo;
-      const lowerMbr = cleanMemberNo.toLowerCase();
+      const lowerMbr = cleanMemberNo.trim().toLowerCase();
       if (seenCsvMemberNos.has(lowerMbr)) {
         errors.push({ row_number: rowNum, field: 'nomor_anggota', message: `Nomor Anggota '${cleanMemberNo}' duplikat dalam file`, value: cleanMemberNo });
         rowHasError = true;
@@ -603,34 +604,72 @@ export function executeMemberCsvImport(
     let createdCount = 0;
     const currentTime = now();
 
+    // Pre-load existing member_no (lowercased) agar nomor auto-generate tidak tabrakan UNIQUE
+    const takenMemberNos = new Set<string>(
+      (db.prepare("SELECT member_no FROM customers WHERE member_no IS NOT NULL AND TRIM(member_no) != ''").all() as { member_no: string }[]).map((r) => String(r.member_no).trim().toLowerCase())
+    );
+    const seenNiks = new Set<string>();
+    const seenEmployeeIds = new Set<string>();
+
+    const makeUniqueMemberNo = (preferred: string | null): string => {
+      let candidate = preferred && preferred.trim().length > 0 ? preferred.trim() : '';
+      if (!candidate) {
+        do {
+          candidate = `MBR-${Math.floor(100000 + Math.random() * 900000)}`;
+        } while (takenMemberNos.has(candidate.toLowerCase()));
+      } else if (takenMemberNos.has(candidate.toLowerCase())) {
+        throw new Error(`Nomor anggota '${candidate}' sudah digunakan saat impor baris diproses`);
+      }
+      takenMemberNos.add(candidate.toLowerCase());
+      return candidate;
+    };
+
     for (const row of rows) {
       const id = uuidv4();
-      const memberNo = row.member_no || `MBR-${Math.floor(1000 + Math.random() * 9000)}`;
+      const memberNo = makeUniqueMemberNo(row.member_no);
+      if (row.nik && (seenNiks.has(row.nik) || findMemberIdentifierConflict(db, 'nik', row.nik))) {
+        throw new Error(`NIK pada baris ${row.row_number} sudah digunakan oleh anggota lain. Impor dibatalkan.`);
+      }
+      if (row.employee_id && (seenEmployeeIds.has(row.employee_id.toLowerCase()) || findMemberIdentifierConflict(db, 'employee_id', row.employee_id))) {
+        throw new Error(`NIK karyawan pada baris ${row.row_number} sudah digunakan oleh anggota lain. Impor dibatalkan.`);
+      }
+      if (row.member_no && findMemberIdentifierConflict(db, 'member_no', row.member_no)) {
+        throw new Error(`Nomor anggota pada baris ${row.row_number} sudah digunakan oleh anggota lain. Impor dibatalkan.`);
+      }
       const optInAt = row.whatsapp_marketing_opt_in === 1 ? currentTime : null;
       const optInSource = row.whatsapp_marketing_opt_in === 1 ? 'csv_import' : null;
       const policyVer = row.whatsapp_marketing_opt_in === 1 ? 'v1.0-2026' : null;
 
-      insertMember.run(
-        id,
-        row.nik,
-        row.name,
-        row.phone,
-        row.email,
-        row.address,
-        row.notes,
-        memberNo,
-        row.employee_id,
-        row.department,
-        row.salary_deduction_enabled,
-        row.monthly_deduction_limit,
-        row.whatsapp_marketing_opt_in,
-        optInAt,
-        optInSource,
-        policyVer,
-        currentTime,
-        currentTime
-      );
+      try {
+        insertMember.run(
+          id,
+          row.nik,
+          row.name,
+          row.phone,
+          row.email,
+          row.address,
+          row.notes,
+          memberNo,
+          row.employee_id,
+          row.department,
+          row.salary_deduction_enabled,
+          row.monthly_deduction_limit,
+          row.whatsapp_marketing_opt_in,
+          optInAt,
+          optInSource,
+          policyVer,
+          currentTime,
+          currentTime
+        );
+      } catch (error: any) {
+        if (error?.code === 'SQLITE_CONSTRAINT_UNIQUE' || String(error?.message || '').includes('UNIQUE constraint failed')) {
+          throw new Error(`Konflik data unik pada baris ${row.row_number} (NIK, nomor anggota, atau NIK karyawan). Tidak ada data impor yang disimpan.`);
+        }
+        throw error;
+      }
 
+      if (row.nik) seenNiks.add(row.nik);
+      if (row.employee_id) seenEmployeeIds.add(row.employee_id.toLowerCase());
       if (row.whatsapp_marketing_opt_in === 1) {
         insertConsentLog.run(id, actorUserId || null, currentTime);
       }

@@ -1,9 +1,42 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { app, safeStorage } from 'electron';
 
 let runtimeDevSecret: string | null = null;
 let securityValidated = false;
+
+function getOrCreatePackagedJwtSecret(): string {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure OS storage is unavailable; refusing to start the packaged app without a protected JWT secret.');
+  }
+
+  const secretPath = path.join(app.getPath('userData'), 'jwt-secret.bin');
+  if (fs.existsSync(secretPath)) {
+    const secret = safeStorage.decryptString(fs.readFileSync(secretPath));
+    if (secret.length < 32) {
+      throw new Error(`Stored JWT secret is invalid: ${secretPath}`);
+    }
+    return secret;
+  }
+
+  const secret = crypto.randomBytes(32).toString('hex');
+  const encryptedSecret = safeStorage.encryptString(secret);
+  const temporaryPath = `${secretPath}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, encryptedSecret, { flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporaryPath, secretPath);
+  } catch (error) {
+    try {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    } catch (cleanupError) {
+      console.error('[Security] Failed to remove temporary JWT secret file:', cleanupError);
+    }
+    throw error;
+  }
+
+  return secret;
+}
 
 /**
  * Automatically loads .env file into process.env if present.
@@ -48,19 +81,11 @@ loadEnv();
  */
 export function validateSecurityConfig(): void {
   loadEnv();
-  const isProduction = process.env.NODE_ENV === 'production';
+  const isProduction = app.isPackaged || process.env.NODE_ENV === 'production';
   const secret = process.env.JWT_SECRET?.trim();
 
   if (isProduction) {
-    if (!secret) {
-      console.error('================================================================');
-      console.error('[SECURITY ERROR] JWT_SECRET is required in production mode!');
-      console.error('Please define a secure random JWT_SECRET (>= 32 chars) in .env');
-      console.error('================================================================');
-      process.exit(1);
-    }
-
-    if (secret.length < 32) {
+    if (secret && secret.length < 32) {
       console.error('================================================================');
       console.error('[SECURITY ERROR] JWT_SECRET must be at least 32 characters long in production!');
       console.error(`Current length is ${secret.length} characters.`);
@@ -68,7 +93,20 @@ export function validateSecurityConfig(): void {
       process.exit(1);
     }
 
-    console.log('[Security] Production JWT_SECRET validated successfully (>= 32 chars)');
+    if (!secret && !app.isPackaged) {
+      console.error('================================================================');
+      console.error('[SECURITY ERROR] JWT_SECRET is required in production mode!');
+      console.error('Please define a secure random JWT_SECRET (>= 32 chars) in .env');
+      console.error('================================================================');
+      process.exit(1);
+    }
+
+    if (secret) {
+      console.log('[Security] Production JWT_SECRET validated successfully (>= 32 chars)');
+    } else {
+      runtimeDevSecret = getOrCreatePackagedJwtSecret();
+      console.log('[Security] Packaged JWT secret loaded from OS-protected user storage');
+    }
   } else {
     // Development mode
     if (!secret || secret.length < 32) {
@@ -147,27 +185,6 @@ export function isOriginAllowed(origin: string | undefined, port: number = 3001)
     return true;
   }
 
-  // Same-port LAN origins (e.g., http://192.168.x.x:3001 or http://flo.local:3001)
-  try {
-    const url = new URL(origin);
-    const originPort = url.port || (url.protocol === 'https:' ? '443' : '80');
-    if (String(originPort) === String(port)) {
-      return true;
-    }
-  } catch {
-    // Malformed URL
-    return false;
-  }
-
-  // Explicit allowed LAN origins from environment variable
-  const envOrigins = process.env.ALLOWED_LAN_ORIGINS
-    ? process.env.ALLOWED_LAN_ORIGINS.split(',').map((s) => s.trim().toLowerCase())
-    : [];
-
-  if (envOrigins.includes(origin.toLowerCase())) {
-    return true;
-  }
-
   return false;
 }
 
@@ -199,4 +216,3 @@ export function isLocalAppOrigin(urlStr: string | undefined, port: number = 3001
     return false;
   }
 }
-

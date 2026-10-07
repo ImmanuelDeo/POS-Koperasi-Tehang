@@ -690,11 +690,27 @@ router.post('/', (req: AuthenticatedRequest, res: Response) => {
       return { order: Object.assign({}, order, { items: orderItems }) };
     });
 
-    const result = createOrderTx();
+    let result: any = null;
+    let lastErr: any = null;
+    // Retry: bila 2 request bersamaan hitung MAX sama → 1 gagal UNIQUE → hitung ulang nomor baru.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        result = createOrderTx();
+        lastErr = null;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        if (!String(err?.message || '').includes('UNIQUE constraint failed: orders.order_number')) break;
+      }
+    }
+    if (lastErr) throw lastErr;
     notifyKdsUpdate();
     res.status(201).json(result);
   } catch (error: any) {
     console.error('[Orders] Create error:', error);
+    if (String(error?.message || '').includes('UNIQUE constraint failed: orders.order_number')) {
+      return res.status(409).json({ error: 'Nomor order bentrok, silakan ulangi simpan order (nomor baru dibuat otomatis).' });
+    }
     res.status(422).json({ error: error.message });
   }
 });
@@ -979,26 +995,56 @@ router.delete('/:id', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Order tidak ditemukan' });
     }
 
+    const billNumbers = (db.prepare('SELECT bill_number FROM bills WHERE order_id = ?').all(orderId) as { bill_number: string }[])
+      .map((bill) => bill.bill_number);
     const deleteOrderTx = db.transaction(() => {
-      // 1. Delete associated salary deductions
+      const stockToRestore = db.prepare(`
+        SELECT product_id, SUM(quantity) AS quantity_change
+        FROM stock_movements
+        WHERE reference_id = ?
+          AND reference_type IN ('order', 'bundle_sale', 'order_add_items', 'order_cancellation')
+        GROUP BY product_id
+        HAVING SUM(quantity) < 0
+      `).all(order.order_number) as { product_id: string; quantity_change: number }[];
+
+      for (const movement of stockToRestore) {
+        const restoreResult = executeStockMovement(db, {
+          productId: movement.product_id,
+          movementType: 'void',
+          quantityChange: -Number(movement.quantity_change),
+          referenceType: 'order_deletion',
+          referenceId: order.order_number,
+          notes: `Pengembalian stok setelah penghapusan order #${order.order_number}`,
+          createdBy: authUser?.id || 'system',
+        });
+
+        if (!restoreResult.success) {
+          throw new Error(`Gagal mengembalikan stok order #${order.order_number}: ${restoreResult.error}`);
+        }
+      }
+
+      // 1. Delete salary deductions before bills to satisfy the bill foreign key.
       db.prepare('DELETE FROM salary_deductions WHERE order_id = ?').run(orderId);
 
-      // 2. Delete loyalty ledger records for any bills belonging to this order
+      // 2. Delete print jobs before their bill rows to satisfy the bill foreign key.
+      db.prepare('DELETE FROM print_jobs WHERE bill_id IN (SELECT id FROM bills WHERE order_id = ?)').run(orderId);
+
+      // 3. Delete loyalty ledger records for any bills belonging to this order
       db.prepare(`
         DELETE FROM loyalty_ledger
         WHERE bill_id IN (SELECT id FROM bills WHERE order_id = ?)
       `).run(orderId);
 
-      // 3. Delete associated bills
+      // 4. Delete all associated bills, including settled payments.
       db.prepare('DELETE FROM bills WHERE order_id = ?').run(orderId);
 
-      // 4. Delete associated order items
+      // 5. Delete associated order items
       db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderId);
 
-      // 5. Delete order record
+      // 6. Delete order record
       db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
 
-      // 6. Free table if applicable
+      // 7. Free table if applicable
       if (order.table_id) {
         const remainingActive = db.prepare(`
           SELECT COUNT(*) as count FROM orders
@@ -1010,7 +1056,7 @@ router.delete('/:id', (req: Request, res: Response) => {
         }
       }
 
-      // 7. Record immutable audit log
+      // 8. Record immutable audit log
       createAuditLog(db, {
         actor_user_id: authUser?.id || null,
         actor_role: authUser?.role || 'owner',
@@ -1020,9 +1066,9 @@ router.delete('/:id', (req: Request, res: Response) => {
         details: {
           order_id: order.id,
           order_number: order.order_number,
-          total: order.total,
           status: order.status,
           customer_id: order.customer_id,
+          bill_numbers: billNumbers,
           created_at: order.created_at,
           deleted_by: authUser?.name || 'Super Admin',
         },

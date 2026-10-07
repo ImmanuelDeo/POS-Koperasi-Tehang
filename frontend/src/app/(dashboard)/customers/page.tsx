@@ -36,6 +36,7 @@ import { dialCodeFor, parsePhone } from '@/lib/phone';
 import { useI18n } from '@/hooks/useI18n';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
 import { useConfirm } from '@/hooks/use-confirm';
+import EditableWorkbookManager from '@/components/data/EditableWorkbookManager';
 
 interface CsvValidationRow {
   row_number: number;
@@ -529,6 +530,9 @@ export default function CustomersPage() {
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {['owner', 'office_hr'].includes(currentTenant?.role || '') && (
+            <EditableWorkbookManager kind="members" onApplied={fetchCustomers} />
+          )}
           <Button
             variant="outline"
             onClick={handleDownloadCsvTemplate}

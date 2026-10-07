@@ -1,9 +1,8 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage, shell, session } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { Bonjour } from 'bonjour-service';
 import { initDatabase, closeDatabase } from './db';
-import { startServer, stopServer, getLocalIP, isServerRunning } from './server';
+import { startServer, stopServer, isServerRunning } from './server';
 import { startKdsServer, stopKdsServer, getKdsPort, isKdsServerRunning } from './kds-server';
 import { initPrinter, printReceipt, printKOT } from './printers/thermal';
 import { registerIpcHandlers } from './ipc';
@@ -132,7 +131,6 @@ function checkForUpdates(): void {
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
-let bonjour: Bonjour | null = null;
 let isQuitting = false;
 
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -240,9 +238,7 @@ function createWindow(): void {
   // Allow target="_blank" links to open new windows for local URLs (e.g. the KDS page).
   // External URLs are sent to the system browser instead.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    const isLocal = url.startsWith(`http://localhost:${PORT}`) ||
-                    url.startsWith(`http://127.0.0.1:${PORT}`) ||
-                    url.startsWith(`http://${getLocalIP()}:${PORT}`);
+    const isLocal = isLocalAppOrigin(url, PORT);
     if (isLocal) {
       return {
         action: 'allow',
@@ -339,43 +335,6 @@ function createTray(): void {
   }
 }
 
-function startMdns(): void {
-  try {
-    bonjour = new Bonjour();
-    const serviceName = `POS-Koperasi-${PORT}`;
-    const service = bonjour.publish({
-      name: serviceName,
-      type: 'http',
-      port: PORT,
-      host: 'pos-koperasi',
-      txt: { version: app.getVersion(), app: 'POS Koperasi' },
-    });
-    
-    // Handle name collision or network socket conflict gracefully without crashing/error logging
-    service.on('error', (err: any) => {
-      console.log(`[mDNS] Info: Service name '${serviceName}' already active on network (LAN direct IP access remains fully operational).`);
-    });
-
-    const ip = getLocalIP();
-    console.log(`[mDNS] Advertising pos-koperasi.local:${PORT} (Direct LAN IP: http://${ip}:${PORT})`);
-  } catch (err) {
-    console.warn('[mDNS] Bonjour initialization skipped (direct IP access unaffected):', err);
-  }
-}
-
-function stopMdns(): void {
-  if (bonjour) {
-    try {
-      bonjour.unpublishAll(() => {
-        try {
-          bonjour?.destroy();
-        } catch {}
-      });
-    } catch {}
-    bonjour = null;
-  }
-}
-
 function createMenu(): void {
   // In production kiosk mode, disable top application menu completely
   if (isKioskModeEnabled()) {
@@ -444,7 +403,6 @@ function createMenu(): void {
 }
 
 function showAbout(): void {
-  const ip = getLocalIP();
   const kdsPort = getKdsPort();
   dialog.showMessageBox({
     type: 'info',
@@ -458,10 +416,8 @@ function showAbout(): void {
       'A self-hosted, offline-first Point of Sale system.',
       'Your data stays yours.',
       '',
-      `POS URL: http://flo.local:${PORT}`,
-      `KDS URL: http://flo.local:${kdsPort}`,
-      '',
-      `KDS IP fallback: http://${ip}:${kdsPort}`,
+      `POS URL: http://127.0.0.1:${PORT}`,
+      `KDS URL: http://127.0.0.1:${kdsPort}`,
     ].join('\n'),
   });
 }
@@ -483,9 +439,6 @@ async function initialize(): Promise<void> {
 
     console.log('[Flo] Starting KDS server on port 3002...');
     await startKdsServer();
-
-    console.log('[Flo] Starting mDNS advertisement...');
-    startMdns();
 
     console.log('[Flo] Initializing printer...');
     await initPrinter();
@@ -589,7 +542,6 @@ app.on('before-quit', () => {
 
 app.on('quit', () => {
   console.log('[Flo] Shutting down...');
-  stopMdns();
   stopKdsServer();
   stopServer();
   closeDatabase();

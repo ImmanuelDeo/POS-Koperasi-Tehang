@@ -3,7 +3,6 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { getDatabase, createBackup, restoreBackup, now, getDbPath } from './db';
-import { getLocalIP } from './server';
 import { isKioskModeEnabled, isLocalAppOrigin } from './config/security';
 
 // In-memory rate limiting state
@@ -38,11 +37,12 @@ function timingSafeCompare(submitted: string, stored: string): boolean {
 export function registerIpcHandlers(callbacks?: { onQuitRequested?: () => void }): void {
 
 
-  // Database backup/restore
-  ipcMain.handle('backup-database', async () => {
+  // Database backup/restore does not require the optional Master PIN.
+  // Use SQLite's backup API so custom-location backups include WAL data safely.
+  ipcMain.handle('backup-database', async (_event, _pin?: string) => {
     try {
       console.log('[IPC] backup-database: Starting...');
-      
+
       // Ask user where to save
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const result = await dialog.showSaveDialog({
@@ -54,11 +54,9 @@ export function registerIpcHandlers(callbacks?: { onQuitRequested?: () => void }
         return { success: false, error: 'Cancelled' };
       }
 
-      // Copy to user-selected location
-      const fs = require('fs');
-      const dbPath = getDbPath();
-      fs.copyFileSync(dbPath, result.filePath);
-      
+      const db = getDatabase();
+      await db.backup(result.filePath);
+
       console.log('[IPC] backup-database: Complete:', result.filePath);
       return { success: true, path: result.filePath };
     } catch (error: any) {
@@ -67,8 +65,16 @@ export function registerIpcHandlers(callbacks?: { onQuitRequested?: () => void }
     }
   });
 
-  ipcMain.handle('restore-backup', async () => {
+  // Restore from a history path or prompt for a backup file when no path is supplied.
+  ipcMain.handle('restore-backup', async (_event, pinOrPath?: string, backupPath?: string) => {
     try {
+      const fs = require('fs');
+      const candidate = backupPath || pinOrPath;
+      if (candidate && typeof candidate === 'string' && candidate.length > 1 && fs.existsSync(candidate)) {
+        restoreBackup(candidate);
+        return { success: true };
+      }
+
       const result = await dialog.showOpenDialog({
         filters: [{ name: 'SQLite Database', extensions: ['db'] }],
         properties: ['openFile'],
@@ -113,12 +119,11 @@ export function registerIpcHandlers(callbacks?: { onQuitRequested?: () => void }
 
   // KDS info
   ipcMain.handle('get-kds-info', async () => {
-    const localIP = getLocalIP();
     const port = 3001;
     return {
-      url: `http://${localIP}:${port}/kds`,
-      wsUrl: `ws://${localIP}:${port}/kds`,
-      localIP,
+      url: `http://127.0.0.1:${port}/kds`,
+      wsUrl: `ws://127.0.0.1:${port}/kds`,
+      localIP: '127.0.0.1',
       port,
     };
   });
@@ -136,8 +141,7 @@ export function registerIpcHandlers(callbacks?: { onQuitRequested?: () => void }
       },
     });
 
-    const localIP = getLocalIP();
-    kdsWindow.loadURL(`http://${localIP}:3001/kds`);
+    kdsWindow.loadURL('http://127.0.0.1:3001/kds');
   });
 
   ipcMain.handle('get-app-info', async () => {

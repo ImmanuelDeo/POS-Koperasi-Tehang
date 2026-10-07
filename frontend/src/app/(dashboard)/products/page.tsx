@@ -21,6 +21,7 @@ import { useI18n } from '@/hooks/useI18n';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useCatalogStore } from '@/store/catalog';
 import { LABELS } from '@/lib/labels';
+import EditableWorkbookManager from '@/components/data/EditableWorkbookManager';
 
 const PRESET_TAGS = [
   { key: 'veg', labelKey: 'pos.tagVeg' },
@@ -712,6 +713,9 @@ export default function ProductsPage() {
               </div>
             </form>
             <div className="flex gap-2 shrink-0">
+              {['owner', 'admin', 'office_inventory'].includes(currentTenant?.role || '') && (
+                <EditableWorkbookManager kind="products" onApplied={reloadFullProducts} />
+              )}
               <Button variant="outline" onClick={() => openCsvModal('products')}>
                 <FileSpreadsheet size={16} className="mr-1" /> CSV
               </Button>

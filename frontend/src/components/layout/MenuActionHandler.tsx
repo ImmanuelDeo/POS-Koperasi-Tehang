@@ -1,23 +1,22 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
-import { MasterPinPrompt } from '@/components/settings/MasterPinPrompt';
 import { useI18n } from '@/hooks/useI18n';
-
-type PendingPinAction = 'backup' | 'restore' | null;
 
 export default function MenuActionHandler() {
   const { t } = useI18n();
   const router = useRouter();
-  const [pendingPinAction, setPendingPinAction] = useState<PendingPinAction>(null);
 
-  async function runBackup(pin: string) {
-    if (!window.electronAPI?.backupDatabase) return { success: false, error: t('common.notAvailable') };
+  async function runBackup() {
+    if (!window.electronAPI?.backupDatabase) {
+      toast.error(t('common.notAvailable'));
+      return { success: false, error: t('common.notAvailable') };
+    }
 
     toast.loading(t('backup.creating'), { id: 'backup' });
-    const result = await window.electronAPI.backupDatabase(pin);
+    const result = await window.electronAPI.backupDatabase();
     toast.remove('backup');
 
     if (result.success) {
@@ -28,10 +27,13 @@ export default function MenuActionHandler() {
     return result;
   }
 
-  async function runRestore(pin: string) {
-    if (!window.electronAPI?.restoreBackup) return { success: false, error: t('common.notAvailable') };
+  async function runRestore() {
+    if (!window.electronAPI?.restoreBackup) {
+      toast.error(t('common.notAvailable'));
+      return { success: false, error: t('common.notAvailable') };
+    }
 
-    const result = await window.electronAPI.restoreBackup(pin);
+    const result = await window.electronAPI.restoreBackup();
     if (result.success) {
       toast.success(t('restore.success'));
       setTimeout(() => window.location.reload(), 1500);
@@ -39,33 +41,6 @@ export default function MenuActionHandler() {
       toast.error(t('restore.failedWith', { error: result.error ?? '' }));
     }
     return result;
-  }
-
-  async function handlePinSubmit(pin: string) {
-    const result = pendingPinAction === 'backup' ? await runBackup(pin) : await runRestore(pin);
-    if (result.success || result.error === 'Cancelled') {
-      setPendingPinAction(null);
-    }
-    return result;
-  }
-
-  async function beginPinGatedAction(action: 'backup' | 'restore') {
-    const status = await window.electronAPI?.getMasterPinStatus?.();
-
-    if (!status?.available) {
-      // No OS-backed encryption on this machine — the gate is inert, proceed directly.
-      if (action === 'backup') runBackup('');
-      else runRestore('');
-      return;
-    }
-
-    if (!status.isSet) {
-      toast.error(t('settings.setMasterPinFirst'));
-      router.push('/settings?tab=data&action=master-pin');
-      return;
-    }
-
-    setPendingPinAction(action);
   }
 
   useEffect(() => {
@@ -97,10 +72,10 @@ export default function MenuActionHandler() {
           router.push('/settings');
           break;
         case 'backup-database':
-          beginPinGatedAction('backup');
+          runBackup();
           break;
         case 'restore-backup':
-          beginPinGatedAction('restore');
+          runRestore();
           break;
         case 'menu-db-health-check':
           router.push('/settings?tab=data&action=health-check');
@@ -120,14 +95,5 @@ export default function MenuActionHandler() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  return (
-    <MasterPinPrompt
-      open={pendingPinAction !== null}
-      mode="verify"
-      title={pendingPinAction === 'backup' ? t('settings.confirmBackupTitle') : t('settings.confirmRestoreTitle')}
-      description={t('settings.enterMasterPinPrompt')}
-      onCancel={() => setPendingPinAction(null)}
-      onSubmit={handlePinSubmit}
-    />
-  );
+  return null;
 }

@@ -84,29 +84,54 @@ router.post('/generate', (req: Request, res: Response) => {
       return res.json({ bill: existingBill });
     }
 
-    const billNumber = generateBillNumber();
-    const subtotal = order.subtotal || 0;
-    const taxAmount = order.tax_amount || 0;
-    const discountAmount = order.discount_amount || 0;
-    const deliveryCharge = order.delivery_charge || 0;
-    const packagingCharge = order.packaging_charge || 0;
-    const roundOff = order.round_off || 0;
-    const total = order.total || 0;
+    const createBillTx = db.transaction(() => {
+      const billNumber = generateBillNumber();
+      const subtotal = order.subtotal || 0;
+      const taxAmount = order.tax_amount || 0;
+      const discountAmount = order.discount_amount || 0;
+      const deliveryCharge = order.delivery_charge || 0;
+      const packagingCharge = order.packaging_charge || 0;
+      const roundOff = order.round_off || 0;
+      const total = order.total || 0;
 
-    const result = db.prepare(`
-      INSERT INTO bills (bill_number, order_id, customer_id, subtotal, tax_amount, tax_breakdown,
-        discount_amount, discount_type, discount_value, discount_reason,
-        delivery_charge, packaging_charge, round_off, total, paid_amount, balance, payment_status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)
-    `).run(
-      billNumber, order_id, order.customer_id, subtotal, taxAmount, order.tax_breakdown,
-      discountAmount, order.discount_type, order.discount_value, order.discount_reason,
-      deliveryCharge, packagingCharge, roundOff, total, 0, total, now(), now()
-    );
+      const insertResult = db.prepare(`
+        INSERT INTO bills (bill_number, order_id, customer_id, subtotal, tax_amount, tax_breakdown,
+          discount_amount, discount_type, discount_value, discount_reason,
+          delivery_charge, packaging_charge, round_off, total, paid_amount, balance, payment_status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)
+      `).run(
+        billNumber, order_id, order.customer_id, subtotal, taxAmount, order.tax_breakdown,
+        discountAmount, order.discount_type, order.discount_value, order.discount_reason,
+        deliveryCharge, packagingCharge, roundOff, total, 0, total, now(), now()
+      );
 
-    const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(result.lastInsertRowid);
+      return db.prepare('SELECT * FROM bills WHERE id = ?').get(insertResult.lastInsertRowid);
+    });
+
+    // Retry 3x bila bill_number bentrok UNIQUE (race 2 kasir hitung MAX sama).
+    let bill: any = null;
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        bill = createBillTx();
+        lastErr = null;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        if (!String(err?.message || '').includes('UNIQUE constraint failed: bills.bill_number')) break;
+      }
+    }
+    if (lastErr) {
+      if (String(lastErr?.message || '').includes('UNIQUE constraint failed: bills.bill_number')) {
+        return res.status(409).json({ error: 'Nomor bill bentrok, silakan ulangi (nomor baru dibuat otomatis).' });
+      }
+      throw lastErr;
+    }
     res.status(201).json({ bill });
   } catch (error: any) {
+    if (String(error?.message || '').includes('UNIQUE constraint failed: bills.bill_number')) {
+      return res.status(409).json({ error: 'Nomor bill bentrok, silakan ulangi (nomor baru dibuat otomatis).' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -115,7 +140,7 @@ router.post('/generate', (req: Request, res: Response) => {
 
 router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { method, amount, transaction_id, notes } = req.body;
+    const { method, amount, transaction_id, notes, customer_id } = req.body;
 
     if (!method) {
       return res.status(400).json({ error: 'Payment method is required' });
@@ -131,11 +156,26 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
 
     // ── METHOD: SALARY DEDUCTION (POS Koperasi) ──────────────────────────────
     if (method === 'salary_deduction') {
-      if (!bill.customer_id) {
-        return res.status(422).json({ error: 'Cannot process salary deduction: No customer associated with this bill.' });
+      // Fallback: kasir pilih member di modal bayar AFTER order dibuat tanpa member.
+      // Frontend kirim customer_id; tempel ke bills + orders bila masih kosong.
+      let effectiveCustomerId = bill.customer_id as string | null;
+      if (!effectiveCustomerId && customer_id) {
+        const candidate = db.prepare('SELECT id FROM customers WHERE id = ?').get(customer_id) as any;
+        if (!candidate) {
+          return res.status(404).json({ error: 'Member yang dipilih tidak ditemukan' });
+        }
+        effectiveCustomerId = customer_id;
+        db.prepare('UPDATE bills SET customer_id = ?, updated_at = ? WHERE id = ?').run(effectiveCustomerId, now(), bill.id);
+        if (bill.order_id) {
+          db.prepare('UPDATE orders SET customer_id = ?, updated_at = ? WHERE id = ? AND (customer_id IS NULL OR customer_id = "")').run(effectiveCustomerId, now(), bill.order_id);
+        }
+        (bill as any).customer_id = effectiveCustomerId;
+      }
+      if (!effectiveCustomerId) {
+        return res.status(422).json({ error: 'Pilih anggota koperasi terlebih dahulu untuk metode Potong Gaji / Kasbon.' });
       }
 
-      const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(bill.customer_id) as any;
+      const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(effectiveCustomerId) as any;
       if (!customer) {
         return res.status(404).json({ error: 'Customer not found' });
       }
@@ -194,7 +234,7 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
       }
 
       // Execute atomic transaction for salary deduction + stock reduction + bill payment
-      const paymentTx = db.transaction(() => {
+      const paymentTx = db.transaction((attempt: number = 1) => {
         const currentBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(bill.id) as any;
         if (currentBill.payment_status === 'paid') {
           return { error: 'Bill is already paid', status: 400 };
@@ -208,7 +248,7 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
           return { error: limitValidation.error, status: 422 };
         }
 
-        const deductionNumber = generateDeductionNumber(bill.bill_number);
+        const deductionNumber = generateDeductionNumber(bill.bill_number, attempt);
 
         // Insert salary deduction record
         const insertDeduction = db.prepare(`
@@ -279,7 +319,25 @@ router.post('/:id/payment', (req: AuthenticatedRequest, res: Response) => {
         return { success: true, bill: updatedBill, salary_deduction: createdDeduction };
       });
 
-      const txResult = paymentTx();
+      // Retry hingga 3x bila deduction_number bentrok (UNIQUE) — mis. retry kasir / duplikat bill_number.
+      let txResult: any = null;
+      let lastErr: any = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          txResult = paymentTx(attempt);
+          lastErr = null;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          if (!String(err?.message || '').includes('UNIQUE constraint failed: salary_deductions.deduction_number')) break;
+        }
+      }
+      if (lastErr) {
+        if (String(lastErr?.message || '').includes('UNIQUE constraint failed: salary_deductions.deduction_number')) {
+          return res.status(409).json({ error: 'Nomor potongan gaji bentrok, silakan ulangi pembayaran.' });
+        }
+        throw lastErr;
+      }
       if (!txResult.success) {
         return res.status(txResult.status || 400).json({ error: txResult.error });
       }

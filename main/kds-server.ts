@@ -5,6 +5,7 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { isOriginAllowed } from './config/security';
 import { getDatabase, parseItemJson } from './db';
 import { setupKdsWebSocket } from './services/kds';
 
@@ -37,7 +38,15 @@ export function startKdsServer(): Promise<void> {
   return new Promise((resolve, reject) => {
     const app: Express = express();
 
-    app.use(cors());
+    app.use(cors({
+      origin: (origin, callback) => {
+        if (isOriginAllowed(origin, KDS_PORT)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Blocked by CORS policy: Origin not allowed'));
+        }
+      },
+    }));
     app.use(express.json());
 
     // ── KDS API endpoints (same database, minimal routes) ─────────────
@@ -204,7 +213,7 @@ export function startKdsServer(): Promise<void> {
       res.status(500).json({ error: err.message || 'Internal server error' });
     });
 
-    kdsServer = app.listen(KDS_PORT, '0.0.0.0', () => {
+    kdsServer = app.listen(KDS_PORT, '127.0.0.1', () => {
       console.log(`[KDS Server] HTTP server running on http://localhost:${KDS_PORT}`);
 
       if (kdsServer) {
@@ -219,7 +228,7 @@ export function startKdsServer(): Promise<void> {
     kdsServer?.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         console.log(`[KDS Server] Port ${KDS_PORT} in use, trying ${KDS_PORT + 1}`);
-        kdsServer?.listen(KDS_PORT + 1, '0.0.0.0');
+        kdsServer?.listen(KDS_PORT + 1, '127.0.0.1');
       } else {
         reject(err);
       }

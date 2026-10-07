@@ -9,8 +9,102 @@ import {
   validateMemberGrid,
   executeMemberCsvImport,
 } from '../services/member-csv';
+import {
+  executeMemberWorkbookImport,
+  generateAllMembersWorkbook,
+  parseEditableWorkbook,
+  validateMemberWorkbook,
+} from '../services/bulk-workbooks';
 
 const router = Router();
+const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+async function readEditableWorkbook(body: any): Promise<string[][]> {
+  const encoded = body?.xlsx_base64;
+  if (typeof encoded !== 'string' || !encoded || encoded.length > 14 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw new Error('File Excel (.xlsx) wajib diunggah dan maksimal 10 MB.');
+  }
+  return parseEditableWorkbook(Buffer.from(encoded, 'base64'));
+}
+
+function canManageMemberWorkbook(req: AuthenticatedRequest, res: Response): boolean {
+  if (['owner', 'office_hr'].includes(req.user?.role || '')) return true;
+  res.status(403).json({ error: 'Akses workbook seluruh anggota termasuk NIK hanya untuk Owner atau HR.' });
+  return false;
+}
+
+// GET /api/members-csv/export-all: export data seluruh anggota termasuk NIK; hanya role owner/admin/HR.
+router.get('/export-all', async (req: AuthenticatedRequest, res: Response) => {
+  if (!canManageMemberWorkbook(req, res)) return;
+  try {
+    const buffer = await generateAllMembersWorkbook(getDatabase());
+    res.setHeader('Content-Type', XLSX_CONTENT_TYPE);
+    res.setHeader('Content-Disposition', 'attachment; filename="data-semua-anggota-koperasi.xlsx"');
+    return res.status(200).send(buffer);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Gagal mengekspor data anggota.' });
+  }
+});
+
+// POST /api/members-csv/bulk-preview: validate editable member workbook in memory; body: xlsx_base64.
+router.post('/bulk-preview', async (req: AuthenticatedRequest, res: Response) => {
+  if (!canManageMemberWorkbook(req, res)) return;
+  try {
+    const grid = await readEditableWorkbook(req.body);
+    const validation = validateMemberWorkbook(getDatabase(), grid);
+    return res.status(200).json({
+      ...validation,
+      rows: validation.rows.slice(0, 50).map((row) => ({
+        row_number: row.row_number,
+        id: row.id,
+        action: row.action,
+        name: row.values.name || '',
+      })),
+      errors: validation.errors.slice(0, 50),
+      preview_limited: validation.rows.length > 50,
+      errors_limited: validation.errors.length > 50,
+    });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message || 'Gagal membaca workbook anggota.' });
+  }
+});
+
+// POST /api/members-csv/bulk-import: apply member edits/deletions atomically; body: xlsx_base64.
+router.post('/bulk-import', async (req: AuthenticatedRequest, res: Response) => {
+  if (!canManageMemberWorkbook(req, res)) return;
+  let grid: string[][];
+  try {
+    grid = await readEditableWorkbook(req.body);
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message || 'File workbook anggota tidak valid.' });
+  }
+
+  const db = getDatabase();
+  let validation;
+  try {
+    validation = validateMemberWorkbook(db, grid);
+  } catch (error: any) {
+    console.error('[Members XLSX] Bulk import validation failed:', error);
+    return res.status(500).json({ error: error.message || 'Gagal memvalidasi workbook anggota.' });
+  }
+  if (!validation.valid) {
+    return res.status(422).json({
+      error: 'Validasi gagal; tidak ada perubahan anggota yang disimpan.',
+      validation: { ...validation, rows: validation.rows.slice(0, 50), errors: validation.errors.slice(0, 50) },
+    });
+  }
+  try {
+    const result = executeMemberWorkbookImport(db, validation.rows, req.user!.id, req.user!.role);
+    return res.status(200).json({ message: 'Perubahan data anggota berhasil diterapkan.', result });
+  } catch (error: any) {
+    const message = String(error?.message || '');
+    if (message.includes('SQLITE_CONSTRAINT_UNIQUE') || message.includes('UNIQUE constraint failed')) {
+      return res.status(409).json({ error: 'Impor dibatalkan karena konflik NIK/ID karyawan/nomor anggota. Tidak ada perubahan yang disimpan.' });
+    }
+    console.error('[Members XLSX] Bulk import failed:', error);
+    return res.status(500).json({ error: error.message || 'Gagal menerapkan perubahan anggota.' });
+  }
+});
 
 // ── GET /api/members/csv/template ─────────────────────────────────────────────
 // Download standard CSV template for cooperative member import
@@ -110,7 +204,11 @@ router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
       result: importResult,
     });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message || 'Gagal mengimpor data member dari file' });
+    const message = String(error?.message || '');
+    const isConflict = message.includes('Konflik data unik')
+      || message.includes('sudah digunakan saat impor')
+      || message.includes('sudah digunakan oleh anggota lain');
+    return res.status(isConflict ? 409 : 500).json({ error: error.message || 'Gagal mengimpor data member dari file' });
   }
 });
 
