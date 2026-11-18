@@ -220,7 +220,9 @@ export function getMonthlyStockReportData(
     )
   `;
 
-  let filterConditions = 'p.deleted_at IS NULL';
+  let filterConditions = `(p.deleted_at IS NULL
+    OR COALESCE(ma.movement_count, 0) > 0
+    OR COALESCE(p.stock_quantity, 0) != 0)`;
   const filterParams: Record<string, any> = {
     periodStart: period.periodStartIso,
     periodEndExclusive: period.periodEndExclusiveIso,

@@ -112,6 +112,53 @@ function setActionValidation(sheet: ExcelJS.Worksheet, rowCount: number): void {
   }
 }
 
+export function archiveAllProducts(
+  db: Database.Database,
+  userId: string,
+  userRole: string
+): { archived_count: number; archived_at: string } {
+  const transaction = db.transaction(() => {
+    const archivedAt = now();
+    const result = db.prepare(`
+      UPDATE products
+      SET deleted_at = ?, is_active = 0, updated_at = ?
+      WHERE deleted_at IS NULL
+    `).run(archivedAt, archivedAt);
+    const batchId = `PRODUCT-ARCHIVE-${Date.now()}`;
+    db.prepare(`
+      INSERT INTO audit_logs (
+        actor_user_id, actor_role, action, target_type, target_id, details, created_at
+      ) VALUES (?, ?, 'product.bulk_archived', 'product_catalog', ?, ?, ?)
+    `).run(userId, userRole, batchId, JSON.stringify({ archived_count: result.changes }), archivedAt);
+    return { archived_count: result.changes, archived_at: archivedAt };
+  });
+  return transaction();
+}
+
+export function archiveAllMembers(
+  db: Database.Database,
+  userId: string,
+  userRole: string
+): { archived_count: number; archived_at: string } {
+  const transaction = db.transaction(() => {
+    const archivedAt = now();
+    const result = db.prepare(`
+      UPDATE customers
+      SET is_active = 0, salary_deduction_enabled = 0, updated_at = ?
+      WHERE is_member = 1
+        AND (COALESCE(is_active, 1) != 0 OR COALESCE(salary_deduction_enabled, 0) != 0)
+    `).run(archivedAt);
+    const batchId = `MEMBER-ARCHIVE-${Date.now()}`;
+    db.prepare(`
+      INSERT INTO audit_logs (
+        actor_user_id, actor_role, action, target_type, target_id, details, created_at
+      ) VALUES (?, ?, 'member.bulk_archived', 'member_directory', ?, ?, ?)
+    `).run(userId, userRole, batchId, JSON.stringify({ archived_count: result.changes }), archivedAt);
+    return { archived_count: result.changes, archived_at: archivedAt };
+  });
+  return transaction();
+}
+
 export async function generateAllProductsWorkbook(db: Database.Database): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'POS Koperasi';

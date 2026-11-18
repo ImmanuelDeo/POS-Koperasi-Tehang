@@ -28,6 +28,7 @@ import {
   FileSpreadsheet,
   RefreshCw,
   CreditCard,
+  Archive,
 } from 'lucide-react';
 import { useSearchParams, useRouter } from 'next/navigation';
 
@@ -81,6 +82,7 @@ export default function CustomersPage() {
 
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [, setLoading] = useState(true);
+  const [archivingMembers, setArchivingMembers] = useState(false);
   const [search, setSearch] = useState('');
   const [sortField, setSortField] = useState('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
@@ -344,6 +346,29 @@ export default function CustomersPage() {
     }
   };
 
+  const handleArchiveAllMembers = async () => {
+    const confirmed = await confirm(
+      'Seluruh anggota aktif akan dinonaktifkan dan potong gaji dimatikan. Riwayat transaksi serta bon tetap tersimpan; anggota dapat diaktifkan kembali melalui impor dengan NIK, ID karyawan, atau nomor anggota yang sama.',
+      {
+        title: 'Arsipkan Semua Anggota',
+        confirmLabel: 'Arsipkan Semua',
+        destructive: true,
+      }
+    );
+    if (!confirmed) return;
+
+    setArchivingMembers(true);
+    try {
+      const { data } = await api.post('/members-csv/archive-all');
+      toast.success(data?.message || 'Seluruh anggota aktif berhasil diarsipkan.');
+      fetchCustomers();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Gagal mengarsipkan seluruh anggota.');
+    } finally {
+      setArchivingMembers(false);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     let cleanPhone = form.phone.trim();
@@ -532,6 +557,17 @@ export default function CustomersPage() {
         <div className="flex items-center gap-2 flex-wrap">
           {['owner', 'office_hr'].includes(currentTenant?.role || '') && (
             <EditableWorkbookManager kind="members" onApplied={fetchCustomers} />
+          )}
+          {['owner', 'office_hr'].includes(currentTenant?.role || '') && (
+            <Button
+              variant="outline"
+              onClick={handleArchiveAllMembers}
+              disabled={archivingMembers}
+              className="border-amber-300 text-amber-800 hover:bg-amber-50 text-xs h-9"
+            >
+              <Archive size={14} className="mr-1.5" />
+              {archivingMembers ? 'Mengarsipkan...' : 'Arsipkan Semua'}
+            </Button>
           )}
           <Button
             variant="outline"

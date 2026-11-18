@@ -1,13 +1,13 @@
 {
   "name": "flo-desktop",
-  "version": "1.6.5",
+  "version": "1.6.6",
   "description": "POS Koperasi - Sistem Kasir dan Manajemen Koperasi",
   "main": "dist/index.js",
   "scripts": {
     "dev": "npm run build:frontend && npm run build && electron .",
     "dev:frontend": "cd frontend && npm run dev",
     "build": "tsc",
-    "build:frontend": "cd frontend && npm ci && npx cross-env NEXT_BUILD_MODE=desktop npm run build",
+    "build:frontend": "cd frontend && npx cross-env npm_config_allow_scripts= npm ci && npx cross-env NEXT_BUILD_MODE=desktop npm run build",
     "build:all-platforms": "npm run build:frontend && npm run build && electron-builder --win --mac --linux",
     "build:win": "npm run build:frontend && npm run build && electron-builder --win",
     "build:mac": "npm run build:frontend && npm run build && electron-builder --mac",
@@ -95,7 +95,7 @@
         }
       ],
       "icon": "assets/icon.ico",
-      "artifactName": "POSKoperasiTehang-Setup-v${version}-20261006.${ext}"
+      "artifactName": "POSKoperasiTehang-Setup-v${version}-20261025.${ext}"
     },
     "mac": {
       "target": [

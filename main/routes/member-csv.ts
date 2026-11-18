@@ -10,6 +10,7 @@ import {
   executeMemberCsvImport,
 } from '../services/member-csv';
 import {
+  archiveAllMembers,
   executeMemberWorkbookImport,
   generateAllMembersWorkbook,
   parseEditableWorkbook,
@@ -43,6 +44,21 @@ router.get('/export-all', async (req: AuthenticatedRequest, res: Response) => {
     return res.status(200).send(buffer);
   } catch (error: any) {
     return res.status(500).json({ error: error.message || 'Gagal mengekspor data anggota.' });
+  }
+});
+
+// POST /api/members-csv/archive-all: deactivate cooperative members while retaining financial history.
+router.post('/archive-all', (req: AuthenticatedRequest, res: Response) => {
+  if (!canManageMemberWorkbook(req, res)) return;
+  try {
+    const result = archiveAllMembers(getDatabase(), req.user!.id, req.user!.role);
+    return res.status(200).json({
+      message: `${result.archived_count} anggota diarsipkan. Riwayat transaksi dan bon tetap tersimpan.`,
+      result,
+    });
+  } catch (error: any) {
+    console.error('[Members] Bulk archive failed:', error);
+    return res.status(500).json({ error: error.message || 'Gagal mengarsipkan seluruh anggota.' });
   }
 });
 
@@ -189,6 +205,13 @@ router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
       });
     }
 
+    if (
+      validationResult.rows.some((row) => row.existing_member_id)
+      && !['owner', 'admin', 'office_hr'].includes(req.user?.role || '')
+    ) {
+      return res.status(403).json({ error: 'Hanya Owner, Admin, atau HR yang dapat memperbarui anggota terdaftar melalui impor.' });
+    }
+
     if (validationResult.rows.length === 0) {
       return res.status(422).json({
         error: 'Tidak ada baris data member yang valid untuk diimpor.',
@@ -200,7 +223,7 @@ router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
     const importResult = executeMemberCsvImport(db, validationResult.rows, userId, userRole);
 
     return res.status(201).json({
-      message: `Berhasil mengimpor ${importResult.created_members_count} anggota koperasi baru`,
+      message: `Impor anggota selesai: ${importResult.created_members_count} anggota baru, ${importResult.updated_members_count} anggota diperbarui.`,
       result: importResult,
     });
   } catch (error: any) {

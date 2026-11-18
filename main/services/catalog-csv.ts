@@ -6,6 +6,7 @@ import { parseRupiahNumber, executeStockMovement } from './cooperative';
 
 export interface CatalogRowData {
   row_number: number;
+  existing_product_id?: string;
   barcode: string;
   sku: string | null;
   name: string;
@@ -47,6 +48,8 @@ export interface CatalogImportExecutionResult {
   success: boolean;
   batch_id: string;
   created_products_count: number;
+  updated_products_count: number;
+  stock_adjustment_items_count: number;
   created_categories_count: number;
   created_categories: string[];
   created_units_count: number;
@@ -448,11 +451,19 @@ export function validateCatalogGrid(db: Database.Database, parsedGrid: string[][
 
   const dbCategories = new Map<string, { id: string; name: string }>();
   const dbUnits = new Set<string>();
+  const existingProductsByBarcode = new Map<string, string>();
 
   try {
     const existingCats = db.prepare('SELECT id, name FROM categories WHERE deleted_at IS NULL').all() as any[];
     for (const c of existingCats) {
       if (c.name) dbCategories.set(c.name.trim().toLowerCase(), c);
+    }
+    const existingProducts = db.prepare(`
+      SELECT id, barcode FROM products
+      WHERE barcode IS NOT NULL AND trim(barcode) != ''
+    `).all() as Array<{ id: string; barcode: string }>;
+    for (const product of existingProducts) {
+      existingProductsByBarcode.set(product.barcode, product.id);
     }
     try {
       const unitsList = db.prepare('SELECT name FROM product_units').all() as any[];
@@ -479,6 +490,7 @@ export function validateCatalogGrid(db: Database.Database, parsedGrid: string[][
   const newCategorySet = new Set<string>();
   const existingCategorySet = new Set<string>();
   const newUnitSet = new Set<string>();
+  const seenBarcodes = new Set<string>();
 
   const dataRows = parsedGrid.slice(1);
   const MAX_ROWS = 5000;
@@ -532,6 +544,12 @@ export function validateCatalogGrid(db: Database.Database, parsedGrid: string[][
       if (/[\x00-\x1F\x7F]/.test(cleanBarcode)) {
         errors.push({ row: rowNum, field: 'barcode', barcode: rawBarcode, name: rawName, message: 'Barcode memuat karakter kontrol tidak valid' });
         rowHasError = true;
+      }
+      if (seenBarcodes.has(cleanBarcode)) {
+        errors.push({ row: rowNum, field: 'barcode', barcode: rawBarcode, name: rawName, message: `Barcode '${cleanBarcode}' duplikat dalam file ini` });
+        rowHasError = true;
+      } else {
+        seenBarcodes.add(cleanBarcode);
       }
     }
 
@@ -661,7 +679,7 @@ export function validateCatalogGrid(db: Database.Database, parsedGrid: string[][
           });
           rowHasError = true;
         } else {
-          parsedInitialStock = numStock;
+          parsedInitialStock = Math.round(numStock * 1000) / 1000;
         }
       }
     }
@@ -691,6 +709,7 @@ export function validateCatalogGrid(db: Database.Database, parsedGrid: string[][
 
       validRows.push({
         row_number: rowNum,
+        existing_product_id: existingProductsByBarcode.get(cleanBarcode),
         barcode: cleanBarcode,
         sku: cleanSku,
         name: sanitizeTextValue(rawName),
@@ -753,6 +772,8 @@ export function executeCatalogImport(
   let createdUnitsCount = 0;
   const createdUnitNames: string[] = [];
   let initialStockItemsCount = 0;
+  let updatedProductsCount = 0;
+  let stockAdjustmentItemsCount = 0;
   let totalInitialStockQty = 0;
   let totalInitialStockVal = 0;
 
@@ -823,9 +844,80 @@ export function executeCatalogImport(
     `);
 
     for (const row of rows) {
-      const productId = uuidv4();
       const catId = categoryMap.get(row.category_name.trim().toLowerCase()) || null;
-      const trackInventory = row.initial_stock > 0 ? 1 : (row.allow_decimal ? 1 : 0);
+
+      if (row.existing_product_id) {
+        const existingProduct = db.prepare(`
+          SELECT id, barcode, stock_quantity, track_inventory
+          FROM products WHERE id = ?
+        `).get(row.existing_product_id) as {
+          id: string;
+          barcode: string | null;
+          stock_quantity: number | null;
+          track_inventory: number | null;
+        } | undefined;
+        if (!existingProduct || existingProduct.barcode !== row.barcode) {
+          throw new Error(`Produk dengan barcode '${row.barcode}' berubah saat impor. Tidak ada perubahan yang disimpan.`);
+        }
+
+        const oldStock = Number(existingProduct.stock_quantity || 0);
+        const trackInventory = Number(existingProduct.track_inventory) === 1
+          || row.initial_stock > 0
+          || row.allow_decimal;
+        const quantityChange = row.initial_stock - oldStock;
+        const productId = existingProduct.id;
+
+        if (trackInventory) {
+          db.prepare('UPDATE products SET track_inventory = 1 WHERE id = ?').run(productId);
+          if (quantityChange !== 0) {
+            const movement = executeStockMovement(db, {
+              productId,
+              movementType: 'adjustment',
+              quantityChange,
+              unitCost: row.cost_price,
+              referenceType: 'csv_import',
+              referenceId: batchId,
+              notes: `Penyesuaian stok impor katalog batch ${batchId}, baris ${row.row_number}`,
+              createdBy: userId,
+            });
+            if (!movement.success) {
+              throw new Error(`Gagal memperbarui stok produk '${row.name}': ${movement.error}`);
+            }
+            stockAdjustmentItemsCount++;
+          }
+        }
+
+        db.prepare(`
+          UPDATE products SET
+            category_id = ?, name = ?, sku = ?, barcode = ?,
+            price = ?, cost = ?, member_price = ?, unit = ?, allow_decimal = ?,
+            track_inventory = ?, stock_quantity = ?, low_stock_threshold = ?, min_reorder_qty = ?,
+            is_active = ?, deleted_at = NULL, updated_at = ?
+          WHERE id = ?
+        `).run(
+          catId,
+          row.name,
+          row.sku,
+          row.barcode,
+          row.selling_price,
+          row.cost_price,
+          row.member_price,
+          row.unit,
+          row.allow_decimal ? 1 : 0,
+          trackInventory ? 1 : 0,
+          trackInventory ? Number(existingProduct.stock_quantity || 0) + quantityChange : row.initial_stock,
+          row.low_stock_threshold,
+          row.min_reorder_qty,
+          row.is_active ? 1 : 0,
+          now(),
+          productId
+        );
+        updatedProductsCount++;
+        continue;
+      }
+
+      const productId = uuidv4();
+      const trackInventory = row.initial_stock > 0 || row.allow_decimal;
 
       insertProdStmt.run(
         productId,
@@ -839,8 +931,8 @@ export function executeCatalogImport(
         row.member_price,
         row.unit,
         row.allow_decimal ? 1 : 0,
-        trackInventory,
-        row.initial_stock,
+        trackInventory ? 1 : 0,
+        0,
         row.low_stock_threshold,
         row.min_reorder_qty,
         row.is_active ? 1 : 0,
@@ -881,11 +973,14 @@ export function executeCatalogImport(
       JSON.stringify({
         batch_id: batchId,
         total_products: rows.length,
+        created_products_count: rows.length - updatedProductsCount,
+        updated_products_count: updatedProductsCount,
         created_categories_count: createdCategoriesCount,
         created_categories: createdCategoryNames,
         created_units_count: createdUnitsCount,
         created_units: createdUnitNames,
         initial_stock_items: initialStockItemsCount,
+        stock_adjustment_items: stockAdjustmentItemsCount,
         total_initial_stock_quantity: totalInitialStockQty,
         total_initial_stock_value: Math.round(totalInitialStockVal),
       }),
@@ -895,7 +990,9 @@ export function executeCatalogImport(
     return {
       success: true,
       batch_id: batchId,
-      created_products_count: rows.length,
+      created_products_count: rows.length - updatedProductsCount,
+      updated_products_count: updatedProductsCount,
+      stock_adjustment_items_count: stockAdjustmentItemsCount,
       created_categories_count: createdCategoriesCount,
       created_categories: createdCategoryNames,
       created_units_count: createdUnitsCount,

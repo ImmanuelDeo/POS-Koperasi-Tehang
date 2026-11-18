@@ -1,13 +1,14 @@
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import ExcelJS from 'exceljs';
-import { normalizeNik, validateNik, maskNik } from './privacy';
+import { validateNik, maskNik } from './privacy';
 import { createAuditLog } from './audit';
 import { now } from '../db';
 import { findMemberIdentifierConflict } from './member-identifiers';
 
 export interface ValidatedMemberRow {
   row_number: number;
+  existing_member_id?: string;
   name: string;
   nik: string | null;
   nik_masked: string | null;
@@ -41,6 +42,7 @@ export interface MemberCsvValidationResult {
 
 export interface MemberCsvImportResult {
   created_members_count: number;
+  updated_members_count: number;
   total_processed: number;
 }
 
@@ -376,16 +378,34 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
     };
   }
 
-  // Pre-load existing database identifiers to prevent duplicates
-  const existingNiks = new Set<string>(
-    (db.prepare("SELECT nik FROM customers WHERE nik IS NOT NULL AND TRIM(nik) != ''").all() as { nik: string }[]).map((r) => r.nik.trim())
-  );
-  const existingEmpIds = new Set<string>(
-    (db.prepare("SELECT employee_id FROM customers WHERE employee_id IS NOT NULL AND TRIM(employee_id) != ''").all() as { employee_id: string }[]).map((r) => r.employee_id.trim().toLowerCase())
-  );
-  const existingMemberNos = new Set<string>(
-    (db.prepare("SELECT member_no FROM customers WHERE member_no IS NOT NULL AND TRIM(member_no) != ''").all() as { member_no: string }[]).map((r) => r.member_no.trim().toLowerCase())
-  );
+  type ExistingMemberIdentity = { id: string; is_member: number };
+  const existingNiks = new Map<string, ExistingMemberIdentity[]>();
+  const existingEmpIds = new Map<string, ExistingMemberIdentity[]>();
+  const existingMemberNos = new Map<string, ExistingMemberIdentity[]>();
+  const addExistingIdentity = (
+    index: Map<string, ExistingMemberIdentity[]>,
+    value: string | null,
+    member: ExistingMemberIdentity
+  ) => {
+    if (!value?.trim()) return;
+    const key = value.trim().toLowerCase();
+    const owners = index.get(key) || [];
+    owners.push(member);
+    index.set(key, owners);
+  };
+  const existingMembers = db.prepare(`
+    SELECT id, is_member, nik, employee_id, member_no
+    FROM customers
+  `).all() as Array<ExistingMemberIdentity & {
+    nik: string | null;
+    employee_id: string | null;
+    member_no: string | null;
+  }>;
+  for (const member of existingMembers) {
+    addExistingIdentity(existingNiks, member.nik, member);
+    addExistingIdentity(existingEmpIds, member.employee_id, member);
+    addExistingIdentity(existingMemberNos, member.member_no, member);
+  }
 
   const seenCsvNiks = new Set<string>();
   const seenCsvEmpIds = new Set<string>();
@@ -444,9 +464,6 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
         if (seenCsvNiks.has(cleanNik)) {
           errors.push({ row_number: rowNum, field: 'nik', message: `NIK '${cleanNik}' duplikat dalam file ini`, value: cleanNik });
           rowHasError = true;
-        } else if (existingNiks.has(cleanNik)) {
-          errors.push({ row_number: rowNum, field: 'nik', message: `NIK '${cleanNik}' sudah terdaftar dalam database koperasi`, value: cleanNik });
-          rowHasError = true;
         } else {
           seenCsvNiks.add(cleanNik);
         }
@@ -461,9 +478,6 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
       if (seenCsvEmpIds.has(lowerEmp)) {
         errors.push({ row_number: rowNum, field: 'nik_karyawan', message: `NIK Karyawan (Employee ID) '${cleanEmpId}' duplikat dalam file`, value: cleanEmpId });
         rowHasError = true;
-      } else if (existingEmpIds.has(lowerEmp)) {
-        errors.push({ row_number: rowNum, field: 'nik_karyawan', message: `NIK Karyawan (Employee ID) '${cleanEmpId}' sudah ada di database`, value: cleanEmpId });
-        rowHasError = true;
       } else {
         seenCsvEmpIds.add(lowerEmp);
       }
@@ -476,9 +490,6 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
       const lowerMbr = cleanMemberNo.trim().toLowerCase();
       if (seenCsvMemberNos.has(lowerMbr)) {
         errors.push({ row_number: rowNum, field: 'nomor_anggota', message: `Nomor Anggota '${cleanMemberNo}' duplikat dalam file`, value: cleanMemberNo });
-        rowHasError = true;
-      } else if (existingMemberNos.has(lowerMbr)) {
-        errors.push({ row_number: rowNum, field: 'nomor_anggota', message: `Nomor Anggota '${cleanMemberNo}' sudah ada di database`, value: cleanMemberNo });
         rowHasError = true;
       } else {
         seenCsvMemberNos.add(lowerMbr);
@@ -537,9 +548,58 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
       }
     }
 
+    const providedIdentifiers = [
+      { field: 'nik', value: cleanNik, index: existingNiks },
+      { field: 'nik_karyawan', value: cleanEmpId, index: existingEmpIds },
+      { field: 'nomor_anggota', value: cleanMemberNo, index: existingMemberNos },
+    ] as const;
+    const matchingOwners = new Map<string, ExistingMemberIdentity>();
+    for (const identifier of providedIdentifiers) {
+      if (!identifier.value) continue;
+      const owners = identifier.index.get(identifier.value.trim().toLowerCase()) || [];
+      for (const owner of owners) matchingOwners.set(owner.id, owner);
+    }
+
+    let existingMemberId: string | undefined;
+    if (matchingOwners.size > 1) {
+      errors.push({
+        row_number: rowNum,
+        field: 'identifier',
+        message: 'NIK, ID karyawan, dan nomor anggota mengarah ke data berbeda. Periksa kembali identitas member.',
+      });
+      rowHasError = true;
+    } else if (matchingOwners.size === 1) {
+      const [matchedId, matchedMember] = matchingOwners.entries().next().value as [string, ExistingMemberIdentity];
+      if (matchedMember.is_member !== 1) {
+        errors.push({
+          row_number: rowNum,
+          field: 'identifier',
+          message: 'Identifier yang digunakan sudah dimiliki data pelanggan non-anggota.',
+        });
+        rowHasError = true;
+      } else {
+        existingMemberId = matchedId;
+      }
+    }
+
+    for (const identifier of providedIdentifiers) {
+      if (!identifier.value) continue;
+      const owners = identifier.index.get(identifier.value.trim().toLowerCase()) || [];
+      if (owners.some((owner) => owner.id !== existingMemberId)) {
+        errors.push({
+          row_number: rowNum,
+          field: identifier.field,
+          message: `Identifier pada kolom ${identifier.field} sudah digunakan oleh data lain.`,
+          value: identifier.value,
+        });
+        rowHasError = true;
+      }
+    }
+
     if (!rowHasError) {
       validatedRows.push({
         row_number: rowNum,
+        existing_member_id: existingMemberId,
         name: rawName,
         nik: cleanNik,
         nik_masked: maskedNik,
@@ -556,6 +616,21 @@ export function validateMemberGrid(db: Database.Database, rawRows: string[][]): 
       });
     }
   });
+
+  const importedExistingIds = new Map<string, number>();
+  for (const row of validatedRows) {
+    if (!row.existing_member_id) continue;
+    const firstRow = importedExistingIds.get(row.existing_member_id);
+    if (firstRow !== undefined) {
+      errors.push({
+        row_number: row.row_number,
+        field: 'identifier',
+        message: `Member yang sama sudah dipetakan pada baris ${firstRow}.`,
+      });
+    } else {
+      importedExistingIds.set(row.existing_member_id, row.row_number);
+    }
+  }
 
   return {
     valid: errors.length === 0 && validatedRows.length > 0,
@@ -597,11 +672,12 @@ export function executeMemberCsvImport(
   const insertConsentLog = db.prepare(`
     INSERT INTO customer_consent_logs (
       customer_id, event_type, source, policy_version, actor_user_id, reason, created_at
-    ) VALUES (?, 'OPT_IN', 'csv_import', 'v1.0-2026', ?, 'Explicit opt-in recorded during member CSV import', ?)
+    ) VALUES (?, ?, 'csv_import', 'v1.0-2026', ?, ?, ?)
   `);
 
   const importTx = db.transaction(() => {
     let createdCount = 0;
+    let updatedCount = 0;
     const currentTime = now();
 
     // Pre-load existing member_no (lowercased) agar nomor auto-generate tidak tabrakan UNIQUE
@@ -625,42 +701,126 @@ export function executeMemberCsvImport(
     };
 
     for (const row of rows) {
-      const id = uuidv4();
-      const memberNo = makeUniqueMemberNo(row.member_no);
-      if (row.nik && (seenNiks.has(row.nik) || findMemberIdentifierConflict(db, 'nik', row.nik))) {
+      const existingMember = row.existing_member_id
+        ? db.prepare(`
+          SELECT id, member_no, whatsapp_marketing_opt_in, whatsapp_marketing_opt_in_at,
+                 whatsapp_marketing_opt_in_source, whatsapp_marketing_policy_version,
+                 whatsapp_marketing_opt_out_at, whatsapp_marketing_opt_out_reason
+          FROM customers WHERE id = ? AND is_member = 1
+        `).get(row.existing_member_id) as {
+          id: string;
+          member_no: string | null;
+          whatsapp_marketing_opt_in: number | null;
+          whatsapp_marketing_opt_in_at: string | null;
+          whatsapp_marketing_opt_in_source: string | null;
+          whatsapp_marketing_policy_version: string | null;
+          whatsapp_marketing_opt_out_at: string | null;
+          whatsapp_marketing_opt_out_reason: string | null;
+        } | undefined
+        : undefined;
+      if (row.existing_member_id && !existingMember) {
+        throw new Error(`Member pada baris ${row.row_number} berubah atau tidak ditemukan. Impor dibatalkan.`);
+      }
+
+      const id = existingMember?.id || uuidv4();
+      const memberNo = existingMember
+        ? row.member_no?.trim() || existingMember.member_no || makeUniqueMemberNo(null)
+        : makeUniqueMemberNo(row.member_no);
+      if (row.nik && (seenNiks.has(row.nik) || findMemberIdentifierConflict(db, 'nik', row.nik, id))) {
         throw new Error(`NIK pada baris ${row.row_number} sudah digunakan oleh anggota lain. Impor dibatalkan.`);
       }
-      if (row.employee_id && (seenEmployeeIds.has(row.employee_id.toLowerCase()) || findMemberIdentifierConflict(db, 'employee_id', row.employee_id))) {
+      if (row.employee_id && (seenEmployeeIds.has(row.employee_id.toLowerCase()) || findMemberIdentifierConflict(db, 'employee_id', row.employee_id, id))) {
         throw new Error(`NIK karyawan pada baris ${row.row_number} sudah digunakan oleh anggota lain. Impor dibatalkan.`);
       }
-      if (row.member_no && findMemberIdentifierConflict(db, 'member_no', row.member_no)) {
+      if (memberNo && findMemberIdentifierConflict(db, 'member_no', memberNo, id)) {
         throw new Error(`Nomor anggota pada baris ${row.row_number} sudah digunakan oleh anggota lain. Impor dibatalkan.`);
       }
-      const optInAt = row.whatsapp_marketing_opt_in === 1 ? currentTime : null;
-      const optInSource = row.whatsapp_marketing_opt_in === 1 ? 'csv_import' : null;
-      const policyVer = row.whatsapp_marketing_opt_in === 1 ? 'v1.0-2026' : null;
 
       try {
-        insertMember.run(
-          id,
-          row.nik,
-          row.name,
-          row.phone,
-          row.email,
-          row.address,
-          row.notes,
-          memberNo,
-          row.employee_id,
-          row.department,
-          row.salary_deduction_enabled,
-          row.monthly_deduction_limit,
-          row.whatsapp_marketing_opt_in,
-          optInAt,
-          optInSource,
-          policyVer,
-          currentTime,
-          currentTime
-        );
+        if (existingMember) {
+          const wasOptedIn = existingMember.whatsapp_marketing_opt_in === 1
+            && !existingMember.whatsapp_marketing_opt_out_at;
+          const isOptedIn = row.whatsapp_marketing_opt_in === 1;
+          const consentChanged = wasOptedIn !== isOptedIn;
+          db.prepare(`
+            UPDATE customers SET
+              nik = ?, name = ?, phone = ?, email = ?, address = ?, notes = ?,
+              member_no = ?, employee_id = ?, department = ?,
+              salary_deduction_enabled = ?, monthly_deduction_limit = ?,
+              whatsapp_marketing_opt_in = ?,
+              whatsapp_marketing_opt_in_at = ?,
+              whatsapp_marketing_opt_in_source = ?,
+              whatsapp_marketing_policy_version = ?,
+              whatsapp_marketing_opt_out_at = ?,
+              whatsapp_marketing_opt_out_reason = ?,
+              is_member = 1, is_active = 1, updated_at = ?
+            WHERE id = ? AND is_member = 1
+          `).run(
+            row.nik,
+            row.name,
+            row.phone,
+            row.email,
+            row.address,
+            row.notes,
+            memberNo,
+            row.employee_id,
+            row.department,
+            row.salary_deduction_enabled,
+            row.monthly_deduction_limit,
+            row.whatsapp_marketing_opt_in,
+            isOptedIn ? (wasOptedIn ? existingMember.whatsapp_marketing_opt_in_at || currentTime : currentTime) : null,
+            isOptedIn ? (wasOptedIn ? existingMember.whatsapp_marketing_opt_in_source || 'csv_import' : 'csv_import') : null,
+            isOptedIn ? (wasOptedIn ? existingMember.whatsapp_marketing_policy_version || 'v1.0-2026' : 'v1.0-2026') : null,
+            isOptedIn ? null : (consentChanged ? currentTime : existingMember.whatsapp_marketing_opt_out_at),
+            isOptedIn ? null : (consentChanged ? 'member_csv_import_opt_out' : existingMember.whatsapp_marketing_opt_out_reason),
+            currentTime,
+            id
+          );
+          if (consentChanged) {
+            insertConsentLog.run(
+              id,
+              isOptedIn ? 'OPT_IN' : 'OPT_OUT',
+              actorUserId || null,
+              isOptedIn ? 'Explicit opt-in recorded during member CSV import' : 'Opt-out recorded during member CSV import',
+              currentTime
+            );
+          }
+          updatedCount++;
+        } else {
+          const optInAt = row.whatsapp_marketing_opt_in === 1 ? currentTime : null;
+          const optInSource = row.whatsapp_marketing_opt_in === 1 ? 'csv_import' : null;
+          const policyVer = row.whatsapp_marketing_opt_in === 1 ? 'v1.0-2026' : null;
+          insertMember.run(
+            id,
+            row.nik,
+            row.name,
+            row.phone,
+            row.email,
+            row.address,
+            row.notes,
+            memberNo,
+            row.employee_id,
+            row.department,
+            row.salary_deduction_enabled,
+            row.monthly_deduction_limit,
+            row.whatsapp_marketing_opt_in,
+            optInAt,
+            optInSource,
+            policyVer,
+            currentTime,
+            currentTime
+          );
+          if (row.whatsapp_marketing_opt_in === 1) {
+            insertConsentLog.run(
+              id,
+              'OPT_IN',
+              actorUserId || null,
+              'Explicit opt-in recorded during member CSV import',
+              currentTime
+            );
+          }
+          createdCount++;
+        }
       } catch (error: any) {
         if (error?.code === 'SQLITE_CONSTRAINT_UNIQUE' || String(error?.message || '').includes('UNIQUE constraint failed')) {
           throw new Error(`Konflik data unik pada baris ${row.row_number} (NIK, nomor anggota, atau NIK karyawan). Tidak ada data impor yang disimpan.`);
@@ -670,10 +830,6 @@ export function executeMemberCsvImport(
 
       if (row.nik) seenNiks.add(row.nik);
       if (row.employee_id) seenEmployeeIds.add(row.employee_id.toLowerCase());
-      if (row.whatsapp_marketing_opt_in === 1) {
-        insertConsentLog.run(id, actorUserId || null, currentTime);
-      }
-      createdCount++;
     }
 
     createAuditLog(db, {
@@ -682,18 +838,21 @@ export function executeMemberCsvImport(
       action: 'member.imported',
       target_type: 'member',
       details: JSON.stringify({
-        total_rows_imported: createdCount,
+        created_members_count: createdCount,
+        updated_members_count: updatedCount,
+        total_rows_imported: createdCount + updatedCount,
         imported_at: now(),
       }),
     });
 
-    return createdCount;
+    return { createdCount, updatedCount };
   });
 
-  const createdMembersCount = importTx();
+  const result = importTx();
 
   return {
-    created_members_count: createdMembersCount,
+    created_members_count: result.createdCount,
+    updated_members_count: result.updatedCount,
     total_processed: rows.length,
   };
 }

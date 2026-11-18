@@ -27,6 +27,7 @@ const { memberRoutes } = require('../dist/routes/members');
 const { orderRoutes } = require('../dist/routes/orders');
 const { productRoutes } = require('../dist/routes/products');
 const { isOriginAllowed } = require('../dist/config/security');
+const { getMonthlyStockReportData } = require('../dist/services/stock-reports');
 
 let server;
 let backupDb;
@@ -71,7 +72,7 @@ async function workbookPayload(workbook) {
   return { xlsx_base64: buffer.toString('base64') };
 }
 
-async function createXlsxMemberPayload(employeeId, memberNo) {
+async function createXlsxMemberPayload(employeeId, memberNo, options = {}) {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Data Anggota');
   worksheet.addRow([
@@ -89,7 +90,7 @@ async function createXlsxMemberPayload(employeeId, memberNo) {
     'Catatan',
   ]);
   worksheet.addRow([
-    'Member Smoke Test',
+    options.name || 'Member Smoke Test',
     '',
     employeeId,
     memberNo,
@@ -97,9 +98,9 @@ async function createXlsxMemberPayload(employeeId, memberNo) {
     '',
     '',
     '',
-    '0',
-    '1',
-    '0',
+    String(options.monthlyLimit ?? 0),
+    String(options.salaryDeductionEnabled ?? 1),
+    String(options.whatsappOptIn ?? 0),
     '',
   ]);
   const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
@@ -186,9 +187,28 @@ async function run() {
   assert.equal(imported.body.result.created_members_count, 1);
 
   const duplicateImport = await postJson(baseUrl, '/api/members-csv/import', xlsxPayload);
-  assert.equal(duplicateImport.status, 422);
+  assert.equal(duplicateImport.status, 201, JSON.stringify(duplicateImport.body));
   assert.doesNotMatch(JSON.stringify(duplicateImport.body), /UNIQUE constraint failed/i);
+  assert.equal(duplicateImport.body.result.created_members_count, 0);
+  assert.equal(duplicateImport.body.result.updated_members_count, 1);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM customers WHERE employee_id = 'SMOKE-EMP-XLSX'").get().count, 1);
+  const cashierMemberUpsert = await fetch(`${baseUrl}/api/members-csv/import`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-smoke-role': 'cashier' },
+    body: JSON.stringify(xlsxPayload),
+  });
+  assert.equal(cashierMemberUpsert.status, 403);
+  assert.equal(
+    db.prepare("SELECT name FROM customers WHERE employee_id = 'SMOKE-EMP-XLSX'").get().name,
+    'Member Smoke Test'
+  );
+  const conflictingMemberImport = await postJson(
+    baseUrl,
+    '/api/members-csv/import',
+    await createXlsxMemberPayload('SMOKE-EMP-XLSX', 'SMOKE-MBR-MANUAL')
+  );
+  assert.equal(conflictingMemberImport.status, 422);
+  assert.doesNotMatch(JSON.stringify(conflictingMemberImport.body), /UNIQUE constraint failed/i);
 
   const initialStockCount = db.prepare("SELECT COUNT(*) AS count FROM stock_movements WHERE reference_type = 'initial_stock'").get().count;
   const rejectedProduct = await postJson(baseUrl, '/api/products', {
@@ -503,11 +523,178 @@ async function run() {
     member_no: 'SMOKE-BULK-MBR-ARCHIVE',
   });
 
+  const archiveProductResponse = await postJson(baseUrl, '/api/products', {
+    name: 'Archive All Smoke Product',
+    barcode: 'SMOKE-ARCHIVE-BARCODE',
+    price: 3000,
+    cost: 1500,
+    unit: 'pcs',
+    track_inventory: true,
+    stock_quantity: 5,
+  });
+  assert.equal(archiveProductResponse.status, 201, JSON.stringify(archiveProductResponse.body));
+  const archiveProductId = archiveProductResponse.body.product.id;
+  const stockMovementsBeforeProductArchive = db.prepare(
+    'SELECT COUNT(*) AS count FROM stock_movements WHERE product_id = ?'
+  ).get(archiveProductId).count;
+
+  const deniedProductArchive = await fetch(`${baseUrl}/api/catalog-csv/archive-all`, {
+    method: 'POST',
+    headers: { 'x-smoke-role': 'cashier' },
+  });
+  assert.equal(deniedProductArchive.status, 403);
+  const productArchive = await postJson(baseUrl, '/api/catalog-csv/archive-all', {});
+  assert.equal(productArchive.status, 200, JSON.stringify(productArchive.body));
+  assert.equal(productArchive.body.result.archived_count > 0, true);
+  assert.equal(db.prepare('SELECT deleted_at IS NOT NULL AS archived, is_active FROM products WHERE id = ?').get(archiveProductId).archived, 1);
+  assert.equal(db.prepare('SELECT is_active FROM products WHERE id = ?').get(archiveProductId).is_active, 0);
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS count FROM stock_movements WHERE product_id = ?').get(archiveProductId).count,
+    stockMovementsBeforeProductArchive
+  );
+  const archivedProductStockReport = getMonthlyStockReportData(db, { includeZeroBalance: true, fetchAll: true });
+  assert.equal(
+    archivedProductStockReport.items.some((item) => item.product_id === archiveProductId && item.movement_count > 0),
+    true
+  );
+  const repeatedProductArchive = await postJson(baseUrl, '/api/catalog-csv/archive-all', {});
+  assert.equal(repeatedProductArchive.status, 200);
+  assert.equal(repeatedProductArchive.body.result.archived_count, 0);
+
+  const reimportedProduct = await postJson(baseUrl, '/api/catalog-csv/import', {
+    csv: [
+      'barcode,sku,name,category,unit,cost_price,selling_price,member_price,initial_stock,low_stock_threshold,min_reorder_qty,is_active',
+      'SMOKE-ARCHIVE-BARCODE,SMOKE-ARCHIVE-SKU,Reimported Smoke Product,Smoke Archive,pcs,1600,3200,2800,7,3,2,1',
+    ].join('\n'),
+  });
+  assert.equal(reimportedProduct.status, 201, JSON.stringify(reimportedProduct.body));
+  assert.equal(reimportedProduct.body.result.created_products_count, 0);
+  assert.equal(reimportedProduct.body.result.updated_products_count, 1);
+  assert.deepEqual(
+    db.prepare('SELECT id, name, price, stock_quantity, is_active, deleted_at FROM products WHERE barcode = ?').get('SMOKE-ARCHIVE-BARCODE'),
+    {
+      id: archiveProductId,
+      name: 'Reimported Smoke Product',
+      price: 3200,
+      stock_quantity: 7,
+      is_active: 1,
+      deleted_at: null,
+    }
+  );
+  assert.equal(
+    db.prepare(`
+      SELECT COUNT(*) AS count FROM stock_movements
+      WHERE product_id = ? AND reference_type = 'csv_import' AND movement_type = 'adjustment' AND quantity = 2
+    `).get(archiveProductId).count,
+    1
+  );
+  const duplicateProductBarcodes = await postJson(baseUrl, '/api/catalog-csv/preview', {
+    csv: [
+      'barcode,name,selling_price',
+      'SMOKE-ARCHIVE-BARCODE,First Duplicate,1000',
+      'SMOKE-ARCHIVE-BARCODE,Second Duplicate,2000',
+    ].join('\n'),
+  });
+  assert.equal(duplicateProductBarcodes.status, 200);
+  assert.equal(duplicateProductBarcodes.body.valid, false);
+  assert.doesNotMatch(JSON.stringify(duplicateProductBarcodes.body), /UNIQUE constraint failed/i);
+  const csvCreatedProduct = await postJson(baseUrl, '/api/catalog-csv/import', {
+    csv: [
+      'barcode,name,category,unit,cost_price,selling_price,initial_stock',
+      'SMOKE-CSV-NEW-BARCODE,New CSV Product,Smoke Archive,pcs,1000,2000,4',
+    ].join('\n'),
+  });
+  assert.equal(csvCreatedProduct.status, 201, JSON.stringify(csvCreatedProduct.body));
+  assert.equal(csvCreatedProduct.body.result.created_products_count, 1);
+  const csvCreatedProductId = db.prepare('SELECT id FROM products WHERE barcode = ?').get('SMOKE-CSV-NEW-BARCODE').id;
+  assert.equal(db.prepare('SELECT stock_quantity FROM products WHERE id = ?').get(csvCreatedProductId).stock_quantity, 4);
+  assert.deepEqual(
+    db.prepare(`
+      SELECT quantity, balance_before, balance_after FROM stock_movements
+      WHERE product_id = ? AND movement_type = 'initial' AND reference_type = 'csv_import'
+    `).get(csvCreatedProductId),
+    { quantity: 4, balance_before: 0, balance_after: 4 }
+  );
+
+  const archiveAllMemberResponse = await postJson(baseUrl, '/api/members', {
+    name: 'Archive All Smoke Member',
+    member_no: 'SMOKE-MBR-ARCHIVE-ALL',
+    employee_id: 'SMOKE-EMP-ARCHIVE-ALL',
+    monthly_deduction_limit: 10000,
+    outstanding_deduction_limit: 15000,
+    salary_deduction_enabled: 1,
+  });
+  assert.equal(archiveAllMemberResponse.status, 201, JSON.stringify(archiveAllMemberResponse.body));
+  const archiveAllMemberId = archiveAllMemberResponse.body.member.id;
+  const preservedOrderNumber = generateOrderNumber();
+  const preservedOrderId = Number(db.prepare(`
+    INSERT INTO orders (order_number, user_id, customer_id, status, total)
+    VALUES (?, 'user-1', ?, 'pending', 3000)
+  `).run(preservedOrderNumber, archiveAllMemberId).lastInsertRowid);
+  const preservedBillId = Number(db.prepare(`
+    INSERT INTO bills (bill_number, order_id, customer_id, subtotal, total, balance)
+    VALUES (?, ?, ?, 3000, 3000, 3000)
+  `).run(generateBillNumber(), preservedOrderId, archiveAllMemberId).lastInsertRowid);
+  const preservedSalaryPayment = await postJson(baseUrl, `/api/bills/${preservedBillId}/payment`, {
+    method: 'salary_deduction',
+    amount: 3000,
+    customer_id: archiveAllMemberId,
+  });
+  assert.equal(preservedSalaryPayment.status, 200, JSON.stringify(preservedSalaryPayment.body));
+  const preservedDeductionId = db.prepare('SELECT id FROM salary_deductions WHERE bill_id = ?').get(preservedBillId).id;
+
+  const deniedMemberArchive = await fetch(`${baseUrl}/api/members-csv/archive-all`, {
+    method: 'POST',
+    headers: { 'x-smoke-role': 'cashier' },
+  });
+  assert.equal(deniedMemberArchive.status, 403);
+  const memberArchive = await postJson(baseUrl, '/api/members-csv/archive-all', {});
+  assert.equal(memberArchive.status, 200, JSON.stringify(memberArchive.body));
+  assert.equal(memberArchive.body.result.archived_count > 0, true);
+  assert.deepEqual(
+    db.prepare('SELECT is_active, salary_deduction_enabled FROM customers WHERE id = ?').get(archiveAllMemberId),
+    { is_active: 0, salary_deduction_enabled: 0 }
+  );
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM orders WHERE id = ?').get(preservedOrderId).count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM bills WHERE id = ?').get(preservedBillId).count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM salary_deductions WHERE id = ?').get(preservedDeductionId).count, 1);
+  const repeatedMemberArchive = await postJson(baseUrl, '/api/members-csv/archive-all', {});
+  assert.equal(repeatedMemberArchive.status, 200);
+  assert.equal(repeatedMemberArchive.body.result.archived_count, 0);
+
+  const reimportedMember = await postJson(
+    baseUrl,
+    '/api/members-csv/import',
+    await createXlsxMemberPayload('SMOKE-EMP-ARCHIVE-ALL', 'SMOKE-MBR-ARCHIVE-ALL', {
+      name: 'Reimported Smoke Member',
+      monthlyLimit: 12000,
+      salaryDeductionEnabled: 1,
+    })
+  );
+  assert.equal(reimportedMember.status, 201, JSON.stringify(reimportedMember.body));
+  assert.equal(reimportedMember.body.result.created_members_count, 0);
+  assert.equal(reimportedMember.body.result.updated_members_count, 1);
+  assert.deepEqual(
+    db.prepare('SELECT id, name, is_active, salary_deduction_enabled, monthly_deduction_limit, outstanding_deduction_limit FROM customers WHERE employee_id = ?')
+      .get('SMOKE-EMP-ARCHIVE-ALL'),
+    {
+      id: archiveAllMemberId,
+      name: 'Reimported Smoke Member',
+      is_active: 1,
+      salary_deduction_enabled: 1,
+      monthly_deduction_limit: 12000,
+      outstanding_deduction_limit: 15000,
+    }
+  );
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM customers WHERE employee_id = ?').get('SMOKE-EMP-ARCHIVE-ALL').count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM orders WHERE customer_id = ?').get(archiveAllMemberId).count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM salary_deductions WHERE member_id = ?').get(archiveAllMemberId).count, 1);
+
   const backupPath = await createBackup();
   backupDb = new Database(backupPath, { readonly: true });
   assert.deepEqual(backupDb.pragma('quick_check'), [{ quick_check: 'ok' }]);
 
-  console.log('Smoke tests passed: atomic member/product create/update, editable bulk XLSX export/import and delete, unique identifier swaps, safe member archival, stock ledger adjustments, member import, loopback CORS, financial order deletion, order history, and SQLite backup.');
+  console.log('Smoke tests passed: atomic member/product create/update, bulk XLSX export/import, safe bulk archive and re-import, identifier conflict validation, preserved transaction/bon and stock history, stock ledger adjustments, loopback CORS, financial order deletion, order history, and SQLite backup.');
 }
 
 run()

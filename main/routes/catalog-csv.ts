@@ -10,6 +10,7 @@ import {
   executeCatalogImport,
 } from '../services/catalog-csv';
 import {
+  archiveAllProducts,
   executeProductWorkbookImport,
   generateAllProductsWorkbook,
   parseEditableWorkbook,
@@ -43,6 +44,21 @@ router.get('/export-all', async (req: AuthenticatedRequest, res: Response) => {
     return res.status(200).send(buffer);
   } catch (error: any) {
     return res.status(500).json({ error: error.message || 'Gagal mengekspor data produk.' });
+  }
+});
+
+// POST /api/catalog-csv/archive-all: archive active catalog products without deleting stock history.
+router.post('/archive-all', (req: AuthenticatedRequest, res: Response) => {
+  if (!canManageProducts(req, res)) return;
+  try {
+    const result = archiveAllProducts(getDatabase(), req.user!.id, req.user!.role);
+    return res.status(200).json({
+      message: `${result.archived_count} produk diarsipkan. Riwayat stok tetap tersimpan.`,
+      result,
+    });
+  } catch (error: any) {
+    console.error('[Catalog] Bulk archive failed:', error);
+    return res.status(500).json({ error: error.message || 'Gagal mengarsipkan seluruh produk.' });
   }
 });
 
@@ -200,7 +216,7 @@ router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
     const importResult = executeCatalogImport(db, validationResult.rows, userId);
 
     return res.status(201).json({
-      message: `Berhasil mengimpor ${importResult.created_products_count} produk, ${importResult.created_categories_count} kategori baru, dan ${importResult.created_units_count} satuan baru.`,
+      message: `Impor katalog selesai: ${importResult.created_products_count} produk baru, ${importResult.updated_products_count} produk diperbarui, ${importResult.created_categories_count} kategori baru, dan ${importResult.created_units_count} satuan baru.`,
       result: importResult,
     });
   } catch (error: any) {

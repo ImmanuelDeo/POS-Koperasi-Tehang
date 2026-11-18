@@ -6,7 +6,7 @@ import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { Button } from '@/components/ui/button';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2, X, Package, Folder, Puzzle, FileSpreadsheet, Download, Upload, CheckCircle, AlertCircle, AlertTriangle, Search, Boxes, History, Loader2, Layers } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Package, Folder, Puzzle, FileSpreadsheet, Download, Upload, CheckCircle, AlertCircle, AlertTriangle, Search, Boxes, History, Loader2, Layers, Archive } from 'lucide-react';
 import type { Product, Category, AddonGroup } from '@/lib/types';
 import TagBadge, { tagLabel } from '@/components/pos/DietaryBadge';
 import ImageUploader from '@/components/products/ImageUploader';
@@ -95,6 +95,7 @@ export default function ProductsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [addonGroups, setAddonGroups] = useState<AddonGroup[]>([]);
   const [loading, setLoading] = useState(true);
+  const [archivingProducts, setArchivingProducts] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
@@ -504,6 +505,30 @@ export default function ProductsPage() {
     }
   };
 
+  const handleArchiveAllProducts = async () => {
+    const confirmed = await confirm(
+      'Produk aktif akan disembunyikan dari katalog dan stok opname. Stok serta riwayat transaksi tetap tersimpan, dan produk dapat diaktifkan kembali melalui impor dengan barcode yang sama.',
+      {
+        title: 'Arsipkan Semua Produk',
+        confirmLabel: 'Arsipkan Semua',
+        destructive: true,
+      }
+    );
+    if (!confirmed) return;
+
+    setArchivingProducts(true);
+    try {
+      const { data } = await api.post('/catalog-csv/archive-all');
+      toast.success(data?.message || 'Seluruh produk aktif berhasil diarsipkan.');
+      reloadFullProducts();
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Gagal mengarsipkan seluruh produk.');
+    } finally {
+      setArchivingProducts(false);
+    }
+  };
+
   const resetCategoryForm = () => {
     setCategoryForm({ name: '', description: '', color: '', is_active: true });
     setEditingCategory(null);
@@ -715,6 +740,17 @@ export default function ProductsPage() {
             <div className="flex gap-2 shrink-0">
               {['owner', 'admin', 'office_inventory'].includes(currentTenant?.role || '') && (
                 <EditableWorkbookManager kind="products" onApplied={reloadFullProducts} />
+              )}
+              {['owner', 'admin', 'office_inventory'].includes(currentTenant?.role || '') && (
+                <Button
+                  variant="outline"
+                  onClick={handleArchiveAllProducts}
+                  disabled={archivingProducts || loading}
+                  className="border-amber-300 text-amber-800 hover:bg-amber-50"
+                >
+                  <Archive size={16} className="mr-1" />
+                  {archivingProducts ? 'Mengarsipkan...' : 'Arsipkan Semua'}
+                </Button>
               )}
               <Button variant="outline" onClick={() => openCsvModal('products')}>
                 <FileSpreadsheet size={16} className="mr-1" /> CSV
